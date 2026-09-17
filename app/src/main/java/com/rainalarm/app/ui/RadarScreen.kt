@@ -1,0 +1,696 @@
+package com.rainalarm.app.ui
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.content.pm.PackageManager
+import android.util.Log
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.rainalarm.app.LocationUiState
+import com.rainalarm.app.data.RadarSession
+import com.rainalarm.app.data.RadarProviderCoordinator
+import com.rainalarm.app.data.RadarProviderKind
+import com.rainalarm.app.data.RadarSettingsRepository
+import com.rainalarm.app.data.SavedPlace
+import com.rainalarm.app.data.PlaceCollection
+import com.rainalarm.app.data.RadarPlaybackSpeed
+import com.rainalarm.app.data.RadarMapLayer
+import com.rainalarm.app.data.CurrentWeather
+import com.rainalarm.app.data.WindGrid
+import com.rainalarm.app.data.WindViewport
+import com.rainalarm.app.data.EumetLayerMetadata
+import com.rainalarm.app.data.EumetViewRepository
+import com.rainalarm.app.data.WeatherLayerRepository
+import com.rainalarm.app.domain.RadarCameraMemory
+import com.rainalarm.app.domain.RadarPlaybackClock
+import com.rainalarm.app.domain.RadarEntryClock
+import com.rainalarm.app.domain.GeoPoint
+import com.rainalarm.app.domain.RadarMotionPolicy
+import com.rainalarm.app.domain.RadarTimeline
+import com.rainalarm.app.domain.RadarTimelineBracket
+import com.rainalarm.app.domain.RadarTimelineTicks
+import com.rainalarm.app.domain.cardinalDirection
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+
+private val Surface: Color @Composable get() = LocalRainAlarmPalette.current.surface
+private val Secondary: Color @Composable get() = LocalRainAlarmPalette.current.muted
+private val Accent: Color @Composable get() = LocalRainAlarmPalette.current.accent
+private val Danger: Color @Composable get() = LocalRainAlarmPalette.current.danger
+
+internal object RadarTopControlsPolicy {
+    const val timeTopDp = 12
+    fun timeLabelSp(mapWidthDp: Int): Int = if (mapWidthDp < 340) 18 else 20
+    fun windChipSp(mapWidthDp: Int): Int = if (mapWidthDp < 420) 10 else 11
+    fun windChipBelowControls(mapWidthDp: Int): Boolean = mapWidthDp < 340
+}
+
+@Composable
+private fun RadarWindChip(weather: CurrentWeather?, mapWidthDp: Int, modifier: Modifier = Modifier) {
+    val wind = weather?.takeIf { it.freshAt(Instant.now().epochSecond) }
+    val speed = wind?.windSpeedKmh
+    val from = wind?.windFromDegrees
+    Text(if (speed != null && from != null) "${speed.toInt()} km/h ${cardinalDirection(from)}" else "Wind unavailable",
+        color = LocalRainAlarmPalette.current.mapLabelText,
+        fontSize = RadarTopControlsPolicy.windChipSp(mapWidthDp).sp,
+        maxLines = 1, modifier = modifier.background(LocalRainAlarmPalette.current.mapLabelSurface,
+            RoundedCornerShape(5.dp)).padding(horizontal = if (mapWidthDp < 420) 2.dp else 5.dp, vertical = 2.dp)
+            .semantics { contentDescription = if (speed != null && from != null)
+                "Selected-place model wind from ${cardinalDirection(from)} at ${speed.toInt()} kilometres per hour"
+                else "Selected-place wind unavailable" })
+}
+
+private sealed interface AncillaryStatus {
+    data object Off : AncillaryStatus
+    data object Loading : AncillaryStatus
+    data class Wind(val grid: WindGrid) : AncillaryStatus
+    data class Satellite(val metadata: EumetLayerMetadata) : AncillaryStatus
+    data class Unavailable(val message: String) : AncillaryStatus
+}
+
+@Composable
+@SuppressLint("LogNotTimber") // Local lifecycle diagnostics for device-only radar failures.
+fun LiveRadarScreen(
+    place: SavedPlace?,
+    places: PlaceCollection,
+    playbackSpeed: RadarPlaybackSpeed,
+    darkMap: Boolean,
+    saveAndSelect: (SavedPlace) -> Unit,
+    locationState: LocationUiState,
+    currentRecenterTick: Int,
+    useCurrentLocation: () -> Unit,
+    recenterToCurrentLocation: () -> Unit,
+    cameraMemory: RadarCameraMemory,
+    selectPlace: (String) -> Unit,
+    mapLayer: RadarMapLayer,
+    selectMapLayer: (RadarMapLayer) -> Unit,
+    currentWeather: CurrentWeather?,
+    refreshPointWeather: () -> Unit,
+    selectedPlaceId: String,
+    chartTimeRequest: RadarChartTimeRequest? = null,
+    onChartTimeConsumed: (Int) -> Unit = {},
+) {
+    val context = LocalContext.current
+    val loader = remember { RadarProviderCoordinator(RadarSettingsRepository(context)) }
+    var session by remember { mutableStateOf<RadarSession?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var refreshing by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf(0 to 0) }
+    var reload by remember { mutableIntStateOf(0) }
+    var layerRefresh by remember { mutableIntStateOf(0) }
+    var previousLayerRefresh by remember { mutableIntStateOf(0) }
+    var previousWindRefresh by remember { mutableIntStateOf(0) }
+    var ancillaryStatus by remember { mutableStateOf<AncillaryStatus>(AncillaryStatus.Off) }
+    var windViewport by remember { mutableStateOf<WindViewport?>(null) }
+    var layerNow by remember { mutableStateOf(Instant.now().epochSecond) }
+    LaunchedEffect(mapLayer) {
+        if (mapLayer != RadarMapLayer.OFF) while (true) {
+            delay(60_000)
+            layerNow = Instant.now().epochSecond
+        }
+    }
+    var longPressed by remember { mutableStateOf<GeoPoint?>(null) }
+    var locationMessage by remember { mutableStateOf<String?>(null) }
+    var locationRequested by remember { mutableStateOf(false) }
+    var pendingMapRecenter by remember { mutableStateOf(false) }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { result ->
+        if (result.values.any { it }) {
+            locationMessage = null
+            if (pendingMapRecenter) recenterToCurrentLocation() else useCurrentLocation()
+        } else locationMessage = "Location permission was not granted. Selection unchanged."
+        pendingMapRecenter = false
+    }
+    val requestCurrentLocation: (Boolean) -> Unit = { recenterMap ->
+        locationRequested = true
+        locationMessage = null
+        pendingMapRecenter = recenterMap
+        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            if (recenterMap) recenterToCurrentLocation() else useCurrentLocation()
+            pendingMapRecenter = false
+        } else permissionLauncher.launch(
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
+        )
+    }
+
+    // Live fixes move the marker immediately, but must not cancel a regional download or
+    // destroy its GL session for every 250 m location update.
+    LaunchedEffect(RadarLiveSessionPolicy.loadIdentity(place), reload) {
+        val keepVisible = place != null && session?.let { RadarLiveSessionPolicy.canReuse(it, place) } == true
+        if (!keepVisible) session = null
+        refreshing = keepVisible
+        error = null
+        progress = 0 to 0
+        if (place == null) {
+            error = "Current location unavailable. Select a saved place or get a fresh device fix."
+            Log.i("RainRadarScreen", "No resolved place; radar load deferred")
+            return@LaunchedEffect
+        }
+        Log.i("RainRadarScreen", "Starting ${if (place.isCurrentLocation) "current" else "saved"} radar load")
+        session = try {
+            loader.load(place, onProgress = { completed, total -> progress = completed to total }).also {
+                Log.i("RainRadarScreen", "Radar session ready provider=${it.providerSelection.active} frames=${it.timelineFrames.size}")
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            Log.e("RainRadarScreen", "Radar session load failed", failure)
+            error = failure.message ?: "Radar session could not be loaded"
+            session.takeIf { keepVisible }
+        } finally {
+            refreshing = false
+        }
+    }
+    LaunchedEffect(place?.latitude, place?.longitude, session) {
+        val active = session ?: return@LaunchedEffect
+        val selected = place ?: return@LaunchedEffect
+        if (active.place.id == selected.id && !RadarLiveSessionPolicy.canReuse(active, selected)) {
+            Log.i("RainRadarScreen", "Current fix left cached coverage; replacing radar session")
+            reload++
+        }
+    }
+    LaunchedEffect(locationState) {
+        if (locationState is LocationUiState.Active) {
+            locationRequested = false
+            locationMessage = null
+        }
+    }
+    val regionLatitude = place?.latitude?.times(10)?.toInt()
+    val regionLongitude = place?.longitude?.times(10)?.toInt()
+    val daylight = currentWeather?.takeIf { it.daylightFreshAt(layerNow) }?.isDay
+    LaunchedEffect(mapLayer, place?.id, regionLatitude, regionLongitude, layerRefresh, daylight) {
+        if (mapLayer == RadarMapLayer.WIND) return@LaunchedEffect
+        val selected = place
+        val force = layerRefresh != previousLayerRefresh
+        previousLayerRefresh = layerRefresh
+        ancillaryStatus = when {
+            mapLayer == RadarMapLayer.OFF -> AncillaryStatus.Off
+            selected == null -> AncillaryStatus.Unavailable("Select a place for this layer")
+            mapLayer == RadarMapLayer.FOG && daylight == true ->
+                AncillaryStatus.Unavailable("Night only · fog / low cloud")
+            mapLayer == RadarMapLayer.FOG && daylight == null ->
+                AncillaryStatus.Unavailable("Daylight status unavailable")
+            else -> {
+                ancillaryStatus = AncillaryStatus.Loading
+                try {
+                    when (mapLayer) {
+                        RadarMapLayer.WIND -> AncillaryStatus.Off // handled by viewport-specific effect
+                        RadarMapLayer.LIGHTNING, RadarMapLayer.FOG ->
+                            AncillaryStatus.Satellite(EumetViewRepository.metadata(mapLayer, selected, force))
+                        RadarMapLayer.OFF -> AncillaryStatus.Off
+                    }
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (failure: Exception) {
+                    Log.w("RainRadarLayers", "${mapLayer.name} layer unavailable", failure)
+                    AncillaryStatus.Unavailable("${mapLayer.label} unavailable")
+                }
+            }
+        }
+    }
+    val viewportKey = windViewport?.requestKey()
+    LaunchedEffect(mapLayer, viewportKey, layerRefresh) {
+        if (mapLayer != RadarMapLayer.WIND) return@LaunchedEffect
+        val viewport = windViewport
+        if (viewport == null) {
+            ancillaryStatus = AncillaryStatus.Unavailable("Wind viewport unavailable")
+            return@LaunchedEffect
+        }
+        val force = layerRefresh != previousWindRefresh
+        previousWindRefresh = layerRefresh
+        ancillaryStatus = AncillaryStatus.Loading
+        ancillaryStatus = try {
+            AncillaryStatus.Wind(WeatherLayerRepository.wind(viewport, force = force))
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (failure: Exception) {
+            Log.w("RainRadarLayers", "Viewport wind unavailable", failure)
+            AncillaryStatus.Unavailable("Wind model unavailable")
+        }
+    }
+    val visibleAncillary = when (val active = ancillaryStatus) {
+        is AncillaryStatus.Wind -> if (active.grid.viewportKey == viewportKey && active.grid.points.all { it.freshAt(layerNow) }) active
+            else AncillaryStatus.Unavailable("Wind model stale · refresh")
+        is AncillaryStatus.Satellite -> when {
+            !active.metadata.freshAt(layerNow) -> AncillaryStatus.Unavailable("Satellite image delayed · refresh")
+            mapLayer == RadarMapLayer.FOG && daylight != false ->
+                AncillaryStatus.Unavailable(if (daylight == true) "Night only · fog / low cloud" else "Daylight status unavailable")
+            else -> active
+        }
+        else -> active
+    }
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(place?.name ?: "Current location", style = MaterialTheme.typography.headlineSmall, maxLines = 1,
+                overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            PlaceSwitcher(places, locationState, selectPlace, { requestCurrentLocation(false) })
+        }
+        if (locationMessage != null || (locationRequested && locationState is LocationUiState.Unavailable)) {
+            Text(locationMessage ?: (locationState as LocationUiState.Unavailable).message,
+                color = Danger, fontSize = 12.sp)
+        }
+        if (session != null && (refreshing || error != null)) {
+            Text(if (refreshing) "Refreshing radar ${if (progress.second > 0) "${progress.first}/${progress.second}" else "…"}"
+                else "Radar refresh failed: ${error ?: "unknown error"}. Tap refresh to retry.",
+                color = if (error == null) Secondary else Danger, fontSize = 12.sp, maxLines = 2)
+        }
+        Spacer(Modifier.height(6.dp))
+        when {
+            session != null && place != null && RadarLiveSessionPolicy.canReuse(session!!, place) -> RadarPlayer(
+                session = session!!,
+                mapPlace = place,
+                selectedPlaceId = selectedPlaceId,
+                chartTimeRequest = chartTimeRequest,
+                onChartTimeConsumed = onChartTimeConsumed,
+                playbackSpeed = playbackSpeed,
+                darkMap = darkMap,
+                onLongPress = { longPressed = it },
+                locationState = locationState,
+                currentRecenterTick = currentRecenterTick,
+                onCurrentLocation = { requestCurrentLocation(true) },
+                cameraMemory = cameraMemory,
+                mapLayer = mapLayer,
+                selectMapLayer = selectMapLayer,
+                ancillaryStatus = visibleAncillary,
+                currentWeather = currentWeather,
+                onWindViewportChanged = { windViewport = it },
+                onRefresh = { reload++; layerRefresh++; refreshPointWeather() },
+                onLayerError = { ancillaryStatus = AncillaryStatus.Unavailable(it) },
+            )
+            error != null -> Card(
+                colors = CardDefaults.cardColors(containerColor = Surface),
+                shape = RoundedCornerShape(20.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.padding(20.dp)) {
+                    Text("Radar unavailable", color = Danger, fontWeight = FontWeight.Bold)
+                    Text(error!!, color = Secondary, modifier = Modifier.padding(vertical = 10.dp))
+                    Button(onClick = { reload++ }) { Text("Try again") }
+                }
+            }
+            else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(color = Accent)
+                    if (progress.second > 0) {
+                        Text(
+                            "Loading radar ${progress.first}/${progress.second}",
+                            color = Secondary,
+                            modifier = Modifier.padding(top = 12.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    longPressed?.let { point ->
+        var name by remember(point) {
+            mutableStateOf(String.format(Locale.ROOT, "%.4f, %.4f", point.latitude, point.longitude))
+        }
+        AlertDialog(
+            onDismissRequest = { longPressed = null },
+            title = { Text("Save this place") },
+            text = {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Place name") },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = name.isNotBlank(),
+                    onClick = {
+                        saveAndSelect(SavedPlace(name.trim(), point.latitude, point.longitude))
+                        longPressed = null
+                    },
+                ) { Text("Save & select") }
+            },
+            dismissButton = {
+                TextButton(onClick = { longPressed = null }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun ColumnScope.RadarPlayer(
+    session: RadarSession,
+    mapPlace: SavedPlace,
+    selectedPlaceId: String,
+    chartTimeRequest: RadarChartTimeRequest?,
+    onChartTimeConsumed: (Int) -> Unit,
+    playbackSpeed: RadarPlaybackSpeed,
+    darkMap: Boolean,
+    onLongPress: (GeoPoint) -> Unit,
+    locationState: LocationUiState,
+    currentRecenterTick: Int,
+    onCurrentLocation: () -> Unit,
+    cameraMemory: RadarCameraMemory,
+    mapLayer: RadarMapLayer,
+    selectMapLayer: (RadarMapLayer) -> Unit,
+    ancillaryStatus: AncillaryStatus,
+    currentWeather: CurrentWeather?,
+    onWindViewportChanged: (WindViewport) -> Unit,
+    onRefresh: () -> Unit,
+    onLayerError: (String) -> Unit,
+) {
+    val secondaryColor = Secondary
+    val times = remember(session) { session.timelineFrames.map { it.time } }
+    val forecastFlags = remember(session) { session.timelineFrames.map { it.forecast } }
+    val latestObservationIndex = forecastFlags.indexOfLast { !it }.coerceAtLeast(0)
+    val latestOffset = (times[latestObservationIndex] - times.first()).toFloat()
+    val providerForecast = forecastFlags.any { it }
+    val preferredOpenTier = if (session.detail != null) {
+        com.rainalarm.app.domain.RadarResolutionTier.DETAIL
+    } else {
+        com.rainalarm.app.domain.RadarResolutionTier.REGIONAL
+    }
+    val estimatedForecast = !providerForecast &&
+        session.velocity(preferredOpenTier)?.futureField != null
+    val forecastAvailable = providerForecast || estimatedForecast
+    val endOffset = if (providerForecast) {
+        (times.last() - times.first()).toFloat()
+    } else {
+        (times.last() - times.first() + if (estimatedForecast) RadarTimeline.FORECAST_HORIZON_SECONDS else 0L).toFloat()
+    }
+    val initialCursor = remember(session) {
+        RadarEntryClock.initialCursor(
+            times.first(), times[latestObservationIndex], times.first() + endOffset.toLong(),
+            forecastAvailable, Instant.now().epochSecond,
+        )
+    }
+    val chartDecision = chartTimeRequest?.let {
+        RadarChartTimeLink.decide(it, selectedPlaceId, session.place.id, times.first(),
+            times.first() + endOffset.toDouble())
+    }
+    var cursor by remember(session) { mutableFloatStateOf(
+        (chartDecision as? RadarChartTimeDecision.Apply)?.cursorSeconds ?: initialCursor,
+    ) }
+    var playing by remember(session) { mutableStateOf(false) }
+    var chartTimeMessage by remember(session) { mutableStateOf<String?>(null) }
+    LaunchedEffect(session, chartTimeRequest?.token, chartDecision) {
+        val request = chartTimeRequest ?: return@LaunchedEffect
+        when (val decision = chartDecision) {
+            is RadarChartTimeDecision.Apply -> {
+                cursor = decision.cursorSeconds
+                playing = false
+                chartTimeMessage = null
+                onChartTimeConsumed(request.token)
+            }
+            RadarChartTimeDecision.Unavailable -> {
+                chartTimeMessage = "Chart time unavailable in this radar session; showing normal entry time."
+                onChartTimeConsumed(request.token)
+            }
+            else -> Unit
+        }
+    }
+    var rendererStatus by remember(session) { mutableStateOf<RadarRendererStatus>(RadarRendererStatus.Loading) }
+    var layerMenuExpanded by remember { mutableStateOf(false) }
+    val safeCursor = cursor.takeIf { it.isFinite() }?.coerceIn(0f, endOffset) ?: initialCursor
+    val bracket = if (providerForecast) {
+        RadarTimeline.bracket(times, forecastFlags, times.first() + safeCursor.toDouble())
+    } else {
+        RadarTimeline.bracket(times, times.first() + safeCursor.toDouble())
+    }
+
+    LaunchedEffect(playing, session, playbackSpeed) {
+        if (!playing) return@LaunchedEffect
+        var lastNanos = withFrameNanos { it }
+        while (playing) {
+            val nanos = withFrameNanos { it }
+            val elapsedSeconds = (nanos - lastNanos) / 1_000_000_000.0
+            lastNanos = nanos
+            val stopAt = if (forecastAvailable) endOffset else latestOffset
+            val currentCursor = cursor.takeIf { it.isFinite() }?.coerceIn(0f, stopAt) ?: latestOffset
+            cursor = RadarPlaybackClock.advance(currentCursor, elapsedSeconds, stopAt, playbackSpeed.multiplier)
+        }
+    }
+    val label = timelineLabel(times, bracket, safeCursor, latestOffset, forecastAvailable)
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Surface),
+        shape = RoundedCornerShape(22.dp),
+        modifier = Modifier.fillMaxWidth().weight(1f),
+    ) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val mapWidthDp = maxWidth.value.toInt()
+            RadarImageMap(
+                session,
+                bracket,
+                mapPlace,
+                onLongPress,
+                recenterSignal = currentRecenterTick,
+                cameraMemory = cameraMemory,
+                isPlaying = playing,
+                onRendererStatus = { rendererStatus = it },
+                darkMap = darkMap,
+                windGrid = (ancillaryStatus as? AncillaryStatus.Wind)?.grid,
+                satelliteLayer = (ancillaryStatus as? AncillaryStatus.Satellite)?.metadata,
+                onLayerError = onLayerError,
+                onWindViewportChanged = onWindViewportChanged,
+            )
+            if (rendererStatus is RadarRendererStatus.Error) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = LocalRainAlarmPalette.current.mapLabelSurface),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.align(Alignment.Center).padding(20.dp),
+                ) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("Radar display unavailable", color = Danger, fontWeight = FontWeight.Bold)
+                        Text(
+                            (rendererStatus as RadarRendererStatus.Error).message,
+                            color = Secondary,
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
+                }
+            }
+            if (rendererStatus is RadarRendererStatus.Compatibility) {
+                Text(
+                    (rendererStatus as RadarRendererStatus.Compatibility).message,
+                    color = Accent,
+                    fontSize = 11.sp,
+                    modifier = Modifier.align(Alignment.TopCenter).padding(horizontal = 54.dp, vertical = 42.dp),
+                )
+            }
+            Text(
+                label,
+                color = LocalRainAlarmPalette.current.mapLabelText,
+                fontWeight = FontWeight.Bold,
+                fontSize = RadarTopControlsPolicy.timeLabelSp(mapWidthDp).sp,
+                lineHeight = (RadarTopControlsPolicy.timeLabelSp(mapWidthDp) + 2).sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.align(Alignment.TopStart).padding(start = 12.dp, top = RadarTopControlsPolicy.timeTopDp.dp)
+                    .background(LocalRainAlarmPalette.current.mapLabelSurface, RoundedCornerShape(4.dp))
+                    .padding(horizontal = 4.dp),
+            )
+            Text(
+                if (session.providerSelection.active == RadarProviderKind.METEOGROUP_REGIONAL) {
+                    "Radar: MeteoGroup/DTN | Map: OpenFreeMap, © OpenStreetMap contributors"
+                } else {
+                    "Radar: RainViewer | Map: OpenFreeMap, © OpenStreetMap contributors"
+                },
+                color = LocalRainAlarmPalette.current.mapLabelText,
+                fontSize = 10.sp,
+                modifier = Modifier.align(Alignment.BottomStart).padding(10.dp)
+                    .background(LocalRainAlarmPalette.current.mapLabelSurface, RoundedCornerShape(4.dp))
+                    .padding(horizontal = 3.dp),
+            )
+            val windBelow = mapLayer == RadarMapLayer.WIND && RadarTopControlsPolicy.windChipBelowControls(mapWidthDp)
+            if (windBelow) RadarWindChip(currentWeather, mapWidthDp,
+                Modifier.align(Alignment.TopEnd).padding(top = 54.dp, end = 8.dp))
+            Row(Modifier.align(Alignment.TopEnd).padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (mapLayer == RadarMapLayer.WIND && !windBelow) RadarWindChip(currentWeather, mapWidthDp)
+                Box {
+                    IconButton(onClick = { layerMenuExpanded = true }) {
+                        Icon(Icons.Default.Layers, contentDescription = "Map layers, ${mapLayer.label}",
+                            tint = if (darkMap) Color.White else Color.Black)
+                    }
+                    DropdownMenu(expanded = layerMenuExpanded, onDismissRequest = { layerMenuExpanded = false }) {
+                        RadarMapLayer.entries.forEach { choice ->
+                            DropdownMenuItem(text = { Text(choice.label) }, onClick = {
+                                layerMenuExpanded = false; selectMapLayer(choice)
+                            }, leadingIcon = { if (choice == mapLayer) Text("✓") })
+                        }
+                    }
+                }
+                IconButton(onClick = onRefresh) {
+                    Icon(Icons.Default.Refresh, contentDescription = "Refresh radar and map layer",
+                        tint = if (darkMap) Color.White else Color.Black)
+                }
+                IconButton(onClick = onCurrentLocation,
+                    enabled = locationState !is LocationUiState.Locating) {
+                    if (locationState is LocationUiState.Locating) CircularProgressIndicator(Modifier.size(22.dp),
+                        color = if (darkMap) Color.White else Color.Black, strokeWidth = 2.dp)
+                    else Icon(Icons.Default.MyLocation, contentDescription = "Use current device location",
+                        tint = if (darkMap) Color.White else Color.Black)
+                }
+            }
+            Box(Modifier.align(Alignment.BottomEnd).padding(8.dp)) {
+                Column(horizontalAlignment = Alignment.End) {
+                    val layerDescription = when (ancillaryStatus) {
+                        AncillaryStatus.Off -> null
+                        AncillaryStatus.Loading -> "${mapLayer.label} · loading"
+                        is AncillaryStatus.Unavailable -> ancillaryStatus.message
+                        is AncillaryStatus.Wind -> "Wind · Open-Meteo model · ${Instant.ofEpochSecond(ancillaryStatus.grid.points[12].validEpochSeconds).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("HH:mm"))} · ${((Instant.now().epochSecond - ancillaryStatus.grid.points[12].validEpochSeconds) / 60).coerceAtLeast(0)}m ago"
+                        is AncillaryStatus.Satellite -> {
+                            val name = if (mapLayer == RadarMapLayer.LIGHTNING) "Satellite flash areas" else "Fog / low cloud"
+                            "$name · EUMETSAT · ${Instant.ofEpochSecond(ancillaryStatus.metadata.validEpochSeconds).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("HH:mm"))} · ${((Instant.now().epochSecond - ancillaryStatus.metadata.validEpochSeconds) / 60).coerceAtLeast(0)}m ago"
+                        }
+                    }
+                    layerDescription?.let { Text(it, color = LocalRainAlarmPalette.current.mapLabelText,
+                        fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.background(LocalRainAlarmPalette.current.mapLabelSurface, RoundedCornerShape(5.dp))
+                            .padding(horizontal = 5.dp, vertical = 2.dp)) }
+                }
+            }
+        }
+    }
+    session.providerSelection.fallbackMessage?.let { message ->
+        Text(message, color = Danger, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+    }
+    chartTimeMessage?.let { message ->
+        Text(message, color = Danger, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+    }
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = { playing = !playing }, modifier = Modifier.size(48.dp)) {
+            Icon(
+                if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
+                contentDescription = if (playing) "Pause radar timeline" else "Play radar timeline",
+            )
+        }
+        Slider(
+            value = safeCursor,
+            onValueChange = {
+                cursor = it.takeIf { value -> value.isFinite() }
+                    ?.coerceIn(0f, endOffset) ?: safeCursor
+                playing = false
+            },
+            valueRange = 0f..endOffset,
+            modifier = Modifier.weight(1f).semantics {
+                contentDescription = "Radar timeline"
+                stateDescription = label
+            },
+        )
+    }
+    if (!forecastAvailable) Text("Prediction unavailable for this radar session", color = Danger, fontSize = 11.sp)
+    if (endOffset > 0f) {
+        val ticks = remember(session, endOffset) {
+            RadarTimelineTicks.between(times.first(), times.first() + endOffset.toLong(), ZoneId.systemDefault())
+        }
+        // Match the 48dp play target, 6dp row gap and Slider's 10dp thumb inset.
+        BoxWithConstraints(Modifier.fillMaxWidth().height(21.dp).padding(start = 54.dp)) {
+            Canvas(Modifier.fillMaxSize()) {
+                ticks.forEach { tick ->
+                    val x = 10.dp.toPx() + (size.width - 20.dp.toPx()) * tick.fraction
+                    drawLine(secondaryColor, Offset(x, 0f), Offset(x, 4.dp.toPx()), 1.dp.toPx())
+                }
+            }
+            ticks.forEach { tick ->
+                val x = (10.dp + (maxWidth - 20.dp) * tick.fraction - 19.dp)
+                    .coerceIn(0.dp, (maxWidth - 38.dp).coerceAtLeast(0.dp))
+                Text(tick.label, color = Secondary, fontSize = 9.sp,
+                    modifier = Modifier.offset(x = x, y = 4.dp).width(38.dp), maxLines = 1)
+            }
+        }
+    }
+}
+
+private fun timelineLabel(
+    times: List<Long>,
+    bracket: RadarTimelineBracket,
+    cursor: Float,
+    latestOffset: Float,
+    forecastAvailable: Boolean,
+): String {
+    val instant = Instant.ofEpochSecond((times.first() + cursor).toLong())
+    val time = DateTimeFormatter.ofPattern("HH:mm").format(instant.atZone(ZoneId.systemDefault()))
+    return when {
+        cursor == latestOffset -> "Latest radar · ${time}"
+        bracket.isForecast && forecastAvailable ->
+            if (
+                cursor <= (times.last() - times.first()).toFloat() &&
+                latestOffset < (times.last() - times.first()).toFloat()
+            ) {
+                "Forecast · ${time}"
+            } else {
+                "Estimate · ${time}"
+            }
+        bracket.isForecast ->
+            "Forecast unavailable · ${time}"
+        else -> "Observed · ${time}"
+    }
+}

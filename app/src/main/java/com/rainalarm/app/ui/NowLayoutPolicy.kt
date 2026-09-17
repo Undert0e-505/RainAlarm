@@ -1,0 +1,228 @@
+package com.rainalarm.app.ui
+
+import com.rainalarm.app.data.NowWeatherMetric
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import kotlin.math.sqrt
+
+internal data class NowLayoutMetrics(
+    val horizontalPaddingDp: Int,
+    val verticalPaddingDp: Int,
+    val gapDp: Int,
+    val headerHeightDp: Int,
+    val compassHeightDp: Int,
+    val chartHeightDp: Int,
+    val simplifyText: Boolean,
+) {
+    val totalHeightDp: Int
+        get() = verticalPaddingDp * 2 + headerHeightDp + compassHeightDp + chartHeightDp + gapDp * 2
+}
+
+internal object NowLayoutPolicy {
+    const val usesVerticalScroll = false
+    const val minimumCompassDp = 128
+    const val minimumChartDp = 132
+    const val cardHeaderHeightDp = 52
+    const val chartTitleHeightDp = 25
+    const val chartAxisHeightDp = 30
+
+    fun measure(widthDp: Int, heightDp: Int, fontScale: Float = 1f): NowLayoutMetrics {
+        require(widthDp > 0 && heightDp > 0 && fontScale > 0f)
+        val compact = heightDp < 620 || widthDp < 360 || fontScale > 1.2f
+        val constrained = heightDp < 400
+        val horizontalPadding = if (compact) 12 else 16
+        val verticalPadding = 4
+        val gap = 4
+        val header = 48
+        val flexible = (heightDp - verticalPadding * 2 - header - gap * 2).coerceAtLeast(0)
+        val minChart = if (constrained) 64 else if (heightDp < 720) 155 else minimumChartDp
+        val idealCompass = (flexible * if (widthDp > heightDp) 0.50f else 0.69f).toInt()
+        val minCompass = if (constrained) 72 else minimumCompassDp
+        val compass = idealCompass.coerceIn(
+            minCompass.coerceAtMost(flexible),
+            (flexible - minChart).coerceAtLeast(minCompass.coerceAtMost(flexible)),
+        )
+        val chart = (flexible - compass).coerceAtLeast(0)
+        return NowLayoutMetrics(horizontalPadding, verticalPadding, gap, header, compass, chart,
+            compact || fontScale > 1.1f)
+    }
+}
+
+internal object NowWeatherReadoutPolicy {
+    const val directionLineHeightDp = 16
+    fun fontSizeSp(contentWidthDp: Int, fontScale: Float): Int =
+        if (contentWidthDp < 260 && fontScale > 1.3f) 9 else 10
+
+    fun rowMinimumHeightDp(fontSizeSp: Int): Int = if (fontSizeSp <= 10) 13 else 24
+
+    fun stack(widthDp: Int, fontScale: Float): Boolean = widthDp < 280 || fontScale > 1.4f
+
+    fun footerHeightDp(metricCount: Int, widthDp: Int, fontScale: Float): Int {
+        val row = rowMinimumHeightDp(fontSizeSp(widthDp, fontScale))
+        return if (stack(widthDp, fontScale)) (metricCount + 2) * row + 6
+        else maxOf(metricCount, 2) * row + 4
+    }
+
+    /** Keep the circular rim above the bottom-corner readouts, without a separate footer row. */
+    fun dialDiameterDp(widthDp: Int, bodyHeightDp: Int, footerHeightDp: Int): Int =
+        minOf(widthDp, ((bodyHeightDp - footerHeightDp).coerceAtLeast(0) / 0.93f).toInt(), 340)
+
+    fun label(metric: NowWeatherMetric): String = when (metric) {
+        NowWeatherMetric.TEMPERATURE -> "Temp"
+        NowWeatherMetric.PRESSURE -> "Pressure"
+        NowWeatherMetric.HUMIDITY -> "Humidity"
+        NowWeatherMetric.UV_INDEX -> "UV"
+        NowWeatherMetric.WIND -> "Wind"
+    }
+}
+
+internal object NowChartLayout {
+    fun horizonTitle(endMinute: Int): String = when (val end = endMinute.coerceIn(0, 60)) {
+        0 -> "Current radar"
+        60 -> "Next hour"
+        else -> "Next $end minutes"
+    }
+
+    data class ClockTick(val offsetMinutes: Float, val label: String, val showLabel: Boolean)
+
+    /** Mark every local ten-minute boundary; show only labels that fit without collision. */
+    fun clockTicks(
+        startEpochSeconds: Long,
+        endMinute: Int,
+        zone: ZoneId,
+        screenWidthDp: Int,
+        fontScale: Float,
+    ): List<ClockTick> {
+        val end = endMinute.coerceIn(0, 60)
+        val origin = ClockTick(0f, "Now", true)
+        if (end == 0) return listOf(origin)
+        val endEpoch = startEpochSeconds + end * 60L
+        val firstMinute = Math.floorDiv(startEpochSeconds, 60L) * 60L + 60L
+        val formatter = DateTimeFormatter.ofPattern("HH:mm")
+        val candidateEpochs = generateSequence(firstMinute) { it + 60L }
+            .takeWhile { it <= endEpoch }
+            .filter { epoch -> Instant.ofEpochSecond(epoch).atZone(zone).minute % 10 == 0 }
+            .toList()
+        val labels = candidateEpochs.map { formatter.format(Instant.ofEpochSecond(it).atZone(zone)) }
+        val counts = labels.groupingBy { it }.eachCount()
+        val candidates = candidateEpochs.mapIndexed { index, epoch ->
+            val local = Instant.ofEpochSecond(epoch).atZone(zone)
+            ClockTick(
+                (epoch - startEpochSeconds) / 60f,
+                if (counts.getValue(labels[index]) > 1) "${labels[index]} ${local.format(DateTimeFormatter.ofPattern("z", java.util.Locale.ENGLISH))}"
+                else labels[index],
+                false,
+            )
+        }
+        val plotWidth = (screenWidthDp - 56 - 24 - 48).coerceAtLeast(0).toFloat()
+        val result = mutableListOf(origin)
+        var previousX = 0f
+        var previousLabelWidth = 32f * fontScale
+        for (tick in candidates) {
+            val x = plotWidth * tick.offsetMinutes / end
+            val labelWidth = (if (tick.label.length > 5) 72f else 48f) * fontScale
+            val requiredGap = (previousLabelWidth + labelWidth) / 2f + 6f
+            if (x - previousX >= requiredGap) {
+                result.add(tick.copy(showLabel = true))
+                previousX = x
+                previousLabelWidth = labelWidth
+            }
+            else result.add(tick)
+        }
+        return result
+    }
+
+    fun plotX(minute: Int, width: Float, inset: Float, endMinute: Int = 60): Float {
+        return plotX(minute.toFloat(), width, inset, endMinute)
+    }
+
+    fun plotX(minute: Float, width: Float, inset: Float, endMinute: Int = 60): Float {
+        val end = endMinute.coerceIn(0, 60)
+        if (end == 0) return width / 2f
+        return inset + (width - inset * 2f).coerceAtLeast(0f) * minute.coerceIn(0f, end.toFloat()) / end
+    }
+
+    /** Inverse of [plotX] for taps on the plot canvas, excluding its severity-label column. */
+    fun minuteAtX(x: Float, width: Float, inset: Float, endMinute: Int): Float? {
+        if (!x.isFinite() || !width.isFinite() || !inset.isFinite() || width <= 0f) return null
+        val end = endMinute.coerceIn(0, 60)
+        if (end == 0) return 0f
+        val safeInset = inset.coerceIn(0f, width / 5f)
+        val span = width - 2f * safeInset
+        if (span <= 0f) return null
+        return ((x - safeInset) / span).coerceIn(0f, 1f) * end
+    }
+
+    fun epochAtX(startEpochSeconds: Long, x: Float, width: Float, inset: Float, endMinute: Int): Double? =
+        minuteAtX(x, width, inset, endMinute)?.let { startEpochSeconds.toDouble() + it.toDouble() * 60.0 }
+
+    fun severityBand(intensity: Float): Int = when {
+        intensity >= 2f / 3f -> 0 // severe, top
+        intensity >= 1f / 3f -> 1 // medium, middle
+        else -> 2 // light, bottom
+    }
+}
+
+/** Shared entry motion: marker travel, center label scale and plot reveal use one progress. */
+internal object NowMotionPolicy {
+    const val durationMillis = 1000
+    const val centerDiscRadiusFraction = 0.16875f // 25% smaller than the r38 settled radius
+    private const val centerEntryScale = 1.16f
+    fun centerScale(progress: Float): Float = 1f + (centerEntryScale - 1f) * (1f - progress.coerceIn(0f, 1f))
+    fun centerDiscScale(progress: Float): Float = centerScale(progress)
+
+    fun centerUsableDiameterDp(diameterDp: Float): Float =
+        (2f * centerDiscRadiusFraction * diameterDp - 6f).coerceAtLeast(0f)
+
+    /** Disc and text share a scale, so a fitted settled label also fits at every animation checkpoint. */
+    fun centerFontSizeSp(diameterDp: Float, fontScale: Float, label: String,
+                         measuredTargetWidthDp: Float): Float {
+        val target = 48f
+        val usableDiameter = centerUsableDiameterDp(diameterDp)
+        val scaledFont = fontScale.coerceAtLeast(1f)
+        val widthLimit = if (measuredTargetWidthDp > 0f)
+            target * usableDiameter / measuredTargetWidthDp else target
+        // A countdown also has a second line. Limit the full animated stack, not just its widest line.
+        val heightLimit = if (label.isNotEmpty() && label.all(Char::isDigit))
+            usableDiameter / (1.42f * 1.2f * scaledFont)
+        else usableDiameter / (1.2f * scaledFont)
+        return minOf(target, widthLimit, heightLimit)
+    }
+
+    fun centerUnitFontSizeSp(mainFontSizeSp: Float): Float = minOf(20f, mainFontSizeSp * 0.42f)
+    fun revealRight(startX: Float, endX: Float, progress: Float): Float =
+        startX + (endX - startX).coerceAtLeast(0f) * progress.coerceIn(0f, 1f)
+}
+
+internal data class NowRainTextureCrop(val left: Int, val top: Int, val side: Int)
+
+/** The alpha PNG is an exact square crop of the supplied droplet circle (black converted to alpha). */
+internal object NowRainTexturePolicy {
+    fun shouldShow(rainingNow: Boolean, arrivalMinute: Int?): Boolean =
+        rainingNow || arrivalMinute != null
+
+    fun crop(width: Int, height: Int): NowRainTextureCrop {
+        require(width > 0 && height > 0)
+        val side = minOf(width, height)
+        return NowRainTextureCrop((width - side) / 2, (height - side) / 2, side)
+    }
+
+    /** Interior source window: its top-centre contains a droplet, unlike the transparent outer rim. */
+    fun pointerCrop(width: Int, height: Int): NowRainTextureCrop {
+        require(width > 0 && height > 0)
+        val scale = minOf(width, height) / 1088f
+        val side = (680f * scale).toInt().coerceAtLeast(1)
+        val left = (224f * scale).toInt() + (width - minOf(width, height)) / 2
+        val top = (144f * scale).toInt() + (height - minOf(width, height)) / 2
+        return NowRainTextureCrop(left, top, side)
+    }
+
+    fun discDiameterPx(dialDiameterPx: Float, entryProgress: Float): Float =
+        2f * dialDiameterPx * NowMotionPolicy.centerDiscRadiusFraction *
+            NowMotionPolicy.centerDiscScale(entryProgress)
+
+    /** Enclosing square reaches the 90-degree tip at sqrt(2) radii for every bearing. */
+    fun pointerTextureDiameterPx(pointerRadiusPx: Float): Float =
+        2f * sqrt(2f) * pointerRadiusPx.coerceAtLeast(0f)
+}

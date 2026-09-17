@@ -1,0 +1,7 @@
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <!-- Legacy AREA_ID chart host has a mismatched HTTPS certificate. No other host is exempt. -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">android.weatherpro.weatherservice.meteogroup.de</domain>
+    </domain-config>
+</network-security-config>

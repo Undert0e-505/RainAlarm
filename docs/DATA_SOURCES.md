@@ -1,0 +1,339 @@
+# Data sources
+
+Rain Alarm has two selectable radar providers. MeteoGroup regional is the
+default; RainViewer is the open worldwide choice and automatic session fallback.
+
+## MeteoGroup regional
+
+- Manifest pattern: `https://cdn.meteogroup.de/images/mapengine/rain2.0/rad_{area}/images.xml`
+- Supported areas: `uk`, `de`, `nl`, `fr`, and `ch`.
+- The regional raster rectangles overlap several neighbouring countries. When
+  more than one contains a place, the app chooses the feed with the nearest
+  normalized footprint centre (stable ID tie-break), rather than the smallest
+  rectangle. This keeps eastern UK places on `uk` while selecting the nearby
+  continental feed for France, Benelux, Germany, and Switzerland. It is a
+  deterministic coverage heuristic, **not** a precise coastline or national
+  boundary; points close to borders or over the sea may be approximate.
+- Use: country-sized grayscale radar rasters, two-channel velocity JPEGs, exact
+  server timestamps and forecast flags, including forecast frames through +60.
+- No credentials or secrets are included. Requests use HTTPS and validate the
+  fixed host, relative paths, media types, sizes, and raster dimensions.
+- This is an undocumented availability-dependent application feed. Rain Alarm
+  treats coverage, parse, network, or image failures as a reason to use the
+  open provider for that screen or worker session and explains the fallback.
+
+The renderer is a clean-room implementation based on observable inputs and the
+recovered mathematical behaviour only. For output pixel `p` and fraction `t`:
+
+```text
+v = (velocityRG * 2 - 1) * areaVelocityScale * pixelSize
+from = frameA(p - v*t)
+to = frameB(p + v*(1-t))
+output = mix(from, to, t)
+```
+
+Regional JPEGs are decoded as ARGB_8888 so the full eight-bit red/intensity
+channel reaches the one-channel GLES2 texture. No spatial blur is applied on
+upload. GLES2 uses one GL_LINEAR fetch per radar frame, retaining the symmetric
+velocity-compensated A/B interpolation and exact power-of-two backing UV map.
+On devices reporting fragment `highp`, texture coordinates and intermediate
+warp math use it; GLES2 `mediump` remains a compile/capability fallback and
+may show more subpixel banding at close zoom.
+The earlier four-fetch cubic reconstruction and radius-three upload blur were
+removed: they cost time or changed precipitation coverage without adding source
+detail. The retired app's documented 20 intermediate subframes describe
+temporal interpolation, not a proven spatial enhancement algorithm.
+
+The code-native palette retains the retired app's observed cyan, blue and dark
+extreme colour bands, but intentionally adapts regional *low-end opacity* to
+the dark basemap. Values through 52/255 are transparent; 52–83/255 ease from
+clear to the original 83/255 alpha instead of jumping from clear to 38/255
+alpha at raw 63. This softens source-cell outlines without blurring or creating
+large low-value JPEG haze. The radar surface opacity is 0.9. RainViewer PNG
+alpha has a different encoding and retains its r13 transfer unchanged:
+values below 0.12 remain invisible. Now/alerts retain the regional 63/255 and
+open 0.12 wet thresholds; faint regional map traces below 63 are not classified
+as rain at the selected point.
+
+This is a clean-room visual emulation of observed output, not a claim to have
+recovered the proprietary spatial algorithm or higher meteorological resolution.
+The fixed UK raster is 583×767; close zoom still magnifies source pixels. The
+static failure fallback uses the same LUT but a half-size emergency decode to
+bound memory. Cold scrubbing into an uncached frame still requires JPEG decode
+and upload; revisiting a resident frame does not. Velocity bytes and the
+three-pair residency cap are unchanged.
+
+Regional Now and notifications prefer a separate MeteoGroup **area rain chart**.
+Selected coordinates resolve to an AREA_ID, then that area's provider
+average/minimum/maximum profile is sampled at actual wall-clock time. This is
+a location-selected area forecast, **not** an exact marker-pixel reading; its
+min/max values are provider bands, not a raster neighbourhood. The source-age
+badge uses the chart's `creationdtg`. UTC `startdtg` and the provider interval
+define the available horizon. Data older than 10 minutes, missing current
+coverage, or malformed arrays are rejected. The chart uses its original
+25%-of-domain rain threshold and threshold-subtracted graph baseline. It may
+differ from the map's raster at a pin because they are separate products.
+The AREA_ID lookup is cached for exact selected coordinates (not rounded to a
+neighbourhood), so crossing a warning-zone boundary cannot reuse a nearby
+place's cached ID. The nominal chart domain is a display scale: small negative
+raw provider samples are accepted and clamped when normalized, not rejected.
+
+If area lookup or chart retrieval fails, Now and alerts fall back to the compact
+raster point forecast. That fallback anchors at actual wall-clock time, not the
+latest observation, and its source-age badge uses the latest observation. Its
+selected-place average uses the exact projected marker with the map's bilinear
+first/last-texel-centre layout and symmetric local-velocity frame warp. A small
+source-space patch per frame (at most 27×27 pixels with current regional scales)
+supports minute sampling without a full regional grid. Surrounding 5×5
+minimum/maximum values form only the fallback chart neighbourhood envelope,
+not evidence that the marker itself is wet.
+Point-only Now/alert analysis downloads the latest observation velocity and
+each advertised forecast-frame velocity, because each interval uses its left
+frame's vector. It decodes only a tiny selected-place region and immediately
+recycles the bitmap; unlike the map session it retains no compressed velocity
+images or full-frame grids. A frame without a velocity file uses the renderer's
+neutral-motion fallback for that interval.
+The regional wet threshold is 63/255 normalized intensity, above the faint
+trace portion of the display ramp. RainViewer point forecasts have a separate
+colour-key-derived threshold; PNG alpha alone is not rain strength. If
+the provider forecast ends before
+now+60, the minute series ends at the last covered minute and is explicitly
+partial; missing minutes are never padded as dry, and no-rain alerts are
+unknown rather than clear. Stale observations or missing current coverage are
+unavailable. These point estimates remain bounded by the regional source's
+roughly 2 km pixels and should not be mistaken for a street-level gauge.
+The raster-fallback Now chart uses a separate, monotonic presentation scale: the source-specific
+wet boundary sits on its baseline, pale regional cyan and roughly 15 dBZ open
+radar sit low in Light, and progressively stronger returns span Medium and
+Severe. The chart line and uncertainty envelope share this mapping; rain
+classification, ETA, alert decisions, the map shader, and compass colours keep
+the original provider values. This is a visual severity aid, not rainfall rate.
+Radar opens paused at wall-clock time when its cached forecast covers that
+time; otherwise it opens at the latest observation and labels that time.
+
+Radar JPEGs are 24-bit grayscale. Live velocity samples contain motion in red
+and green while blue is effectively zero. R/G are therefore uploaded as an
+OpenGL ES luminance/alpha texture, making `.xw` sampling yield the two decoded
+channels. This is an explicit format inference, protected by codec and live
+dimension tests; unexpected files fail closed to the open provider.
+
+Each area's pixel size, offset, dimensions, scale and projection parameters are
+expressed as new Kotlin configuration. Proj4J transforms a cached 25×25 radar
+mesh into WGS84; the map projects those vertices at camera updates. An isolated
+bounds fallback exists for projection failures, though all five production
+configurations pass the native-projection mesh tests.
+
+## Open-Meteo
+
+- Endpoint: `https://api.open-meteo.com/v1/forecast`
+- Use: one selected-coordinate `current` response for temperature (°C), sea-level
+  pressure (hPa), relative humidity (%), UV index, daylight, and 10 m wind,
+  plus `daily=sunrise,sunset&timezone=auto&timeformat=unixtime`. Solar event
+  instants are formatted in the returned IANA timezone for the selected
+  place's **current local date**, including DST changes. Missing events show
+  unavailable; a local-day change refreshes the point response. These facts
+  support Now indicators and the Fog night gate; they do not alter radar
+  prediction or alerts. A separate request only while Wind is selected carries
+  25 distinct coordinates spanning the settled **visible map viewport** with
+  a small margin. Arrows are georeferenced and point downwind; one selected-
+  place chip reports speed and meteorological *from* direction. Map arrows do
+  not repeat numeric speed labels.
+- The point request is place-aware, cached for 15 minutes and rejected when
+  its model valid time is older than 60 minutes. Day/night status expires after
+  30 minutes. Wind grids are cached by quantized viewport for 15 minutes,
+  with at most eight process-scoped grid entries. A request occurs only after
+  a meaningful settled camera change or explicit refresh, never per gesture
+  frame or radar animation tick. Stale in-flight results are ignored on a
+  later viewport selection. No current-location coordinates are persisted.
+- `current` is based on 15-minute weather-model output, **not** a measured
+  station observation. Outside supported 15-minute model regions, values may
+  reflect interpolated coarser steps. The existing Open-Meteo precipitation
+  fallback remains separate. Public API use is subject to Open-Meteo's
+  noncommercial and attribution terms; review them before distribution.
+
+References:
+
+- https://open-meteo.com/en/docs
+- https://open-meteo.com/en/terms
+
+## Optional EUMETSAT satellite layers
+
+- Public WMS: `https://view.eumetsat.int/geoserver/wms`.
+- **Lightning** uses `mtg_fd:li_afa`: accumulated satellite optical **flash
+  areas**, not individual lightning locations or verified cloud-to-ground
+  strikes. The 5-minute product's latest time is parsed from GetCapabilities.
+- **Fog** uses `mtg_fd:rgb_fog`: nighttime fog **or low cloud** RGB, not a
+  confirmed surface-fog diagnosis. It is displayed only when a fresh selected-
+  place Open-Meteo daylight indicator says night; daylight or unknown daylight
+  status yields an explicit unavailable message.
+- WMS imagery is pinned to one advertised valid time for all tiles, using a
+  MapLibre `TileSet` raster source with EPSG:3857 BBOX substitution. Tiles are
+  capped at source zoom 8 and overscaled afterward. A small image probe checks
+  content type and PNG signature before showing a new layer; map tile failures
+  also surface an error. Source loading is optional and independent of the
+  radar GLES overlay. Satellite layers are withheld if the advertised time is
+  older than 30 minutes for flash areas or 60 minutes for fog, or if the
+  selected place is outside the reported coverage bounds. Empty transparent
+  flash imagery is **not** evidence that no lightning occurred.
+- EUMETSAT attribution is shown in the Radar status and TileSet metadata;
+  core product data are subject to CC BY 4.0. WMS tile substitution on Android
+  still needs a physical-device visual check on each supported MapLibre/API
+  combination. This implementation does **not** ingest the separate per-flash
+  NetCDF collection, which requires registered access/token and parsing.
+
+References:
+
+- https://user.eumetsat.int/resources/user-guides/eumet-view-user-guide
+- https://user.eumetsat.int/resources/user-guides/eumetview-image-download-by-using-fixed-urls-guide
+- https://user.eumetsat.int/resources/user-guides/data-registration-and-licensing
+- https://user.eumetsat.int/catalogue/EO%3AEUM%3ADAT%3A0691
+- https://user.eumetsat.int/catalogue/EO%3AEUM%3ADAT%3A1023
+- https://maplibre.org/maplibre-style-spec/sources/
+
+## RainViewer
+
+- Endpoint: `https://api.rainviewer.com/public/weather-maps.json`
+- Use: past radar frames only. Rain Alarm does not present these frames as a
+  forecast.
+- Images: coordinate-centred 512-pixel PNGs requested at provider zoom 5 for
+  regional coverage and zoom 7 for local detail. Scheme ID `2` is Universal
+  Blue. The map continues to use PNG alpha for motion and the Rain Alarm visual
+  LUT; its renderer is unchanged. For Now and alerts, a separate current-frame
+  point grid inverts sparse anchors from RainViewer's published Universal Blue
+  colour key into an approximate reflectivity-derived display severity. Alpha
+  modulates spatial coverage only: it can already be fully opaque at light
+  15 dBZ, so it must not be interpreted as severe rain. This scale is a
+  qualitative Light/Medium/Severe aid, not measured mm/h, and neither RGB
+  smoothing nor radar reflectivity determines ground rainfall precisely.
+- Current public contract: approximately two hours of past data in ten-minute
+  steps, maximum zoom 7, Universal Blue only, and a 100 requests/IP/minute rate
+  limit. Radar fetches the manifest once per visible place session, normally
+  downloads two images for each of roughly 13 returned observations with
+  concurrency capped at three, and retains those decoded images only for that
+  composable session. Map pan, zoom, and recentering do not fetch more radar
+  data. The regional z5 tier spans four times the projected width and height of
+  the z7 image. If local-detail loading fails, the required regional tier stays
+  usable and the UI labels that degraded state. Background alerts fetch five
+  recent frames at z5 for motion plus z7 for current-location sampling.
+- Constraint: this public service is best-effort and is intended for personal,
+  educational, or community projects. Reconfirm terms before distribution or
+  material traffic.
+
+References:
+
+- https://www.rainviewer.com/api/weather-maps-api.html
+- https://www.rainviewer.com/api/color-schemes.html
+- https://www.rainviewer.com/files/rainviewer_api_colors_table.csv
+- https://www.rainviewer.com/api/map-tiles.html
+
+## Client-side motion estimate
+
+RainViewer supplies observations only. Rain Alarm compares each adjacent pair
+of downsampled regional and detail intensity masks using bounded local block
+matching. Sparse/ambiguous blocks are rejected, vector outliers are removed,
+and accepted neighbours are median-smoothed into a cached 8×8 velocity field.
+Each interval field drives the same GLES symmetric A/B warp as the regional
+provider; rejected pairs crossfade without a jump. A median aggregate of recent
+reliable fields advects the latest fixed mosaic for up to 60 minutes. Analysis,
+smoothing and texture encoding happen once on session load, never on an
+animation tick. MapLibre remains only the basemap and interaction surface.
+This interpolation and extrapolation are entirely client-side; RainViewer
+supplies neither motion vectors nor future frames.
+
+The radar surface uses a GLES 2 shader contract validated before compilation.
+Session binding and `TextureView` surface delivery may occur in either order;
+the renderer gates initialization until both exist, schedules an explicit first
+frame, and recreates EGL resources after surface loss. Provider selection,
+session creation, EGL/shader/texture initialization, and draw failures are
+logged under `RainRadarProvider` and `RainRadarRenderer`. Display failures are
+also shown in the radar UI instead of leaving a silent transparent surface.
+
+Regional screen sessions retain bounded compressed JPEG data rather than a
+decoded bitmap set (4 MiB per resource, 64 MiB per session). Transfers run two
+at a time in current/forecast/history priority order while the timeline remains
+chronological. From its first draw, the GL renderer keeps at most three
+radar/velocity frame pairs (six textures), or two pairs after a prior interrupted
+renderer stage. It uploads only the current frame for the first draw, decodes
+adjacent pairs lazily during slider use, and evicts old textures before allocating
+replacements. There is no full-residency warm-up path.
+
+The GL thread decodes only one radar or velocity bitmap at a time and recycles it
+in `finally`. Regional radar uses one-channel luminance and velocity uses
+two-channel luminance/alpha, both converted one row at a time. Regional rasters
+are conservatively stored in power-of-two backing textures with exact adjusted
+UV coordinates for GLES 2 driver compatibility. EGL recreation rebuilds lazily
+from the same compressed session bytes and never causes a network reload. A
+local interrupted-stage marker enables the safer two-pair mode on the next
+session. A caught renderer failure is shown in the UI and switches to a lazy,
+downsampled static CPU display of the current regional frame rather than leaving
+a blank radar. Background Now/alert analysis decodes only 5×5 selected-point
+regions. It retains compact minimum/average/maximum intensity values for each
+provider timestamp and one current local velocity sample for direction; it
+retains no render bitmap, full intensity grid, or velocity image.
+
+The Now screen and alert worker consume the same normalized minute-series
+contract from Now through the available horizon, up to +60 minutes. The
+MeteoGroup area chart is interpolated from its provider profile; if unavailable,
+regional raster values are interpolated from exact forecast timestamps.
+RainViewer values sample the confidence-gated dense-flow advection field once
+per minute. The area chart and regional raster use a 0.25 normalized rain
+threshold (63/255 for the raster); RainViewer has its own calibrated threshold.
+Rain ends at the first later minute below the active threshold, and unavailable local motion is
+reported honestly rather than replaced with an invented bearing or arrival.
+The compass shows the source bearing (the opposite of precipitation travel)
+with geographic North fixed upward. Its chart carries the compact neighbourhood
+minimum/average/maximum envelope.
+
+This is a local steady-flow extrapolation, not a meteorological forecast. It
+cannot model storm growth or decay, future wind changes, orographic effects, radar
+coverage gaps, attenuation, or palette changes. Low-confidence, sparse,
+blank, noisy, stationary, or implausibly fast estimates are rejected. When no
+reliable regional motion exists, the radar timeline ends at Now rather than
+showing a frozen future segment. When RainViewer is selected or used as
+fallback, the Now screen reports that radar estimate and its confidence; if the
+field is rejected, the direction and future timeline are unavailable.
+
+## Alerts
+
+The optional alert is disabled by default and follows the active selected saved
+or virtual live place. WorkManager checks approximately
+every 15 minutes (the Android periodic minimum); execution is inexact and may
+be deferred by Doze. Regional checks prefer the same fresh, location-selected
+area profile as Now, falling back to projected selected-point raster sampling.
+Open checks use the
+confidence-gated motion estimate and treat unavailable analysis as unknown.
+Android 13 and newer also require the
+user-granted notification runtime permission. No background-location
+permission, exact alarm, foreground service, or test notification is used.
+
+Android references:
+
+- https://developer.android.com/develop/background-work/background-tasks/persistent/getting-started/define-work
+- https://developer.android.com/develop/ui/views/notifications/notification-permission
+
+## Map and basemap
+
+- Map renderer: MapLibre Native for Android.
+- Basemap style: OpenFreeMap dark style.
+- Map data: OpenStreetMap contributors.
+- Attribution remains visible over the radar map.
+
+References:
+
+- https://maplibre.org/maplibre-native/android/api/
+- https://openfreemap.org/
+- https://www.openstreetmap.org/copyright
+
+## Operational posture
+
+Radar imagery, area lookup, Open-Meteo and RainViewer use HTTPS. The legacy
+area chart host's HTTPS certificate fails hostname verification, so only
+`android.weatherpro.weatherservice.meteogroup.de` has a narrow Android
+cleartext exception; its AREA_ID request uses HTTP without disabling TLS
+verification elsewhere. Lookup sends selected latitude/longitude, while the
+chart request sends only the returned AREA_ID. Neither includes a device or
+account identifier. Avoid using these legacy endpoints for sensitive location
+data; the chart's ongoing availability is not guaranteed. There are no embedded
+service credentials. Provider adapters are separate from mapping
+and analysis logic so a self-hosted or regional provider can replace them
+without changing the rain-status contract.
