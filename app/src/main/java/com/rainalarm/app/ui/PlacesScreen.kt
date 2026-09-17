@@ -5,8 +5,11 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -14,18 +17,22 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.animation.core.spring
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.DragHandle
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -34,33 +41,45 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.rainalarm.app.LocationUiState
 import com.rainalarm.app.data.PlaceCollection
+import com.rainalarm.app.data.PlaceCollectionRules
 import com.rainalarm.app.data.OpenMeteoGeocoder
 import com.rainalarm.app.data.PlaceSearchResult
 import com.rainalarm.app.data.SavedPlace
 import com.rainalarm.app.data.CURRENT_LOCATION_ID
 import java.util.Locale
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 private val PlacesSurface: Color @Composable get() = LocalRainAlarmPalette.current.surface
 private val PlacesBackground: Color @Composable get() = LocalRainAlarmPalette.current.background
@@ -84,6 +103,8 @@ fun PlacesScreen(
     selectPlace: (String) -> Unit,
     deletePlace: (String) -> Unit,
     setPinned: (String, Boolean) -> Unit,
+    renamePlace: (String, String) -> Unit,
+    reorderPlaces: (List<String>) -> Unit,
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -118,10 +139,70 @@ fun PlacesScreen(
         }
     }
 
-    Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState())
-            .padding(horizontal = 18.dp, vertical = 14.dp),
+    val listState = rememberLazyListState()
+    val displayedPlaces = remember { mutableStateListOf<SavedPlace>().also { it.addAll(collection.places) } }
+    var draggingId by remember { mutableStateOf<String?>(null) }
+    var dragOffset by remember { mutableFloatStateOf(0f) }
+    var pointerY by remember { mutableFloatStateOf(0f) }
+    var pendingOrder by remember { mutableStateOf<List<String>?>(null) }
+    var renamingId by remember { mutableStateOf<String?>(null) }
+    var editedName by remember { mutableStateOf("") }
+    val density = LocalDensity.current
+
+    LaunchedEffect(collection.places, draggingId, pendingOrder) {
+        if (draggingId != null) return@LaunchedEffect
+        val incomingIds = collection.places.map { it.id }
+        val optimistic = pendingOrder
+        val next = if (optimistic != null && incomingIds.toSet() == optimistic.toSet())
+            PlaceCollectionRules.reorder(collection, optimistic).places else collection.places
+        displayedPlaces.clear()
+        displayedPlaces.addAll(next)
+        if (optimistic == incomingIds || optimistic?.toSet() != incomingIds.toSet()) pendingOrder = null
+    }
+
+    fun moveDraggedToPointer() {
+        val id = draggingId ?: return
+        val info = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == id } ?: return
+        val centre = info.offset + dragOffset + info.size / 2f
+        val target = listState.layoutInfo.visibleItemsInfo.firstOrNull { item ->
+            item.key != id && displayedPlaces.any { it.id == item.key } &&
+                centre >= item.offset && centre < item.offset + item.size
+        } ?: return
+        val from = displayedPlaces.indexOfFirst { it.id == id }
+        val to = displayedPlaces.indexOfFirst { it.id == target.key }
+        if (from >= 0 && to >= 0 && from != to) {
+            val moved = displayedPlaces.removeAt(from)
+            displayedPlaces.add(to, moved)
+            dragOffset += info.offset - target.offset
+        }
+    }
+
+    LaunchedEffect(draggingId) {
+        while (isActive && draggingId != null) {
+            val layout = listState.layoutInfo
+            val edge = with(density) { 64.dp.toPx() }
+            val step = with(density) { 10.dp.toPx() }
+            val scroll = when {
+                pointerY < layout.viewportStartOffset + edge -> -step
+                pointerY > layout.viewportEndOffset - edge -> step
+                else -> 0f
+            }
+            if (scroll != 0f) {
+                val consumed = listState.scrollBy(scroll)
+                dragOffset += consumed
+                moveDraggedToPointer()
+            }
+            delay(16)
+        }
+    }
+
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
     ) {
+        item(key = "places-header") {
+        Column {
         Text(
             "Places",
             style = MaterialTheme.typography.headlineMedium,
@@ -178,16 +259,88 @@ fun PlacesScreen(
             }
         }
         Spacer(Modifier.height(16.dp))
-        collection.places.forEach { place ->
+        Text("Saved places · hold and drag to reorder", color = PlacesSecondary, fontSize = 12.sp)
+        Spacer(Modifier.height(8.dp))
+        }
+        }
+        items(displayedPlaces, key = { it.id }) { place ->
+            val isDragging = draggingId == place.id
             PlaceRow(
                 place = place,
                 selected = place.id == collection.selectedId,
                 onSelect = { selectPlace(place.id) },
                 onDelete = { deletePlace(place.id) },
                 onPin = { setPinned(place.id, !place.pinned) },
+                onRename = { renamingId = place.id; editedName = place.name },
+                modifier = Modifier
+                    .animateItem(placementSpec = if (isDragging) null else spring())
+                    .zIndex(if (isDragging) 1f else 0f)
+                    .graphicsLayer {
+                        translationY = if (isDragging) dragOffset else 0f
+                        shadowElevation = if (isDragging) 14.dp.toPx() else 0f
+                        shape = RoundedCornerShape(18.dp)
+                    }
+                    .semantics {
+                        customActions = listOf(
+                            CustomAccessibilityAction("Move ${place.name} up") {
+                                val from = displayedPlaces.indexOfFirst { it.id == place.id }
+                                if (from <= 0) false else {
+                                    val moved = displayedPlaces.removeAt(from)
+                                    displayedPlaces.add(from - 1, moved)
+                                    pendingOrder = displayedPlaces.map { it.id }
+                                    reorderPlaces(requireNotNull(pendingOrder))
+                                    true
+                                }
+                            },
+                            CustomAccessibilityAction("Move ${place.name} down") {
+                                val from = displayedPlaces.indexOfFirst { it.id == place.id }
+                                if (from < 0 || from >= displayedPlaces.lastIndex) false else {
+                                    val moved = displayedPlaces.removeAt(from)
+                                    displayedPlaces.add(from + 1, moved)
+                                    pendingOrder = displayedPlaces.map { it.id }
+                                    reorderPlaces(requireNotNull(pendingOrder))
+                                    true
+                                }
+                            },
+                        )
+                    }
+                    .pointerInput(place.id) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = { start ->
+                                draggingId = place.id
+                                dragOffset = 0f
+                                pointerY = (listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == place.id }?.offset
+                                    ?: 0) + start.y
+                            },
+                            onDrag = { change, amount ->
+                                change.consume()
+                                dragOffset += amount.y
+                                pointerY = (listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == place.id }?.offset
+                                    ?: 0) + change.position.y
+                                moveDraggedToPointer()
+                            },
+                            onDragEnd = {
+                                val next = displayedPlaces.map { it.id }
+                                draggingId = null
+                                dragOffset = 0f
+                                if (next != collection.places.map { it.id }) {
+                                    pendingOrder = next
+                                    reorderPlaces(next)
+                                }
+                            },
+                            onDragCancel = {
+                                draggingId = null
+                                dragOffset = 0f
+                                displayedPlaces.clear()
+                                displayedPlaces.addAll(collection.places)
+                            },
+                        )
+                    },
             )
             Spacer(Modifier.height(8.dp))
         }
+        item(key = "places-footer") {
+        Column {
         Button(
             onClick = {
                 val granted = ContextCompat.checkSelfPermission(
@@ -240,7 +393,34 @@ fun PlacesScreen(
             "No accounts, ads, analytics, billing, or background location. Saved-place alerts use stored coordinates; live current coordinates stay in memory only.",
             color = PlacesSecondary,
         )
+        }
+        }
     }
+
+    val renaming = collection.places.firstOrNull { it.id == renamingId }
+    if (renaming != null) AlertDialog(
+        onDismissRequest = { renamingId = null },
+        title = { Text("Rename saved place") },
+        text = {
+            OutlinedTextField(
+                value = editedName,
+                onValueChange = { editedName = it },
+                label = { Text("Place name") },
+                singleLine = true,
+                isError = editedName.isNotEmpty() && !PlaceCollectionRules.validName(editedName),
+                supportingText = if (!PlaceCollectionRules.validName(editedName)) {
+                    { Text("Enter 1–60 characters without control characters") }
+                } else null,
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { renamePlace(renaming.id, editedName.trim()); renamingId = null },
+                enabled = PlaceCollectionRules.validName(editedName),
+            ) { Text("Save") }
+        },
+        dismissButton = { TextButton(onClick = { renamingId = null }) { Text("Cancel") } },
+    )
 }
 
 @Composable
@@ -250,19 +430,21 @@ private fun PlaceRow(
     onSelect: () -> Unit,
     onDelete: () -> Unit,
     onPin: () -> Unit,
+    onRename: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Card(
         colors = CardDefaults.cardColors(
             containerColor = if (selected) LocalRainAlarmPalette.current.selection else PlacesSurface,
         ),
         shape = RoundedCornerShape(18.dp),
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onSelect),
+        modifier = modifier.fillMaxWidth().clickable(onClick = onSelect),
     ) {
         Row(
             Modifier.fillMaxWidth().padding(start = 16.dp, top = 10.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(Icons.Default.LocationOn, contentDescription = null, tint = PlacesAccent)
+            Icon(Icons.Default.DragHandle, contentDescription = "Hold and drag ${place.name} to reorder", tint = PlacesAccent)
             Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                 Text(place.name, fontWeight = FontWeight.Bold)
                 Text(
@@ -282,6 +464,9 @@ private fun PlaceRow(
                     if (place.pinned) Icons.Filled.PushPin else Icons.Outlined.PushPin,
                     contentDescription = if (place.pinned) "Unpin ${place.name}" else "Pin ${place.name}",
                 )
+            }
+            IconButton(onClick = onRename) {
+                Icon(Icons.Default.Edit, contentDescription = "Rename ${place.name}")
             }
             IconButton(onClick = onDelete) {
                 Icon(Icons.Default.Delete, contentDescription = "Delete ${place.name}")

@@ -12,6 +12,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -28,12 +29,16 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selectableGroup
 import androidx.compose.ui.semantics.semantics
@@ -42,6 +47,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rainalarm.app.data.RadarProviderKind
 import com.rainalarm.app.data.RadarPlaybackSpeed
+import com.rainalarm.app.data.RadarMapLayer
+import com.rainalarm.app.data.WindArrowSizePreference
+import com.rainalarm.app.data.NowCardAppearance
 import com.rainalarm.app.data.PlaceCollection
 import com.rainalarm.app.data.CURRENT_LOCATION_ID
 import com.rainalarm.app.data.AppearanceMode
@@ -63,6 +71,13 @@ fun SettingsScreen(
     selectAppAppearance: (AppearanceMode) -> Unit,
     mapAppearance: AppearanceMode,
     selectMapAppearance: (AppearanceMode) -> Unit,
+    compassAppearance: NowCardAppearance,
+    selectCompassAppearance: (NowCardAppearance) -> Unit,
+    graphAppearance: NowCardAppearance,
+    selectGraphAppearance: (NowCardAppearance) -> Unit,
+    mapLayer: RadarMapLayer,
+    windArrowScale: Float,
+    selectWindArrowScale: (Float) -> Unit,
     savedPlaces: PlaceCollection,
     defaultStartupId: String,
     setDefaultStartupId: (String) -> Unit,
@@ -194,6 +209,26 @@ fun SettingsScreen(
                 }
             }
         }
+        if (mapLayer == RadarMapLayer.WIND) {
+            Spacer(Modifier.height(14.dp))
+            Card(colors = CardDefaults.cardColors(containerColor = SettingsSurface),
+                shape = RoundedCornerShape(22.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Wind arrow size", fontWeight = FontWeight.SemiBold)
+                    var previewScale by remember(windArrowScale) { mutableStateOf(windArrowScale) }
+                    WindArrowPreview(previewScale)
+                    Slider(
+                        value = previewScale,
+                        onValueChange = { previewScale = it },
+                        onValueChangeFinished = { selectWindArrowScale(previewScale) },
+                        valueRange = WindArrowSizePreference.MIN..WindArrowSizePreference.MAX,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text("${String.format(java.util.Locale.ROOT, "%.1f", previewScale)}×",
+                        color = SettingsSecondary, fontSize = 13.sp)
+                }
+            }
+        }
         Spacer(Modifier.height(24.dp))
         Text("APPEARANCE", color = SettingsAccent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(10.dp))
@@ -202,6 +237,13 @@ fun SettingsScreen(
             AppearanceChoice("App", appAppearance, selectAppAppearance)
             HorizontalDivider(color = SettingsBorder)
             AppearanceChoice("Map", mapAppearance, selectMapAppearance)
+        }
+        Spacer(Modifier.height(12.dp))
+        Card(colors = CardDefaults.cardColors(containerColor = SettingsSurface),
+            shape = RoundedCornerShape(22.dp), modifier = Modifier.fillMaxWidth()) {
+            NowCardAppearanceChoice("Compass card", compassAppearance, selectCompassAppearance)
+            HorizontalDivider(color = SettingsBorder)
+            NowCardAppearanceChoice("Graph card", graphAppearance, selectGraphAppearance)
         }
         Text("App and map can follow the device theme independently. Dark is the default.",
             color = SettingsSecondary, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
@@ -230,6 +272,46 @@ fun SettingsScreen(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun NowCardAppearanceChoice(title: String, selected: NowCardAppearance,
+    onSelect: (NowCardAppearance) -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+        Text(title, fontWeight = FontWeight.SemiBold)
+        Row(Modifier.fillMaxWidth(),
+            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(5.dp)) {
+            NowCardAppearance.entries.forEach { mode ->
+                androidx.compose.material3.FilterChip(
+                    selected = selected == mode,
+                    onClick = { onSelect(mode) },
+                    label = { Text(mode.label, fontSize = 11.sp, maxLines = 1) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun WindArrowPreview(scale: Float) {
+    val colour = SettingsAccent
+    Canvas(Modifier.fillMaxWidth().height(90.dp).semantics {
+        contentDescription = "Wind arrow size preview"
+    }) {
+        val centre = Offset(size.width / 2f, size.height / 2f)
+        val length = WindArrowGeometry.length(scale)
+        val back = WindArrowGeometry.headBack(scale)
+        val half = WindArrowGeometry.headHalfWidth(scale)
+        val start = Offset(centre.x, centre.y + length / 2f)
+        val end = Offset(centre.x, centre.y - length / 2f)
+        val stroke = 3.5f * scale
+        drawLine(colour, start, end, strokeWidth = stroke, cap = StrokeCap.Round)
+        drawLine(colour, end, Offset(end.x - half, end.y + back), strokeWidth = stroke,
+            cap = StrokeCap.Round)
+        drawLine(colour, end, Offset(end.x + half, end.y + back), strokeWidth = stroke,
+            cap = StrokeCap.Round)
     }
 }
 

@@ -88,12 +88,16 @@ private fun applySatelliteLayer(style: Style, satellite: EumetLayerMetadata?) {
             if (satellite.choice == RadarMapLayer.FOG) 0.38f else 0.7f)))
 }
 
-/** Twenty-five genuinely separate model points; arrows point downwind. */
+/** Twenty-five distinct requested map positions; the model may reuse a coarse weather cell. */
 internal object WindArrowGeometry {
     const val lengthPx = 44f
     const val headBackPx = 16f
     const val headHalfWidthPx = 12f
     const val cullMarginPx = 60f
+    fun length(scale: Float): Float = lengthPx * scale
+    fun headBack(scale: Float): Float = headBackPx * scale
+    fun headHalfWidth(scale: Float): Float = headHalfWidthPx * scale
+    fun cullMargin(scale: Float): Float = cullMarginPx * scale
 }
 
 private class WindFieldView(context: android.content.Context) : View(context) {
@@ -105,12 +109,16 @@ private class WindFieldView(context: android.content.Context) : View(context) {
     }
     private var map: MapLibreMap? = null
     private var grid: WindGrid? = null
+    private var arrowScale = 1f
     private var locations: List<LatLng> = emptyList()
     init { isClickable = false; importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO }
     fun bind(ready: MapLibreMap) { map = ready; invalidate() }
-    fun update(value: WindGrid?) { if (grid !== value) {
+    fun update(value: WindGrid?, scale: Float) { if (grid !== value || arrowScale != scale) {
         grid = value
-        locations = value?.points?.map { LatLng(it.latitude, it.longitude) }.orEmpty()
+        arrowScale = scale
+        arrow.strokeWidth = 3.5f * scale
+        shadow.strokeWidth = 7.5f * scale
+        locations = value?.renderCoordinates()?.map { LatLng(it.first, it.second) }.orEmpty()
         invalidate()
     } }
     fun cameraMoved() = invalidate()
@@ -121,13 +129,13 @@ private class WindFieldView(context: android.content.Context) : View(context) {
             sample.windSpeedKmh ?: continue
             val from = sample.windFromDegrees ?: continue
             val screen = ready.projection.toScreenLocation(locations[index])
-            val margin = WindArrowGeometry.cullMarginPx
+            val margin = WindArrowGeometry.cullMargin(arrowScale)
             if (screen.x < -margin || screen.x > width + margin ||
                 screen.y < -margin || screen.y > height + margin) continue
             val radians = Math.toRadians((from + 180.0) % 360.0)
             val dx = sin(radians).toFloat()
             val dy = -cos(radians).toFloat()
-            val length = WindArrowGeometry.lengthPx
+            val length = WindArrowGeometry.length(arrowScale)
             val x0 = screen.x - dx * length / 2
             val y0 = screen.y - dy * length / 2
             val x1 = screen.x + dx * length / 2
@@ -139,8 +147,8 @@ private class WindFieldView(context: android.content.Context) : View(context) {
     private fun drawArrow(canvas: Canvas, x0: Float, y0: Float, x1: Float, y1: Float,
         dx: Float, dy: Float, paint: Paint) {
         canvas.drawLine(x0, y0, x1, y1, paint)
-        val back = WindArrowGeometry.headBackPx
-        val halfWidth = WindArrowGeometry.headHalfWidthPx
+        val back = WindArrowGeometry.headBack(arrowScale)
+        val halfWidth = WindArrowGeometry.headHalfWidth(arrowScale)
         canvas.drawLine(x1, y1, x1 - dx * back - dy * halfWidth,
             y1 - dy * back + dx * halfWidth, paint)
         canvas.drawLine(x1, y1, x1 - dx * back + dy * halfWidth,
@@ -555,6 +563,7 @@ fun RadarImageMap(
     darkMap: Boolean = true,
     cameraMemory: RadarCameraMemory,
     windGrid: WindGrid? = null,
+    windArrowScale: Float = 1f,
     satelliteLayer: EumetLayerMetadata? = null,
     onLayerError: (String) -> Unit = {},
     onWindViewportChanged: (WindViewport) -> Unit = {},
@@ -572,6 +581,7 @@ fun RadarImageMap(
             darkMap,
             cameraMemory,
             windGrid,
+            windArrowScale,
             satelliteLayer,
             onLayerError,
             onWindViewportChanged,
@@ -592,6 +602,7 @@ private fun RadarImageMapInstance(
     darkMap: Boolean,
     cameraMemory: RadarCameraMemory,
     windGrid: WindGrid?,
+    windArrowScale: Float,
     satelliteLayer: EumetLayerMetadata?,
     onLayerError: (String) -> Unit,
     onWindViewportChanged: (WindViewport) -> Unit,
@@ -749,7 +760,7 @@ private fun RadarImageMapInstance(
         update = {
             overlay.setState(bracket, isPlaying, mapPlace)
             staticFallback?.setPlace(mapPlace)
-            windView.update(windGrid)
+            windView.update(windGrid, windArrowScale)
         },
         modifier = modifier,
     )

@@ -80,6 +80,7 @@ import com.rainalarm.app.data.WindViewport
 import com.rainalarm.app.data.EumetLayerMetadata
 import com.rainalarm.app.data.EumetViewRepository
 import com.rainalarm.app.data.WeatherLayerRepository
+import com.rainalarm.app.data.CurrentLocationSelectionPolicy
 import com.rainalarm.app.domain.RadarCameraMemory
 import com.rainalarm.app.domain.RadarPlaybackClock
 import com.rainalarm.app.domain.RadarEntryClock
@@ -146,6 +147,7 @@ fun LiveRadarScreen(
     cameraMemory: RadarCameraMemory,
     selectPlace: (String) -> Unit,
     mapLayer: RadarMapLayer,
+    windArrowScale: Float,
     selectMapLayer: (RadarMapLayer) -> Unit,
     currentWeather: CurrentWeather?,
     refreshPointWeather: () -> Unit,
@@ -336,6 +338,7 @@ fun LiveRadarScreen(
                 onCurrentLocation = { requestCurrentLocation(true) },
                 cameraMemory = cameraMemory,
                 mapLayer = mapLayer,
+                windArrowScale = windArrowScale,
                 selectMapLayer = selectMapLayer,
                 ancillaryStatus = visibleAncillary,
                 currentWeather = currentWeather,
@@ -351,7 +354,11 @@ fun LiveRadarScreen(
                 Column(Modifier.padding(20.dp)) {
                     Text("Radar unavailable", color = Danger, fontWeight = FontWeight.Bold)
                     Text(error!!, color = Secondary, modifier = Modifier.padding(vertical = 10.dp))
-                    Button(onClick = { reload++ }) { Text("Try again") }
+                    Button(onClick = {
+                        if (CurrentLocationSelectionPolicy.needsFixRetry(selectedPlaceId, place != null))
+                            requestCurrentLocation(false)
+                        else reload++
+                    }) { Text("Try again") }
                 }
             }
             else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -415,6 +422,7 @@ private fun ColumnScope.RadarPlayer(
     onCurrentLocation: () -> Unit,
     cameraMemory: RadarCameraMemory,
     mapLayer: RadarMapLayer,
+    windArrowScale: Float,
     selectMapLayer: (RadarMapLayer) -> Unit,
     ancillaryStatus: AncillaryStatus,
     currentWeather: CurrentWeather?,
@@ -512,6 +520,7 @@ private fun ColumnScope.RadarPlayer(
                 onRendererStatus = { rendererStatus = it },
                 darkMap = darkMap,
                 windGrid = (ancillaryStatus as? AncillaryStatus.Wind)?.grid,
+                windArrowScale = windArrowScale,
                 satelliteLayer = (ancillaryStatus as? AncillaryStatus.Satellite)?.metadata,
                 onLayerError = onLayerError,
                 onWindViewportChanged = onWindViewportChanged,

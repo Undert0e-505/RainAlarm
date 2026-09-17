@@ -5,6 +5,7 @@ import com.rainalarm.app.data.RadarProviderPreference
 import com.rainalarm.app.data.RadarPlaybackSpeed
 import com.rainalarm.app.data.RadarPlaybackSpeedPreference
 import com.rainalarm.app.data.AppearanceMode
+import com.rainalarm.app.data.NowCardAppearance
 import com.rainalarm.app.data.StartupPermissionPolicy
 import com.rainalarm.app.data.StartupPermissionStep
 import com.rainalarm.app.ui.RadarMapAppearance
@@ -60,5 +61,17 @@ class NavigationAndSettingsTest {
         assertTrue(!AppearanceMode.LIGHT.isDark(true))
         assertEquals("https://tiles.openfreemap.org/styles/dark", RadarMapAppearance.styleUrl(true))
         assertEquals("https://tiles.openfreemap.org/styles/liberty", RadarMapAppearance.styleUrl(false))
+    }
+
+    @Test fun `compass and graph card preferences independently follow app by default`() {
+        assertEquals(NowCardAppearance.FOLLOW_APP, NowCardAppearance.decode(null))
+        assertEquals(NowCardAppearance.FOLLOW_APP, NowCardAppearance.decode("unknown"))
+        NowCardAppearance.entries.forEach { mode ->
+            assertEquals(mode, NowCardAppearance.decode(mode.name))
+        }
+        assertTrue(NowCardAppearance.FOLLOW_APP.isDark(true))
+        assertTrue(!NowCardAppearance.FOLLOW_APP.isDark(false))
+        assertTrue(!NowCardAppearance.LIGHT.isDark(true))
+        assertTrue(NowCardAppearance.DARK.isDark(false))
     }
 }

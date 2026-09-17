@@ -81,10 +81,36 @@ class NowSourceClockTest {
         assertTrue(ui.contains("Modifier.align(Alignment.BottomCenter).fillMaxWidth()"))
         assertTrue(ui.contains("Modifier.align(Alignment.TopCenter).size(diameter)"))
         assertTrue(ui.contains("val footerDirection = when"))
-        assertTrue(ui.contains(".height(NowWeatherReadoutPolicy.directionLineHeightDp.dp)"))
+        assertTrue(ui.contains(".heightIn(min = NowWeatherReadoutPolicy.directionHeightDp(fontScale, stackedReadouts).dp)"))
         assertTrue(!ui.contains("Modifier.fillMaxWidth().height(22.dp)"))
         assertTrue(ui.contains("Arrangement.SpaceBetween"))
         assertTrue(!ui.contains("Modifier.weight(1.45f)"))
+    }
+
+    @Test fun `scaled direction and weather footer reserve actual glyph height on short phones`() {
+        val baseRow = NowWeatherReadoutPolicy.rowMinimumHeightDp(10, 1f)
+        val baseDirection = NowWeatherReadoutPolicy.directionHeightDp(1f, false)
+        assertEquals(13, baseRow)
+        assertEquals(16, baseDirection)
+        for ((width, height, scale) in listOf(
+            Triple(350, 620, 1.3f), Triple(320, 580, 1.4f), Triple(320, 580, 1.5f),
+        )) {
+            val layout = NowLayoutPolicy.measure(width, height, scale)
+            val bodyWidth = width - layout.horizontalPaddingDp * 2 - 16
+            val bodyHeight = layout.compassHeightDp - NowLayoutPolicy.cardHeaderHeightDp - 8
+            val stacked = NowWeatherReadoutPolicy.stack(bodyWidth, scale)
+            val row = NowWeatherReadoutPolicy.rowMinimumHeightDp(
+                NowWeatherReadoutPolicy.fontSizeSp(bodyWidth, scale), scale)
+            val readouts = NowWeatherReadoutPolicy.footerHeightDp(5, bodyWidth, scale)
+            val direction = NowWeatherReadoutPolicy.directionHeightDp(scale, stacked)
+            assertTrue("row $scale", row >= baseRow)
+            assertTrue("direction $scale", direction > baseDirection)
+            assertTrue("readout budget $scale", readouts >= (if (stacked) 7 else 5) * row)
+            val footer = readouts + if (stacked) direction else 0
+            val dial = NowWeatherReadoutPolicy.dialDiameterDp(bodyWidth, bodyHeight, footer)
+            assertTrue("dial and footer $scale", dial * 0.93f + footer <= bodyHeight + 1f)
+            assertTrue(layout.totalHeightDp <= height)
+        }
     }
 
     @Test

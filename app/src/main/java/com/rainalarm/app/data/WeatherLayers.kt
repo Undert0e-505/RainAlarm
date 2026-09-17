@@ -60,12 +60,12 @@ data class CurrentWeather(
 /** The visible camera bounds, rather than the selected point, define the wind sampling footprint. */
 data class WindViewport(val south: Double, val west: Double, val north: Double, val east: Double) {
     init { require(south.isFinite() && north.isFinite() && west.isFinite() && east.isFinite()) }
-    val latitudeSpan: Double get() = (north - south).coerceIn(0.001, 170.0)
+    val latitudeSpan: Double get() = (north - south).coerceIn(0.0000001, 170.0)
     val longitudeSpan: Double get() = (east - west).let { raw ->
         when {
-            abs(raw) < 0.001 -> 0.001
+            abs(raw) < 0.0000001 -> 0.0000001
             abs(raw) >= 360.0 -> 360.0
-            else -> ((raw + 360.0) % 360.0).coerceAtLeast(0.001)
+            else -> ((raw + 360.0) % 360.0).coerceAtLeast(0.0000001)
         }
     }
 
@@ -95,7 +95,17 @@ data class WindViewport(val south: Double, val west: Double, val north: Double, 
     }
 }
 
-data class WindGrid(val viewportKey: String, val points: List<CurrentWeather>, val fetchedEpochSeconds: Long)
+data class WindGrid(
+    val viewportKey: String,
+    val points: List<CurrentWeather>,
+    val requestedPositions: List<Pair<Double, Double>>,
+    val fetchedEpochSeconds: Long,
+) {
+    init { require(points.size == requestedPositions.size) }
+    // The model may report several requests at the same coarse cell centre. Keep those
+    // source coordinates in each CurrentWeather, but draw at the distinct request sites.
+    fun renderCoordinates(): List<Pair<Double, Double>> = requestedPositions
+}
 
 object OpenMeteoCurrentCodec {
     private val json = Json { ignoreUnknownKeys = true }
@@ -195,7 +205,8 @@ object WeatherLayerRepository {
                 return@withLock grid
         }
         val coordinates = viewport.coordinates()
-        val grid = WindGrid(key, OpenMeteoCurrentCodec.parse(fetch(OpenMeteoCurrentCodec.url(coordinates), 256 * 1024), 25, now), now)
+        val grid = WindGrid(key, OpenMeteoCurrentCodec.parse(fetch(OpenMeteoCurrentCodec.url(coordinates), 256 * 1024), 25, now),
+            coordinates, now)
         require(grid.points.all { it.freshAt(Instant.now().epochSecond) }) { "Wind model is stale" }
         windCache[key] = grid
         while (windCache.size > 8) windCache.remove(windCache.keys.first())

@@ -81,9 +81,22 @@ class PlaceAndGeocoderTest {
     fun `foreground fix policy rejects stale positions and refreshes after material travel`() {
         val now = 1_000_000L
         assertTrue(LiveLocationPolicy.isFresh(now - 60_000, now))
+        assertTrue(LiveLocationPolicy.isImmediatelyUsable(now - 20_000, now))
+        assertFalse(LiveLocationPolicy.isImmediatelyUsable(now - 60_000, now))
         assertFalse(LiveLocationPolicy.isFresh(now - 600_000, now))
         assertFalse(LiveLocationPolicy.materiallyMoved(53.48, -2.24, 53.4801, -2.2401))
         assertTrue(LiveLocationPolicy.materiallyMoved(53.48, -2.24, 53.49, -2.24))
+        assertEquals(0f, LiveLocationPolicy.UPDATE_DISTANCE_METRES)
+        assertFalse(LiveLocationPolicy.needsForegroundRefresh(now - 60_000, now))
+        assertTrue(LiveLocationPolicy.needsForegroundRefresh(now - 121_000, now))
+        assertTrue(LiveLocationPolicy.needsForegroundRefresh(0, now))
+        assertEquals(listOf("network", "gps"), LiveLocationPolicy.allowedProviders(
+            listOf("network", "gps"), fineGranted = true))
+        assertEquals(listOf("network"), LiveLocationPolicy.allowedProviders(
+            listOf("network", "gps"), fineGranted = false))
+        assertTrue(CurrentLocationSelectionPolicy.needsFixRetry(CURRENT_LOCATION_ID, false))
+        assertFalse(CurrentLocationSelectionPolicy.needsFixRetry(CURRENT_LOCATION_ID, true))
+        assertFalse(CurrentLocationSelectionPolicy.needsFixRetry(DEFAULT_PLACE.id, false))
     }
 
     @Test
@@ -106,14 +119,61 @@ class PlaceAndGeocoderTest {
     }
 
     @Test
-    fun pinnedPlacesStayFirstAndSelectionIsRetained() {
+    fun newPinPromotesOnceButDragOrderSurvivesNormalizationAndSelection() {
         val plain = SavedPlace("Plain", 50.0, 0.0)
-        val pinned = SavedPlace("Pinned", 55.0, 0.0, pinned = true)
+        val pinned = SavedPlace("Pinned", 55.0, 0.0)
         var collection = PlaceCollectionRules.upsert(PlaceCollection(), plain)
         collection = PlaceCollectionRules.upsert(collection, pinned, select = false)
-        assertEquals(DEFAULT_PLACE.id, collection.places.first().id)
-        assertTrue(collection.places.take(2).all { it.pinned })
+        collection = PlaceCollectionRules.setPinned(collection, pinned.id, true)
+        assertEquals(pinned.id, collection.places.first().id)
         assertEquals(plain.id, collection.selectedId)
+        val dragged = listOf(plain.id, DEFAULT_PLACE.id, pinned.id)
+        collection = PlaceCollectionRules.reorder(collection, dragged)
+        assertEquals(dragged, PlaceCollectionRules.normalize(collection).places.map { it.id })
+        assertEquals(dragged, PlaceCollectionRules.select(collection, DEFAULT_PLACE.id).places.map { it.id })
+        assertEquals(dragged, PlaceCollectionRules.rename(collection, pinned.id, "Pinned again").places.map { it.id })
+        assertEquals(dragged, PlaceCollectionRules.setPinned(collection, pinned.id, false).places.map { it.id })
+    }
+
+    @Test
+    fun renameAndReorderPreserveIdentityCoordinatesSelectionAndStartupDefault() {
+        val york = SavedPlace("York", 53.96, -1.08)
+        val bath = SavedPlace("Bath", 51.38, -2.36)
+        var collection = PlaceCollectionRules.upsert(PlaceCollection(), york)
+        collection = PlaceCollectionRules.upsert(collection, bath, select = false)
+        val defaultId = bath.id
+        val originalKey = forecastSelectionKey(york)
+        collection = PlaceCollectionRules.rename(collection, york.id, "  York centre  ")
+        val renamed = collection.places.single { it.id == york.id }
+        assertEquals("York centre", renamed.name)
+        assertEquals(york.latitude, renamed.latitude, 0.0)
+        assertEquals(york.longitude, renamed.longitude, 0.0)
+        assertEquals(originalKey, forecastSelectionKey(renamed))
+        assertEquals(york.id, collection.selectedId)
+        assertEquals(defaultId, PlaceCollectionRules.resolveDefaultId(collection, defaultId))
+        val order = listOf(bath.id, york.id, DEFAULT_PLACE.id)
+        collection = PlaceCollectionRules.reorder(collection, order)
+        assertEquals(order, collection.places.map { it.id })
+        assertEquals(york.id, collection.selectedId)
+        assertEquals(defaultId, PlaceCollectionRules.resolveDefaultId(collection, defaultId))
+        // DataStore decodes through normalize on every read; that may not undo a drag.
+        assertEquals(order, PlaceCollectionRules.normalize(collection).places.map { it.id })
+    }
+
+    @Test
+    fun invalidRenameAndStaleReorderAreNoOps() {
+        val collection = PlaceCollectionRules.upsert(PlaceCollection(), SavedPlace("York", 53.96, -1.08))
+        val york = collection.selected
+        for (input in listOf("", "  ", "bad\nname", "x".repeat(61))) {
+            assertFalse(PlaceCollectionRules.validName(input))
+            assertEquals(collection, PlaceCollectionRules.rename(collection, york.id, input))
+        }
+        assertEquals(collection, PlaceCollectionRules.rename(collection, CURRENT_LOCATION_ID, "Home"))
+        assertEquals(collection, PlaceCollectionRules.rename(collection, "missing", "Home"))
+        assertEquals(collection, PlaceCollectionRules.reorder(collection, listOf(york.id)))
+        assertEquals(collection, PlaceCollectionRules.reorder(collection, listOf(york.id, york.id)))
+        assertEquals(collection, PlaceCollectionRules.reorder(collection, listOf(CURRENT_LOCATION_ID,
+            DEFAULT_PLACE.id, york.id)))
     }
 
     @Test

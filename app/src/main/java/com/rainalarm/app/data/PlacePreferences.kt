@@ -89,6 +89,14 @@ class PlacePreferences(private val context: Context) {
         mutate { PlaceCollectionRules.setPinned(it, id, pinned) }
     }
 
+    suspend fun rename(id: String, name: String) {
+        mutate { PlaceCollectionRules.rename(it, id, name) }
+    }
+
+    suspend fun reorder(orderedIds: List<String>) {
+        mutate { PlaceCollectionRules.reorder(it, orderedIds) }
+    }
+
     private suspend fun mutate(transform: (PlaceCollection) -> PlaceCollection) {
         context.placeDataStore.edit { preferences ->
             val next = transform(decode(preferences))

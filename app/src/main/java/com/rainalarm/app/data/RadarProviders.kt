@@ -9,6 +9,7 @@ import android.graphics.Rect
 import android.util.Log
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.core.graphics.get
@@ -102,7 +103,10 @@ class RadarSettingsRepository(private val context: Context) {
     private val playbackSpeedKey = stringPreferencesKey("radar_playback_speed")
     private val appAppearanceKey = stringPreferencesKey("app_appearance")
     private val mapAppearanceKey = stringPreferencesKey("map_appearance")
+    private val compassAppearanceKey = stringPreferencesKey("now_compass_appearance")
+    private val graphAppearanceKey = stringPreferencesKey("now_graph_appearance")
     private val mapLayerKey = stringPreferencesKey("map_layer")
+    private val windArrowScaleKey = floatPreferencesKey("wind_arrow_scale")
     private val nowMetricsKey = stringPreferencesKey("now_weather_metrics")
 
     val provider: Flow<RadarProviderKind> = context.radarSettingsDataStore.data
@@ -125,9 +129,21 @@ class RadarSettingsRepository(private val context: Context) {
         .catch { failure -> if (failure is IOException) emit(emptyPreferences()) else throw failure }
         .map { AppearanceMode.decode(it[mapAppearanceKey]) }
 
+    val compassAppearance: Flow<NowCardAppearance> = context.radarSettingsDataStore.data
+        .catch { failure -> if (failure is IOException) emit(emptyPreferences()) else throw failure }
+        .map { NowCardAppearance.decode(it[compassAppearanceKey]) }
+
+    val graphAppearance: Flow<NowCardAppearance> = context.radarSettingsDataStore.data
+        .catch { failure -> if (failure is IOException) emit(emptyPreferences()) else throw failure }
+        .map { NowCardAppearance.decode(it[graphAppearanceKey]) }
+
     val mapLayer: Flow<RadarMapLayer> = context.radarSettingsDataStore.data
         .catch { failure -> if (failure is IOException) emit(emptyPreferences()) else throw failure }
         .map { RadarMapLayer.decode(it[mapLayerKey]) }
+
+    val windArrowScale: Flow<Float> = context.radarSettingsDataStore.data
+        .catch { failure -> if (failure is IOException) emit(emptyPreferences()) else throw failure }
+        .map { WindArrowSizePreference.decode(it[windArrowScaleKey]) }
 
     val nowMetrics: Flow<Set<NowWeatherMetric>> = context.radarSettingsDataStore.data
         .catch { failure -> if (failure is IOException) emit(emptyPreferences()) else throw failure }
@@ -151,8 +167,22 @@ class RadarSettingsRepository(private val context: Context) {
         context.radarSettingsDataStore.edit { it[mapAppearanceKey] = mode.name }
     }
 
+    suspend fun setCompassAppearance(mode: NowCardAppearance) {
+        context.radarSettingsDataStore.edit { it[compassAppearanceKey] = mode.name }
+    }
+
+    suspend fun setGraphAppearance(mode: NowCardAppearance) {
+        context.radarSettingsDataStore.edit { it[graphAppearanceKey] = mode.name }
+    }
+
     suspend fun setMapLayer(layer: RadarMapLayer) {
         context.radarSettingsDataStore.edit { it[mapLayerKey] = layer.name }
+    }
+
+    suspend fun setWindArrowScale(scale: Float) {
+        context.radarSettingsDataStore.edit {
+            it[windArrowScaleKey] = WindArrowSizePreference.decode(scale)
+        }
     }
 
     suspend fun setNowMetricVisible(metric: NowWeatherMetric, visible: Boolean) {

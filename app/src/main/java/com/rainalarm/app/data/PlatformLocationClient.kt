@@ -14,6 +14,10 @@ import android.os.Looper
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
@@ -54,15 +58,38 @@ class PlatformLocationClient(private val context: Context) {
     @SuppressLint("MissingPermission")
     suspend fun currentOrLastKnown(): Location? {
         if (!hasForegroundPermission()) return null
-        val provider = enabledForegroundProviders().firstOrNull()
-        val current = provider?.let { selected ->
-            try { withTimeoutOrNull(8_000) { awaitCurrent(selected) } }
-            catch (_: SecurityException) { null }
-        }
         val now = System.currentTimeMillis()
-        return listOfNotNull(current, lastKnown())
-            .filter { LiveLocationPolicy.isFresh(it.time, now) }
-            .maxByOrNull { it.time }
+        val cached = lastKnown()?.takeIf { LiveLocationPolicy.isFresh(it.time, now) }
+        // A very recent OS fix is already a foreground-quality answer; do not wait for a
+        // second provider that may take its full timeout while the retry UI is blocked.
+        if (cached != null && LiveLocationPolicy.isImmediatelyUsable(cached.time, now))
+            return cached
+        // Network may be enabled but unable to produce a fix. Ask every permitted source
+        // concurrently and accept the first fresh answer, cancelling remaining requests.
+        val current = supervisorScope {
+            val providers = enabledForegroundProviders()
+            val results = Channel<Location?>(Channel.UNLIMITED)
+            val jobs = providers.map { provider ->
+                launch {
+                    val fix = try { withTimeoutOrNull(8_000) { awaitCurrent(provider) } }
+                        catch (cancelled: CancellationException) { throw cancelled }
+                        catch (_: Exception) { null }
+                    results.trySend(fix)
+                }
+            }
+            try {
+                repeat(providers.size) {
+                    val fix = results.receive()
+                    if (fix != null && LiveLocationPolicy.isFresh(fix.time, System.currentTimeMillis()))
+                        return@supervisorScope fix
+                }
+                null
+            } finally {
+                jobs.forEach { it.cancel() }
+                results.close()
+            }
+        }
+        return current ?: cached?.takeIf { LiveLocationPolicy.isFresh(it.time, System.currentTimeMillis()) }
     }
 
     @SuppressLint("MissingPermission")
@@ -80,7 +107,8 @@ class PlatformLocationClient(private val context: Context) {
         var registered = 0
         providers.forEach { provider ->
             try {
-                manager.requestLocationUpdates(provider, 30_000L, 250f, listener, Looper.getMainLooper())
+                manager.requestLocationUpdates(provider, LiveLocationPolicy.UPDATE_INTERVAL_MILLIS,
+                    LiveLocationPolicy.UPDATE_DISTANCE_METRES, listener, Looper.getMainLooper())
                 registered++
             } catch (_: SecurityException) {
                 // A provider can reject this permission level independently. Retain any
@@ -131,12 +159,23 @@ class PlatformLocationClient(private val context: Context) {
 object LiveLocationPolicy {
     const val MAX_FIX_AGE_MILLIS = 5 * 60 * 1000L
     const val MATERIAL_MOVE_METRES = 250.0
+    const val UPDATE_INTERVAL_MILLIS = 30_000L
+    const val UPDATE_DISTANCE_METRES = 0f
+    const val ACTIVE_REFRESH_AFTER_MILLIS = 2 * 60 * 1000L
+    const val IMMEDIATE_FIX_AGE_MILLIS = 30_000L
+    const val REFRESH_CHECK_INTERVAL_MILLIS = 60_000L
 
     fun allowedProviders(enabled: List<String>, fineGranted: Boolean): List<String> =
         enabled.filter { it != "gps" || fineGranted }
 
     fun isFresh(fixTimeMillis: Long, nowMillis: Long): Boolean =
         fixTimeMillis > 0 && nowMillis - fixTimeMillis in 0..MAX_FIX_AGE_MILLIS
+
+    fun isImmediatelyUsable(fixTimeMillis: Long, nowMillis: Long): Boolean =
+        fixTimeMillis > 0 && nowMillis - fixTimeMillis in 0..IMMEDIATE_FIX_AGE_MILLIS
+
+    fun needsForegroundRefresh(fixTimeMillis: Long, nowMillis: Long): Boolean =
+        fixTimeMillis <= 0 || nowMillis - fixTimeMillis >= ACTIVE_REFRESH_AFTER_MILLIS
 
     fun materiallyMoved(fromLat: Double, fromLon: Double, toLat: Double, toLon: Double): Boolean {
         val radius = 6_371_000.0

@@ -67,6 +67,13 @@ data class PlaceCollection(
 }
 
 object PlaceCollectionRules {
+    private const val MAX_PLACE_NAME_LENGTH = 60
+
+    fun validName(input: String): Boolean {
+        val name = input.trim()
+        return name.isNotEmpty() && name.length <= MAX_PLACE_NAME_LENGTH && name.none { it.isISOControl() }
+    }
+
     fun freshInstall(): PlaceCollection = PlaceCollection(selectedId = CURRENT_LOCATION_ID)
     fun isFreshStore(hasCollection: Boolean, hasDefault: Boolean, hasLegacySelection: Boolean): Boolean =
         !hasCollection && !hasDefault && !hasLegacySelection
@@ -91,7 +98,7 @@ object PlaceCollectionRules {
             ?: places.first().id
         return PlaceCollection(
             version = PLACE_STORE_VERSION,
-            places = places.sortedByDescending { it.pinned },
+            places = places,
             selectedId = selected,
         )
     }
@@ -143,9 +150,8 @@ object PlaceCollectionRules {
             id = duplicate.id,
             pinned = incoming.pinned || duplicate.pinned,
         )
-        val next = normalized.places.filterNot {
-            it.id == place.id || (place.isCurrentLocation && it.isCurrentLocation)
-        } + place
+        val next = if (duplicate == null) normalized.places + place
+            else normalized.places.map { if (it.id == duplicate.id) place else it }
         return normalize(
             PlaceCollection(
                 places = next,
@@ -167,12 +173,29 @@ object PlaceCollectionRules {
 
     fun setPinned(collection: PlaceCollection, id: String, pinned: Boolean): PlaceCollection {
         val normalized = normalize(collection)
-        return normalize(
-            normalized.copy(
-                places = normalized.places.map {
-                    if (it.id == id) it.copy(pinned = pinned) else it
-                },
-            ),
-        )
+        val existing = normalized.places.firstOrNull { it.id == id } ?: return normalized
+        if (existing.pinned == pinned) return normalized
+        val updated = existing.copy(pinned = pinned)
+        // A new pin is visibly promoted once. Subsequent user drag order is authoritative.
+        val next = if (pinned) listOf(updated) + normalized.places.filterNot { it.id == id }
+            else normalized.places.map { if (it.id == id) updated else it }
+        return normalized.copy(places = next)
+    }
+
+    fun rename(collection: PlaceCollection, id: String, input: String): PlaceCollection {
+        val normalized = normalize(collection)
+        if (id == CURRENT_LOCATION_ID || !validName(input)) return normalized
+        val name = input.trim()
+        if (normalized.places.none { it.id == id }) return normalized
+        return normalized.copy(places = normalized.places.map { if (it.id == id) it.copy(name = name) else it })
+    }
+
+    /** Exact ID permutation only; stale/partial drag results cannot drop a saved place. */
+    fun reorder(collection: PlaceCollection, orderedIds: List<String>): PlaceCollection {
+        val normalized = normalize(collection)
+        if (orderedIds.size != normalized.places.size || orderedIds.toSet().size != orderedIds.size ||
+            orderedIds.toSet() != normalized.places.map { it.id }.toSet()) return normalized
+        val byId = normalized.places.associateBy { it.id }
+        return normalized.copy(places = orderedIds.map { requireNotNull(byId[it]) })
     }
 }

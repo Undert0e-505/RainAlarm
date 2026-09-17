@@ -62,6 +62,26 @@ class WeatherLayersTest {
         assertTrue(crossing.coordinates().all { it.first in -85.0..85.0 && it.second in -180.0..180.0 })
     }
 
+    @Test fun `high zoom wind grid retains nine interior visible arrows despite snapped model cells`() {
+        val tight = WindViewport(51.70000, -0.50000, 51.70008, -0.49988)
+        val coordinates = tight.coordinates()
+        assertTrue(tight.latitudeSpan < 0.001)
+        assertTrue(tight.longitudeSpan < 0.001)
+        assertEquals(9, coordinates.count { (lat, lon) ->
+            lat in tight.south..tight.north && lon in tight.west..tight.east
+        })
+        assertEquals(25, coordinates.toSet().size)
+        assertFalse(tight.requestKey() == WindViewport(51.70000, -0.50000,
+            51.7008, -0.4988).requestKey())
+        val snapped = OpenMeteoCurrentCodec.parse("[" + coordinates.joinToString(",") {
+            item(51.7, -0.5)
+        } + "]", 25, now)
+        val grid = WindGrid(tight.requestKey(), snapped, coordinates, now)
+        assertEquals(1, grid.points.map { it.latitude to it.longitude }.toSet().size)
+        assertEquals(25, grid.renderCoordinates().toSet().size)
+        assertEquals(coordinates, grid.renderCoordinates())
+    }
+
     @Test fun `selected place daily solar times use IANA zone and roll at local midnight`() {
         val zone = ZoneId.of("Europe/London")
         val sunrise = ZonedDateTime.of(2026, 9, 17, 6, 42, 0, 0, zone).toEpochSecond()

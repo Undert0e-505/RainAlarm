@@ -5,6 +5,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlin.math.sqrt
+import kotlin.math.ceil
 
 internal data class NowLayoutMetrics(
     val horizontalPaddingDp: Int,
@@ -54,12 +55,21 @@ internal object NowWeatherReadoutPolicy {
     fun fontSizeSp(contentWidthDp: Int, fontScale: Float): Int =
         if (contentWidthDp < 260 && fontScale > 1.3f) 9 else 10
 
-    fun rowMinimumHeightDp(fontSizeSp: Int): Int = if (fontSizeSp <= 10) 13 else 24
+    fun rowMinimumHeightDp(fontSizeSp: Int, fontScale: Float = 1f): Int {
+        val base = if (fontSizeSp <= 10) 13 else 24
+        return if (fontScale <= 1.05f) base
+            else maxOf(base, ceil(fontSizeSp * fontScale * 1.25f).toInt() + 1)
+    }
+
+    fun directionHeightDp(fontScale: Float, stacked: Boolean): Int =
+        if (fontScale <= 1.05f) directionLineHeightDp
+        else maxOf(directionLineHeightDp,
+            ceil((if (stacked) 10f else 12f) * fontScale * 1.25f).toInt() + 2)
 
     fun stack(widthDp: Int, fontScale: Float): Boolean = widthDp < 280 || fontScale > 1.4f
 
     fun footerHeightDp(metricCount: Int, widthDp: Int, fontScale: Float): Int {
-        val row = rowMinimumHeightDp(fontSizeSp(widthDp, fontScale))
+        val row = rowMinimumHeightDp(fontSizeSp(widthDp, fontScale), fontScale)
         return if (stack(widthDp, fontScale)) (metricCount + 2) * row + 6
         else maxOf(metricCount, 2) * row + 4
     }

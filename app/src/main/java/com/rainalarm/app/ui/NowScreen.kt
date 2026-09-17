@@ -1,6 +1,10 @@
 package com.rainalarm.app.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -41,6 +45,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -76,6 +81,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.rainalarm.app.ForecastUiState
 import com.rainalarm.app.R
 import com.rainalarm.app.NowRefreshStatus
@@ -84,6 +90,8 @@ import com.rainalarm.app.data.ForecastSnapshot
 import com.rainalarm.app.data.PlaceCollection
 import com.rainalarm.app.data.CurrentWeather
 import com.rainalarm.app.data.NowWeatherMetric
+import com.rainalarm.app.data.NowCardAppearance
+import com.rainalarm.app.data.CurrentLocationSelectionPolicy
 import com.rainalarm.app.domain.NowVisualGeometry
 import com.rainalarm.app.domain.RainMinuteAnalysis
 import com.rainalarm.app.domain.RainMinuteAvailability
@@ -125,11 +133,26 @@ fun NowScreen(
     useCurrentLocation: () -> Unit,
     weather: CurrentWeather? = null,
     visibleWeatherMetrics: Set<NowWeatherMetric> = NowWeatherMetric.entries.toSet(),
+    compassAppearance: NowCardAppearance = NowCardAppearance.FOLLOW_APP,
+    graphAppearance: NowCardAppearance = NowCardAppearance.FOLLOW_APP,
     refreshStatus: NowRefreshStatus = NowRefreshStatus.Idle,
     visitGeneration: Int = 0,
     selectedLocationKey: String? = null,
     onChartTimeSelected: (Double) -> Unit = {},
 ) {
+    val context = LocalContext.current
+    val locationPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { result -> if (result.values.any { it }) useCurrentLocation() }
+    val refreshOrRetryLocation: () -> Unit = {
+        if (CurrentLocationSelectionPolicy.needsFixRetry(places.selectedId, selectedLocationKey != null)) {
+            val granted = listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+                .any { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
+            if (granted) useCurrentLocation() else locationPermission.launch(
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
+            )
+        } else refresh()
+    }
     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         val density = LocalDensity.current
         val metrics = NowLayoutPolicy.measure(maxWidth.value.toInt(), maxHeight.value.toInt(), density.fontScale)
@@ -156,12 +179,13 @@ fun NowScreen(
                     icon = Icons.Default.SwapHoriz)
             }
             when (state) {
-                ForecastUiState.Loading -> NowPlaceholder("Reading the local radar", "Building the next hour…", metrics, refresh,
-                    refreshStatus)
-                is ForecastUiState.Error -> NowPlaceholder("Radar unavailable", state.message, metrics, refresh,
-                    refreshStatus)
+                ForecastUiState.Loading -> NowPlaceholder("Reading the local radar", "Building the next hour…", metrics, refreshOrRetryLocation,
+                    refreshStatus, compassAppearance, graphAppearance)
+                is ForecastUiState.Error -> NowPlaceholder("Radar unavailable", state.message, metrics, refreshOrRetryLocation,
+                    refreshStatus, compassAppearance, graphAppearance)
                 is ForecastUiState.Ready -> NowForecastContent(state.forecast, metrics, availableWidthDp,
-                    refresh, weather, visibleWeatherMetrics, refreshStatus, visitGeneration, selectedLocationKey,
+                    refreshOrRetryLocation, weather, visibleWeatherMetrics, compassAppearance, graphAppearance,
+                    refreshStatus, visitGeneration, selectedLocationKey,
                     onChartTimeSelected)
             }
         }
@@ -170,9 +194,10 @@ fun NowScreen(
 
 @Composable
 private fun NowPlaceholder(title: String, detail: String, metrics: NowLayoutMetrics,
-    refresh: (() -> Unit)? = null, refreshStatus: NowRefreshStatus = NowRefreshStatus.Idle) {
+    refresh: (() -> Unit)? = null, refreshStatus: NowRefreshStatus = NowRefreshStatus.Idle,
+    compassAppearance: NowCardAppearance, graphAppearance: NowCardAppearance) {
+    NowCardTheme(compassAppearance) {
     val border = NowBorder
-    val muted = NowMuted
     Card(colors = CardDefaults.cardColors(containerColor = NowSurface), shape = RoundedCornerShape(24.dp),
         modifier = Modifier.fillMaxWidth().height(metrics.compassHeightDp.dp)) {
         Column(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 4.dp)) {
@@ -192,15 +217,19 @@ private fun NowPlaceholder(title: String, detail: String, metrics: NowLayoutMetr
             }
             Text(if (title == "Reading the local radar") "Waiting for radar frames" else "Forecast unavailable",
                 color = NowMuted, fontSize = 12.sp,
-                modifier = Modifier.align(Alignment.CenterHorizontally).height(22.dp))
+                modifier = Modifier.align(Alignment.CenterHorizontally).heightIn(min = 22.dp))
         }
     }
+    }
+    NowCardTheme(graphAppearance) {
+    val border = NowBorder
+    val muted = NowMuted
     Card(colors = CardDefaults.cardColors(containerColor = NowSurfaceHigh), shape = RoundedCornerShape(20.dp),
         modifier = Modifier.fillMaxWidth().height(metrics.chartHeightDp.dp)) {
         Column(Modifier.fillMaxSize().padding(start = 10.dp, top = 7.dp, end = 10.dp, bottom = 4.dp)) {
             Text("Next hour", color = NowText, fontSize = 16.sp, fontWeight = FontWeight.SemiBold,
                 textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().height(NowLayoutPolicy.chartTitleHeightDp.dp))
+                modifier = Modifier.fillMaxWidth().heightIn(min = NowLayoutPolicy.chartTitleHeightDp.dp))
             Row(Modifier.weight(1f).fillMaxWidth()) {
                 Column(Modifier.width(56.dp).fillMaxHeight()) {
                     listOf("Severe", "Medium", "Light").forEach { band ->
@@ -235,6 +264,20 @@ private fun NowPlaceholder(title: String, detail: String, metrics: NowLayoutMetr
             }
         }
     }
+    }
+}
+
+@Composable
+private fun NowCardTheme(mode: NowCardAppearance, content: @Composable () -> Unit) {
+    val inherited = LocalRainAlarmPalette.current
+    val palette = when (mode) {
+        NowCardAppearance.FOLLOW_APP -> inherited
+        NowCardAppearance.LIGHT -> LightRainPalette
+        NowCardAppearance.DARK -> DarkRainPalette
+    }
+    CompositionLocalProvider(LocalRainAlarmPalette provides palette) {
+        MaterialTheme(colorScheme = palette.materialScheme(), content = content)
+    }
 }
 
 @Composable
@@ -261,6 +304,7 @@ private fun NowCardHeader(status: String, source: String, refresh: (() -> Unit)?
 @Composable
 private fun NowForecastContent(forecast: ForecastSnapshot, metrics: NowLayoutMetrics, availableWidthDp: Int,
     refresh: () -> Unit, weather: CurrentWeather?, visibleWeatherMetrics: Set<NowWeatherMetric>,
+    compassAppearance: NowCardAppearance, graphAppearance: NowCardAppearance,
     refreshStatus: NowRefreshStatus, visitGeneration: Int, selectedLocationKey: String?,
     onChartTimeSelected: (Double) -> Unit) {
     val series = forecast.nowcastSeries
@@ -269,7 +313,7 @@ private fun NowForecastContent(forecast: ForecastSnapshot, metrics: NowLayoutMet
     val freshness = if (age == 0L) "now" else "${age}m ago"
     if (series == null || series.availability == RainMinuteAvailability.UNAVAILABLE || analysis == null) {
         NowPlaceholder("Next hour unavailable", series?.unavailableReason ?: "No local radar series", metrics, refresh,
-            refreshStatus)
+            refreshStatus, compassAppearance, graphAppearance)
         return
     }
 
@@ -307,11 +351,15 @@ private fun NowForecastContent(forecast: ForecastSnapshot, metrics: NowLayoutMet
         ) else entryProgress.snapTo(1f)
     }
     val visibleProgress = if (animationsEnabled) entryProgress.value else 1f
-    RainCompass(series, analysis, conciseTitle, source, refresh, refreshStatus, visibleProgress, animationsEnabled,
-        weather, visibleWeatherMetrics,
-        Modifier.fillMaxWidth().height(metrics.compassHeightDp.dp))
-    RainTimeline(series, Modifier.fillMaxWidth().height(metrics.chartHeightDp.dp), availableWidthDp,
-        visibleProgress, onChartTimeSelected)
+    NowCardTheme(compassAppearance) {
+        RainCompass(series, analysis, conciseTitle, source, refresh, refreshStatus, visibleProgress, animationsEnabled,
+            weather, visibleWeatherMetrics,
+            Modifier.fillMaxWidth().height(metrics.compassHeightDp.dp))
+    }
+    NowCardTheme(graphAppearance) {
+        RainTimeline(series, Modifier.fillMaxWidth().height(metrics.chartHeightDp.dp), availableWidthDp,
+            visibleProgress, onChartTimeSelected)
+    }
 }
 
 @Composable
@@ -389,7 +437,7 @@ private fun RainCompass(
             )
             val stackedReadouts = NowWeatherReadoutPolicy.stack(bodyWidthDp, fontScale)
             val footerHeightDp = readoutHeightDp +
-                if (stackedReadouts) NowWeatherReadoutPolicy.directionLineHeightDp else 0
+                if (stackedReadouts) NowWeatherReadoutPolicy.directionHeightDp(fontScale, true) else 0
             val diameter = NowWeatherReadoutPolicy.dialDiameterDp(
                 bodyWidthDp, maxHeight.value.toInt(), footerHeightDp,
             ).dp
@@ -514,10 +562,11 @@ private fun RainCompass(
             }
             Text(footerDirection, color = if (sourceBearing == null) NowMuted else NowAccent,
                 fontSize = if (stackedReadouts) 10.sp else 12.sp,
+                lineHeight = if (stackedReadouts) 12.sp else 15.sp,
                 maxLines = 1, textAlign = TextAlign.Center,
                 modifier = Modifier.align(Alignment.BottomCenter)
                     .padding(bottom = if (stackedReadouts) readoutHeightDp.dp else 0.dp)
-                    .height(NowWeatherReadoutPolicy.directionLineHeightDp.dp))
+                    .heightIn(min = NowWeatherReadoutPolicy.directionHeightDp(fontScale, stackedReadouts).dp))
         }
         }
     }
@@ -562,7 +611,8 @@ private fun NowWeatherReadouts(weather: CurrentWeather?, metrics: Set<NowWeather
 private fun DividerReadout(rows: List<Pair<String, String>>, font: androidx.compose.ui.unit.TextUnit,
     modifier: Modifier, source: String) {
     val rowLineHeight = (font.value * 1.2f).sp
-    val rowHeight = NowWeatherReadoutPolicy.rowMinimumHeightDp(font.value.toInt()).dp
+    val rowHeight = NowWeatherReadoutPolicy.rowMinimumHeightDp(font.value.toInt(),
+        LocalDensity.current.fontScale).dp
     Row(modifier.height(IntrinsicSize.Min), verticalAlignment = Alignment.Bottom) {
         Column(horizontalAlignment = Alignment.End) {
             rows.forEach { (label, _) -> Text(label, color = NowMuted, fontSize = font, lineHeight = rowLineHeight,

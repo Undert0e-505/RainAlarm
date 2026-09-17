@@ -59,6 +59,25 @@ class WeatherUiWiringTest {
             WindArrowGeometry.headHalfWidthPx)
         val map = source("RadarImageMap.kt")
         assertTrue(map.contains("for ((index, sample) in points.withIndex())"))
-        assertTrue(map.contains("val length = WindArrowGeometry.lengthPx"))
+        assertTrue(map.contains("val length = WindArrowGeometry.length(arrowScale)"))
+        assertTrue(map.contains("value?.renderCoordinates()?.map"))
+        assertEquals(88f, WindArrowGeometry.length(2f), 0f)
+        assertEquals(8f, WindArrowGeometry.headBack(0.5f), 0f)
+        val settings = source("SettingsScreen.kt")
+        assertTrue(settings.contains("if (mapLayer == RadarMapLayer.WIND)"))
+        assertTrue(settings.contains("WindArrowPreview(previewScale)"))
+        assertTrue(settings.contains("selectWindArrowScale(previewScale)"))
+        assertTrue(map.contains("windView.update(windGrid, windArrowScale)"))
+    }
+
+    @Test fun `Now compass and graph appearance wrap ready and placeholder cards independently`() {
+        val now = source("NowScreen.kt")
+        val settings = source("SettingsScreen.kt")
+        assertTrue(now.contains("NowCardTheme(compassAppearance)"))
+        assertTrue(now.contains("NowCardTheme(graphAppearance)"))
+        assertTrue(now.contains("MaterialTheme(colorScheme = palette.materialScheme(), content = content)"))
+        assertTrue(now.contains("refreshStatus, compassAppearance, graphAppearance)"))
+        assertTrue(settings.contains("NowCardAppearanceChoice(\"Compass card\""))
+        assertTrue(settings.contains("NowCardAppearanceChoice(\"Graph card\""))
     }
 }

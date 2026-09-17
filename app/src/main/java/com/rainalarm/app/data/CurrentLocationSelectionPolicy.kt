@@ -8,6 +8,10 @@ data class CurrentLocationTransition(
 )
 
 object CurrentLocationSelectionPolicy {
+    /** A data reload cannot recover a virtual Current selection without coordinates. */
+    fun needsFixRetry(selectedId: String, hasResolvedPlace: Boolean): Boolean =
+        selectedId == CURRENT_LOCATION_ID && !hasResolvedPlace
+
     fun request(selectedId: String, generation: Long, permissionGranted: Boolean): CurrentLocationTransition =
         if (permissionGranted) {
             CurrentLocationTransition(true, CURRENT_LOCATION_ID, generation + 1)
