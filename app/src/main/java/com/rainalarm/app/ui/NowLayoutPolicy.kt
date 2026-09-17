@@ -30,12 +30,12 @@ internal object NowLayoutPolicy {
 
     fun measure(widthDp: Int, heightDp: Int, fontScale: Float = 1f): NowLayoutMetrics {
         require(widthDp > 0 && heightDp > 0 && fontScale > 0f)
-        val compact = heightDp < 620 || widthDp < 360 || fontScale > 1.2f
+        val compact = NowHeaderLayoutPolicy.compact(widthDp, heightDp, fontScale)
         val constrained = heightDp < 400
-        val horizontalPadding = if (compact) 12 else 16
-        val verticalPadding = 4
+        val horizontalPadding = NowHeaderLayoutPolicy.horizontalPaddingDp(widthDp, heightDp, fontScale)
+        val verticalPadding = NowHeaderLayoutPolicy.verticalPaddingDp
         val gap = 4
-        val header = 48
+        val header = NowHeaderLayoutPolicy.heightDp
         val flexible = (heightDp - verticalPadding * 2 - header - gap * 2).coerceAtLeast(0)
         val minChart = if (constrained) 64 else if (heightDp < 720) 155 else minimumChartDp
         val idealCompass = (flexible * if (widthDp > heightDp) 0.50f else 0.69f).toInt()
@@ -46,8 +46,27 @@ internal object NowLayoutPolicy {
         )
         val chart = (flexible - compass).coerceAtLeast(0)
         return NowLayoutMetrics(horizontalPadding, verticalPadding, gap, header, compass, chart,
-            compact || fontScale > 1.1f)
+            NowHeaderLayoutPolicy.simplifyText(widthDp, heightDp, fontScale))
     }
+}
+
+/** Balance the switcher's width on the left so the title remains geometrically centred. */
+internal object NowHeaderLayoutPolicy {
+    const val switchDp = 48
+    const val gapDp = 8
+    const val sideReserveDp = switchDp + gapDp
+    const val heightDp = 48
+    const val verticalPaddingDp = 4
+    fun compact(widthDp: Int, heightDp: Int, fontScale: Float): Boolean =
+        heightDp < 620 || widthDp < 360 || fontScale > 1.2f
+    fun horizontalPaddingDp(widthDp: Int, heightDp: Int, fontScale: Float): Int =
+        if (compact(widthDp, heightDp, fontScale)) 12 else 16
+    fun simplifyText(widthDp: Int, heightDp: Int, fontScale: Float): Boolean =
+        compact(widthDp, heightDp, fontScale) || fontScale > 1.1f
+    fun titleFontSizeSp(simplify: Boolean): Int = if (simplify) 22 else 26
+    fun titleLineHeightSp(simplify: Boolean): Int = if (simplify) 26 else 30
+    fun titleMaxWidthDp(headerWidthDp: Float): Float =
+        (headerWidthDp - 2f * sideReserveDp).coerceAtLeast(0f)
 }
 
 internal object NowWeatherReadoutPolicy {
@@ -101,7 +120,7 @@ internal object NowChartLayout {
         startEpochSeconds: Long,
         endMinute: Int,
         zone: ZoneId,
-        screenWidthDp: Int,
+        plotWidthDp: Int,
         fontScale: Float,
     ): List<ClockTick> {
         val end = endMinute.coerceIn(0, 60)
@@ -125,47 +144,56 @@ internal object NowChartLayout {
                 false,
             )
         }
-        val plotWidth = (screenWidthDp - 56 - 24 - 48).coerceAtLeast(0).toFloat()
+        val plotWidth = plotWidthDp.coerceAtLeast(0).toFloat()
         val result = mutableListOf(origin)
-        var previousX = 0f
-        var previousLabelWidth = 32f * fontScale
+        // "Now" is centred on x=0 and may extend into the severity-label gutter.
+        var previousLabelRight = labelWidthDp(origin.label, fontScale) / 2f
         for (tick in candidates) {
-            val x = plotWidth * tick.offsetMinutes / end
-            val labelWidth = (if (tick.label.length > 5) 72f else 48f) * fontScale
-            val requiredGap = (previousLabelWidth + labelWidth) / 2f + 6f
-            if (x - previousX >= requiredGap) {
+            val x = plotX(tick.offsetMinutes, plotWidth, end)
+            val labelWidth = labelWidthDp(tick.label, fontScale).coerceAtMost(plotWidth)
+            val left = labelLeft(x, plotWidth, labelWidth)
+            if (left >= previousLabelRight + 6f) {
                 result.add(tick.copy(showLabel = true))
-                previousX = x
-                previousLabelWidth = labelWidth
+                previousLabelRight = left + labelWidth
             }
             else result.add(tick)
         }
         return result
     }
 
-    fun plotX(minute: Int, width: Float, inset: Float, endMinute: Int = 60): Float {
-        return plotX(minute.toFloat(), width, inset, endMinute)
+    /** Match the rendered clock-label boxes when deciding which labels can coexist. */
+    fun labelWidthDp(label: String, fontScale: Float): Float =
+        (when {
+            label == "Now" -> 26f
+            label.length > 5 -> 72f
+            else -> 46f
+        }) * fontScale.coerceAtLeast(0f)
+
+    fun plotX(minute: Int, width: Float, endMinute: Int = 60): Float {
+        return plotX(minute.toFloat(), width, endMinute)
     }
 
-    fun plotX(minute: Float, width: Float, inset: Float, endMinute: Int = 60): Float {
+    /** The plot domain occupies the full coloured-band width, including both ends. */
+    fun plotX(minute: Float, width: Float, endMinute: Int = 60): Float {
         val end = endMinute.coerceIn(0, 60)
-        if (end == 0) return width / 2f
-        return inset + (width - inset * 2f).coerceAtLeast(0f) * minute.coerceIn(0f, end.toFloat()) / end
+        if (!width.isFinite() || width <= 0f || end == 0) return 0f
+        return width * minute.coerceIn(0f, end.toFloat()) / end
     }
 
     /** Inverse of [plotX] for taps on the plot canvas, excluding its severity-label column. */
-    fun minuteAtX(x: Float, width: Float, inset: Float, endMinute: Int): Float? {
-        if (!x.isFinite() || !width.isFinite() || !inset.isFinite() || width <= 0f) return null
+    fun minuteAtX(x: Float, width: Float, endMinute: Int): Float? {
+        if (!x.isFinite() || !width.isFinite() || width <= 0f) return null
         val end = endMinute.coerceIn(0, 60)
         if (end == 0) return 0f
-        val safeInset = inset.coerceIn(0f, width / 5f)
-        val span = width - 2f * safeInset
-        if (span <= 0f) return null
-        return ((x - safeInset) / span).coerceIn(0f, 1f) * end
+        return (x / width).coerceIn(0f, 1f) * end
     }
 
-    fun epochAtX(startEpochSeconds: Long, x: Float, width: Float, inset: Float, endMinute: Int): Double? =
-        minuteAtX(x, width, inset, endMinute)?.let { startEpochSeconds.toDouble() + it.toDouble() * 60.0 }
+    fun epochAtX(startEpochSeconds: Long, x: Float, width: Float, endMinute: Int): Double? =
+        minuteAtX(x, width, endMinute)?.let { startEpochSeconds.toDouble() + it.toDouble() * 60.0 }
+
+    /** Keep edge tick labels entirely in the plot, without moving their tick marks. */
+    fun labelLeft(tickX: Float, plotWidth: Float, labelWidth: Float): Float =
+        (tickX - labelWidth / 2f).coerceIn(0f, (plotWidth - labelWidth).coerceAtLeast(0f))
 
     fun severityBand(intensity: Float): Int = when {
         intensity >= 2f / 3f -> 0 // severe, top

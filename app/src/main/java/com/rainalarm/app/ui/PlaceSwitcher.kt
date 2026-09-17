@@ -7,7 +7,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -19,13 +18,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.rainalarm.app.LocationUiState
 import com.rainalarm.app.data.CURRENT_LOCATION_ID
 import com.rainalarm.app.data.PlaceCollection
+import com.rainalarm.app.R
 
 /** Same selection semantics on Now and Radar; Current remains a virtual, unsaved place. */
 @Composable
@@ -35,7 +35,6 @@ fun PlaceSwitcher(
     selectPlace: (String) -> Unit,
     useCurrentLocation: () -> Unit,
     modifier: Modifier = Modifier,
-    icon: ImageVector = Icons.Default.SwapHoriz,
 ) {
     val context = LocalContext.current
     var expanded by remember { mutableStateOf(false) }
@@ -58,7 +57,8 @@ fun PlaceSwitcher(
     }
     androidx.compose.foundation.layout.Box(modifier) {
         IconButton(onClick = { expanded = true }, modifier = Modifier.size(48.dp)) {
-            Icon(icon, contentDescription = "Switch place, selected ${if (collection.selectedId == CURRENT_LOCATION_ID) "Current location" else collection.selected.name}")
+            Icon(painterResource(R.drawable.ic_place_switch),
+                contentDescription = "Switch place, selected ${if (collection.selectedId == CURRENT_LOCATION_ID) "Current location" else collection.selected.name}")
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             DropdownMenuItem(

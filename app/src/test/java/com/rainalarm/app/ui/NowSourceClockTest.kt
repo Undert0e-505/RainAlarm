@@ -15,6 +15,17 @@ import javax.imageio.ImageIO
 
 class NowSourceClockTest {
     @Test
+    fun nowHeaderBalancesSwitcherBesideCentredTitle() {
+        assertEquals(48, NowHeaderLayoutPolicy.switchDp)
+        assertEquals(8, NowHeaderLayoutPolicy.gapDp)
+        assertEquals(56, NowHeaderLayoutPolicy.sideReserveDp)
+        assertEquals(216f, NowHeaderLayoutPolicy.titleMaxWidthDp(328f), 0f)
+        assertEquals(176f, NowHeaderLayoutPolicy.titleMaxWidthDp(288f), 0f)
+        assertEquals(28f, NowHeaderLayoutPolicy.titleMaxWidthDp(140f), 0f)
+        assertEquals(0f, NowHeaderLayoutPolicy.titleMaxWidthDp(100f), 0f)
+    }
+
+    @Test
     fun threeBandsAndTimeAxisFitCompactAndNormalWidthsWithoutClipping() {
         assertEquals(0, NowChartLayout.severityBand(0.90f))
         assertEquals(1, NowChartLayout.severityBand(0.50f))
@@ -40,12 +51,15 @@ class NowSourceClockTest {
         assertEquals("Next 7 minutes", NowChartLayout.horizonTitle(7))
         assertEquals("Current radar", NowChartLayout.horizonTitle(0))
         assertEquals("Next hour", NowChartLayout.horizonTitle(60))
-        for (domain in listOf(0, 7, 30, 54, 60)) {
-            assertEquals(if (domain > 0) 24f else 150f,
-                NowChartLayout.plotX(0, 300f, 24f, domain), 0.001f)
-            assertEquals(if (domain > 0) 276f else 150f,
-                NowChartLayout.plotX(domain, 300f, 24f, domain), 0.001f)
+        for (domain in listOf(0, 7, 46, 54, 60)) {
+            assertEquals(0f, NowChartLayout.plotX(0, 300f, domain), 0.001f)
+            assertEquals(if (domain > 0) 300f else 0f,
+                NowChartLayout.plotX(domain, 300f, domain), 0.001f)
+            if (domain > 0) assertEquals(150f,
+                NowChartLayout.plotX(domain / 2f, 300f, domain), 0.001f)
         }
+        assertEquals(0f, NowChartLayout.labelLeft(0f, 300f, 46f), 0f)
+        assertEquals(254f, NowChartLayout.labelLeft(300f, 300f, 46f), 0f)
     }
 
     @Test
@@ -157,6 +171,36 @@ class NowSourceClockTest {
             Instant.parse("2026-09-16T18:15:20Z").epochSecond, 52, london, 390, 1f,
         )[1].offsetMinutes
         assertEquals(4f + 40f / 60f, secondsOffset, 0.001f)
+        val partial = ticks("2026-09-16T18:15:00Z", 46, 282)
+        assertEquals(listOf("Now", "19:20", "19:30", "19:40", "19:50", "20:00"),
+            partial.map { it.label })
+        assertEquals(0f, NowChartLayout.plotX(partial.first().offsetMinutes, 282f, 46), 0f)
+        assertEquals(282f * 45f / 46f,
+            NowChartLayout.plotX(partial.last().offsetMinutes, 282f, 46), 0.001f)
+        val dst = ticks("2026-03-29T00:50:00Z", 20, 282)
+        assertEquals("02:00", dst[1].label)
+        assertEquals(141f, NowChartLayout.plotX(dst[1].offsetMinutes, 282f, 20), 0.001f)
+    }
+
+    @Test
+    fun nowLabelOverhangLeavesRoomForFirstClockBoundaryAtNormalWidth() {
+        val start = Instant.parse("2026-09-16T18:52:00Z").epochSecond
+        val width = 282f
+        val ticks = NowChartLayout.clockTicks(start, 47, ZoneId.of("Europe/London"), width.toInt(), 1f)
+        assertEquals(listOf("Now", "20:00", "20:10", "20:20", "20:30"), ticks.map { it.label })
+        val nowWidth = NowChartLayout.labelWidthDp("Now", 1f)
+        val nowLeft = -nowWidth / 2f
+        assertEquals(0f, nowLeft + nowWidth / 2f, 0f)
+        assertTrue(nowLeft < 0f) // into the existing severity-label gutter
+        val firstClock = ticks[1]
+        assertTrue(firstClock.showLabel)
+        val firstX = NowChartLayout.plotX(firstClock.offsetMinutes, width, 47)
+        val firstLeft = NowChartLayout.labelLeft(
+            firstX, width, NowChartLayout.labelWidthDp(firstClock.label, 1f),
+        )
+        assertTrue(firstLeft >= nowWidth / 2f + 6f)
+        assertEquals(width * 8f / 47f, firstX, 0.001f)
+        assertTrue(!NowChartLayout.clockTicks(start, 47, ZoneId.of("Europe/London"), 220, 1.4f)[1].showLabel)
     }
 
     @Test

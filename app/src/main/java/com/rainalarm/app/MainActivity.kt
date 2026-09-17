@@ -587,6 +587,13 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun recenterToCurrentLocation() = requestCurrentLocation(recenterMap = true)
 
+    fun recenterToSelectedPlace() {
+        val place = selectedPlace.value
+        if (com.rainalarm.app.domain.RadarSelectedCenterPolicy.canCenter(placesState.value.selectedId, place)) {
+            _currentRecenterTick.value++
+        }
+    }
+
     private fun requestCurrentLocation(recenterMap: Boolean) {
         val transition = CurrentLocationSelectionPolicy.request(
             placesState.value.selectedId, _currentLocationRequest.value,
@@ -937,6 +944,7 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
                             currentRecenterTick = currentRecenterTick,
                             useCurrentLocation = viewModel::useCurrentLocation,
                             recenterToCurrentLocation = viewModel::recenterToCurrentLocation,
+                            recenterToSelectedPlace = viewModel::recenterToSelectedPlace,
                             cameraMemory = radarCameraMemory,
                             selectPlace = viewModel::selectPlace,
                             mapLayer = mapLayer,

@@ -63,7 +63,7 @@ data class PlaceCollection(
 ) {
     val selected: SavedPlace
         get() = if (selectedId == CURRENT_LOCATION_ID) CURRENT_LOCATION_SELECTION
-            else places.firstOrNull { it.id == selectedId } ?: places.firstOrNull() ?: DEFAULT_PLACE
+            else places.firstOrNull { it.id == selectedId } ?: places.firstOrNull() ?: CURRENT_LOCATION_SELECTION
 }
 
 object PlaceCollectionRules {
@@ -84,7 +84,7 @@ object PlaceCollectionRules {
             requestedId == CURRENT_LOCATION_ID -> CURRENT_LOCATION_ID
             requestedId != null && normalized.places.any { it.id == requestedId } -> requestedId
             normalized.places.any { it.id == DEFAULT_PLACE.id } -> DEFAULT_PLACE.id
-            else -> normalized.places.first().id
+            else -> normalized.places.firstOrNull()?.id ?: CURRENT_LOCATION_ID
         }
     }
 
@@ -92,10 +92,12 @@ object PlaceCollectionRules {
         val unique = LinkedHashMap<String, SavedPlace>()
         collection.places.filterNot { it.isCurrentLocation || it.id == CURRENT_LOCATION_ID }
             .forEach { place -> unique.putIfAbsent(place.id, place) }
-        val places = unique.values.toList().ifEmpty { listOf(DEFAULT_PLACE) }
+        // An explicitly emptied saved list must stay empty; only fresh/legacy defaults add London.
+        val places = unique.values.toList()
         val selected = collection.selectedId.takeIf { id -> id == CURRENT_LOCATION_ID || places.any { it.id == id } }
             ?: places.firstOrNull { it.pinned }?.id
-            ?: places.first().id
+            ?: places.firstOrNull()?.id
+            ?: CURRENT_LOCATION_ID
         return PlaceCollection(
             version = PLACE_STORE_VERSION,
             places = places,
@@ -162,9 +164,9 @@ object PlaceCollectionRules {
 
     fun delete(collection: PlaceCollection, id: String): PlaceCollection {
         val normalized = normalize(collection)
-        if (id == CURRENT_LOCATION_ID) return normalize(normalized.copy(selectedId = DEFAULT_PLACE.id))
+        if (id == CURRENT_LOCATION_ID) return normalized
         val remaining = normalized.places.filterNot { it.id == id }
-        if (remaining.isEmpty()) return PlaceCollection()
+        if (remaining.isEmpty()) return normalize(PlaceCollection(places = emptyList(), selectedId = CURRENT_LOCATION_ID))
         val selected = if (normalized.selectedId == id) {
             remaining.firstOrNull { it.pinned }?.id ?: remaining.first().id
         } else normalized.selectedId

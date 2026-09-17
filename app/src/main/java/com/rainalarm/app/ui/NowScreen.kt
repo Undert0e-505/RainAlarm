@@ -35,7 +35,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -156,34 +155,38 @@ fun NowScreen(
     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         val density = LocalDensity.current
         val metrics = NowLayoutPolicy.measure(maxWidth.value.toInt(), maxHeight.value.toInt(), density.fontScale)
-        val availableWidthDp = maxWidth.value.toInt()
         Column(
             Modifier.fillMaxWidth().widthIn(max = 760.dp).height(maxHeight)
                 .padding(horizontal = metrics.horizontalPaddingDp.dp, vertical = metrics.verticalPaddingDp.dp),
             verticalArrangement = Arrangement.spacedBy(metrics.gapDp.dp),
         ) {
-            Row(
+            BoxWithConstraints(
                 Modifier.fillMaxWidth().height(metrics.headerHeightDp.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                contentAlignment = Alignment.Center,
             ) {
-                Text(
-                    selectedLocationName ?: if (state is ForecastUiState.Ready) state.forecast.locationName else "Current location",
-                    fontSize = if (metrics.simplifyText) 22.sp else 26.sp,
-                    lineHeight = if (metrics.simplifyText) 26.sp else 30.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f).semantics { heading() },
-                )
-                PlaceSwitcher(places, locationState, selectPlace, useCurrentLocation,
-                    icon = Icons.Default.SwapHoriz)
+                val maxTitleWidth = NowHeaderLayoutPolicy.titleMaxWidthDp(maxWidth.value).dp
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Spacer(Modifier.width(NowHeaderLayoutPolicy.sideReserveDp.dp))
+                    Text(
+                        selectedLocationName ?: if (state is ForecastUiState.Ready) state.forecast.locationName else "Current location",
+                    fontSize = NowHeaderLayoutPolicy.titleFontSizeSp(metrics.simplifyText).sp,
+                    lineHeight = NowHeaderLayoutPolicy.titleLineHeightSp(metrics.simplifyText).sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.widthIn(max = maxTitleWidth).semantics { heading() },
+                    )
+                    Spacer(Modifier.width(NowHeaderLayoutPolicy.gapDp.dp))
+                    PlaceSwitcher(places, locationState, selectPlace, useCurrentLocation)
+                }
             }
             when (state) {
                 ForecastUiState.Loading -> NowPlaceholder("Reading the local radar", "Building the next hour…", metrics, refreshOrRetryLocation,
                     refreshStatus, compassAppearance, graphAppearance)
                 is ForecastUiState.Error -> NowPlaceholder("Radar unavailable", state.message, metrics, refreshOrRetryLocation,
                     refreshStatus, compassAppearance, graphAppearance)
-                is ForecastUiState.Ready -> NowForecastContent(state.forecast, metrics, availableWidthDp,
+                is ForecastUiState.Ready -> NowForecastContent(state.forecast, metrics,
                     refreshOrRetryLocation, weather, visibleWeatherMetrics, compassAppearance, graphAppearance,
                     refreshStatus, visitGeneration, selectedLocationKey,
                     onChartTimeSelected)
@@ -224,6 +227,7 @@ private fun NowPlaceholder(title: String, detail: String, metrics: NowLayoutMetr
     NowCardTheme(graphAppearance) {
     val border = NowBorder
     val muted = NowMuted
+    val accent = NowAccent
     Card(colors = CardDefaults.cardColors(containerColor = NowSurfaceHigh), shape = RoundedCornerShape(20.dp),
         modifier = Modifier.fillMaxWidth().height(metrics.chartHeightDp.dp)) {
         Column(Modifier.fillMaxSize().padding(start = 10.dp, top = 7.dp, end = 10.dp, bottom = 4.dp)) {
@@ -248,19 +252,17 @@ private fun NowPlaceholder(title: String, detail: String, metrics: NowLayoutMetr
                             size = androidx.compose.ui.geometry.Size(size.width, band))
                         drawLine(muted.copy(alpha = 0.6f), Offset(0f, size.height - 1f),
                             Offset(size.width, size.height - 1f), 1f)
+                        drawLine(accent.copy(alpha = 0.35f), Offset(0f, 0f),
+                            Offset(0f, size.height), 1f)
                     }
                     Text(detail, color = NowMuted, maxLines = 2, overflow = TextOverflow.Ellipsis,
                         textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 18.dp))
                 }
             }
             BoxWithConstraints(Modifier.fillMaxWidth().height(NowLayoutPolicy.chartAxisHeightDp.dp).padding(start = 56.dp)) {
-                val inset = 24.dp.coerceAtMost(maxWidth / 5f)
-                listOf(0, 30, 60).forEachIndexed { index, minute ->
-                    val x = NowChartLayout.plotX(minute, maxWidth.value, inset.value).dp - 23.dp
-                    Text(listOf("Now", "+30", "+60")[index], color = NowMuted,
-                        fontSize = 11.sp, textAlign = TextAlign.Center, maxLines = 1,
-                        modifier = Modifier.width(46.dp).offset(x = x, y = 7.dp))
-                }
+                val labelWidth = 46.dp.coerceAtMost(maxWidth)
+                Text("Now", color = NowMuted, fontSize = 11.sp, textAlign = TextAlign.Center,
+                    maxLines = 1, modifier = Modifier.width(labelWidth).offset(y = 7.dp))
             }
         }
     }
@@ -302,7 +304,7 @@ private fun NowCardHeader(status: String, source: String, refresh: (() -> Unit)?
 }
 
 @Composable
-private fun NowForecastContent(forecast: ForecastSnapshot, metrics: NowLayoutMetrics, availableWidthDp: Int,
+private fun NowForecastContent(forecast: ForecastSnapshot, metrics: NowLayoutMetrics,
     refresh: () -> Unit, weather: CurrentWeather?, visibleWeatherMetrics: Set<NowWeatherMetric>,
     compassAppearance: NowCardAppearance, graphAppearance: NowCardAppearance,
     refreshStatus: NowRefreshStatus, visitGeneration: Int, selectedLocationKey: String?,
@@ -357,7 +359,7 @@ private fun NowForecastContent(forecast: ForecastSnapshot, metrics: NowLayoutMet
             Modifier.fillMaxWidth().height(metrics.compassHeightDp.dp))
     }
     NowCardTheme(graphAppearance) {
-        RainTimeline(series, Modifier.fillMaxWidth().height(metrics.chartHeightDp.dp), availableWidthDp,
+        RainTimeline(series, Modifier.fillMaxWidth().height(metrics.chartHeightDp.dp),
             visibleProgress, onChartTimeSelected)
     }
 }
@@ -536,10 +538,14 @@ private fun RainCompass(
                         size.minDimension * (NowMotionPolicy.centerDiscRadiusFraction + 0.009f) * discScale, center,
                         style = Stroke(width = 2f))
                 }
-                Text("N", color = NowText, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopCenter))
-                Text("E", color = NowMuted, fontSize = 12.sp, modifier = Modifier.align(Alignment.CenterEnd).padding(end = 3.dp))
-                Text("S", color = NowMuted, fontSize = 12.sp, modifier = Modifier.align(Alignment.BottomCenter))
-                Text("W", color = NowMuted, fontSize = 12.sp, modifier = Modifier.align(Alignment.CenterStart).padding(start = 3.dp))
+                Text("N", color = NowText, fontSize = 24.sp, lineHeight = 24.sp,
+                    fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopCenter))
+                Text("E", color = NowMuted, fontSize = 24.sp, lineHeight = 24.sp,
+                    modifier = Modifier.align(Alignment.CenterEnd).padding(end = 3.dp))
+                Text("S", color = NowMuted, fontSize = 24.sp, lineHeight = 24.sp,
+                    modifier = Modifier.align(Alignment.BottomCenter))
+                Text("W", color = NowMuted, fontSize = 24.sp, lineHeight = 24.sp,
+                    modifier = Modifier.align(Alignment.CenterStart).padding(start = 3.dp))
                 Column(Modifier.align(Alignment.Center).graphicsLayer {
                     val scale = NowMotionPolicy.centerScale(entryProgress)
                     scaleX = scale
@@ -648,7 +654,6 @@ private fun RefreshNowButton(refresh: () -> Unit, refreshStatus: NowRefreshStatu
 private fun RainTimeline(
     series: RainMinuteSeries,
     modifier: Modifier = Modifier,
-    availableWidthDp: Int,
     entryProgress: Float,
     onTimeSelected: (Double) -> Unit,
 ) {
@@ -658,12 +663,6 @@ private fun RainTimeline(
     val NowAccent = LocalRainAlarmPalette.current.accent
     val endMinute = series.points.last().minute.coerceIn(0, 60)
     val chartTitle = NowChartLayout.horizonTitle(endMinute)
-    val ticks = NowChartLayout.clockTicks(
-        series.startEpochSeconds, endMinute, ZoneId.systemDefault(),
-        availableWidthDp, LocalDensity.current.fontScale,
-    )
-    val labelInset = if (ticks.any { it.showLabel && it.label.length > 5 }) 38.dp else 24.dp
-    val density = LocalDensity.current
     val description = buildString {
         append("$chartTitle ${if (series.intensityEncoding == com.rainalarm.app.domain.RadarIntensityEncoding.REGIONAL_AREA_CHART) "area forecast intensity" else "radar intensity"}. ")
         val analysis = RainMinuteSeriesAnalyzer.analyze(series)
@@ -696,11 +695,10 @@ private fun RainTimeline(
                 }
             }
             Canvas(Modifier.weight(1f).fillMaxSize()
-                .pointerInput(series.startEpochSeconds, endMinute, labelInset, onTimeSelected) {
+                .pointerInput(series.startEpochSeconds, endMinute, onTimeSelected) {
                     detectTapGestures { tap ->
-                        val insetPx = with(density) { labelInset.toPx() }.coerceAtMost(size.width / 5f)
                         NowChartLayout.epochAtX(series.startEpochSeconds, tap.x, size.width.toFloat(),
-                            insetPx, endMinute)?.let(onTimeSelected)
+                            endMinute)?.let(onTimeSelected)
                     }
                 }
                 .semantics {
@@ -711,8 +709,7 @@ private fun RainTimeline(
                     }
                 }) {
                 val chartHeight = size.height
-                val inset = labelInset.toPx().coerceAtMost(size.width / 5f)
-                fun plotX(minute: Int) = NowChartLayout.plotX(minute, size.width, inset, endMinute)
+                fun plotX(minute: Int) = NowChartLayout.plotX(minute, size.width, endMinute)
                 drawRect(Color(series.displayColor(0.88f)).copy(alpha = 0.045f), size = androidx.compose.ui.geometry.Size(size.width, chartHeight / 3f))
                 drawRect(Color(series.displayColor(0.62f)).copy(alpha = 0.045f), topLeft = Offset(0f, chartHeight / 3f), size = androidx.compose.ui.geometry.Size(size.width, chartHeight / 3f))
                 drawRect(Color(series.displayColor(0.34f)).copy(alpha = 0.045f), topLeft = Offset(0f, chartHeight * 2f / 3f), size = androidx.compose.ui.geometry.Size(size.width, chartHeight / 3f))
@@ -720,7 +717,7 @@ private fun RainTimeline(
                     val y = NowVisualGeometry.chartY(level, chartHeight)
                     drawLine(NowBorder, Offset(0f, y), Offset(size.width, y), 1f)
                 }
-                if (endMinute > 0) drawLine(NowMuted.copy(alpha = 0.9f),
+                drawLine(NowMuted.copy(alpha = 0.9f),
                     Offset(plotX(0), chartHeight - 1f), Offset(plotX(endMinute), chartHeight - 1f), 1.5f)
                 val envelope = Path()
                 series.points.forEachIndexed { index, point ->
@@ -764,21 +761,28 @@ private fun RainTimeline(
             }
         }
         BoxWithConstraints(Modifier.fillMaxWidth().height(NowLayoutPolicy.chartAxisHeightDp.dp).padding(start = 56.dp)) {
-            val inset = labelInset.coerceAtMost(maxWidth / 5f)
+            val fontScale = LocalDensity.current.fontScale
+            val ticks = NowChartLayout.clockTicks(
+                series.startEpochSeconds, endMinute, ZoneId.systemDefault(),
+                maxWidth.value.toInt(), fontScale,
+            )
             Canvas(Modifier.fillMaxSize()) {
                 ticks.forEach { tick ->
-                    val x = NowChartLayout.plotX(tick.offsetMinutes, maxWidth.toPx(), inset.toPx(), endMinute)
+                    val x = NowChartLayout.plotX(tick.offsetMinutes, size.width, endMinute)
                     drawLine(NowMuted, Offset(x, 0f), Offset(x, 5.dp.toPx()), 1.5f)
                 }
             }
             ticks.forEachIndexed { index, tick ->
                 if (!tick.showLabel) return@forEachIndexed
-                val labelWidth = if (tick.label.length > 5) 72.dp else 46.dp
-                val x = NowChartLayout.plotX(tick.offsetMinutes, maxWidth.value, inset.value, endMinute).dp - labelWidth / 2
+                val labelWidth = NowChartLayout.labelWidthDp(tick.label, fontScale)
+                    .coerceAtMost(maxWidth.value + if (index == 0) 56f else 0f)
+                val x = NowChartLayout.plotX(tick.offsetMinutes, maxWidth.value, endMinute)
+                val left = if (index == 0) -labelWidth / 2f
+                    else NowChartLayout.labelLeft(x, maxWidth.value, labelWidth)
                 Text(tick.label, color = if (index == 0) NowAccent else NowMuted,
                     fontSize = 11.sp, textAlign = TextAlign.Center, lineHeight = 13.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.width(labelWidth).offset(x = x, y = 7.dp))
+                    modifier = Modifier.width(labelWidth.dp).offset(x = left.dp, y = 7.dp))
             }
         }
         }

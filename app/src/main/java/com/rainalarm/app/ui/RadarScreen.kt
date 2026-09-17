@@ -23,11 +23,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material3.AlertDialog
@@ -39,7 +41,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -58,8 +59,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -82,6 +86,7 @@ import com.rainalarm.app.data.EumetViewRepository
 import com.rainalarm.app.data.WeatherLayerRepository
 import com.rainalarm.app.data.CurrentLocationSelectionPolicy
 import com.rainalarm.app.domain.RadarCameraMemory
+import com.rainalarm.app.domain.RadarSelectedCenterPolicy
 import com.rainalarm.app.domain.RadarPlaybackClock
 import com.rainalarm.app.domain.RadarEntryClock
 import com.rainalarm.app.domain.GeoPoint
@@ -109,6 +114,7 @@ internal object RadarTopControlsPolicy {
     fun windChipBelowControls(mapWidthDp: Int): Boolean = mapWidthDp < 340
 }
 
+/** The icon–title–icon group stays centred; only long titles consume spare width. */
 @Composable
 private fun RadarWindChip(weather: CurrentWeather?, mapWidthDp: Int, modifier: Modifier = Modifier) {
     val wind = weather?.takeIf { it.freshAt(Instant.now().epochSecond) }
@@ -144,6 +150,7 @@ fun LiveRadarScreen(
     currentRecenterTick: Int,
     useCurrentLocation: () -> Unit,
     recenterToCurrentLocation: () -> Unit,
+    recenterToSelectedPlace: () -> Unit,
     cameraMemory: RadarCameraMemory,
     selectPlace: (String) -> Unit,
     mapLayer: RadarMapLayer,
@@ -307,11 +314,36 @@ fun LiveRadarScreen(
         }
         else -> active
     }
-    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(place?.name ?: "Current location", style = MaterialTheme.typography.headlineSmall, maxLines = 1,
-                overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            PlaceSwitcher(places, locationState, selectPlace, { requestCurrentLocation(false) })
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+    val screenWidthDp = maxWidth.value.toInt()
+    val screenHeightDp = maxHeight.value.toInt()
+    val fontScale = LocalDensity.current.fontScale
+    val compactTitle = NowHeaderLayoutPolicy.simplifyText(screenWidthDp, screenHeightDp, fontScale)
+    Column(Modifier.fillMaxSize().padding(
+        horizontal = NowHeaderLayoutPolicy.horizontalPaddingDp(screenWidthDp, screenHeightDp, fontScale).dp,
+        vertical = NowHeaderLayoutPolicy.verticalPaddingDp.dp,
+    )) {
+        BoxWithConstraints(Modifier.fillMaxWidth().height(NowHeaderLayoutPolicy.heightDp.dp),
+            contentAlignment = Alignment.Center) {
+            val canCenterSelected = RadarSelectedCenterPolicy.canCenter(selectedPlaceId, place)
+            val maxTitleWidth = NowHeaderLayoutPolicy.titleMaxWidthDp(maxWidth.value).dp
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = recenterToSelectedPlace, enabled = canCenterSelected,
+                    modifier = Modifier.size(NowHeaderLayoutPolicy.switchDp.dp)) {
+                    Icon(Icons.Default.CenterFocusStrong,
+                        contentDescription = if (canCenterSelected) "Center map on ${place!!.name}"
+                            else "Center map unavailable until the selected location is resolved")
+                }
+                Spacer(Modifier.width(NowHeaderLayoutPolicy.gapDp.dp))
+                Text(place?.name ?: "Current location",
+                    fontSize = NowHeaderLayoutPolicy.titleFontSizeSp(compactTitle).sp,
+                    lineHeight = NowHeaderLayoutPolicy.titleLineHeightSp(compactTitle).sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+                    modifier = Modifier.widthIn(max = maxTitleWidth).semantics { heading() })
+                Spacer(Modifier.width(NowHeaderLayoutPolicy.gapDp.dp))
+                PlaceSwitcher(places, locationState, selectPlace, { requestCurrentLocation(false) })
+            }
         }
         if (locationMessage != null || (locationRequested && locationState is LocationUiState.Unavailable)) {
             Text(locationMessage ?: (locationState as LocationUiState.Unavailable).message,
@@ -374,6 +406,7 @@ fun LiveRadarScreen(
                 }
             }
         }
+    }
     }
 
     longPressed?.let { point ->

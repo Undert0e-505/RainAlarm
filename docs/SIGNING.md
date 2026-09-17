@@ -26,6 +26,8 @@ The helper decrypts the local passphrase only in the current process, supplies G
 
 `-VerifyOnly` checks the existing canonical `dist/RainAlarm-v<version>-release.apk` and the pinned certificate without building or publishing. It does not reveal the passphrase.
 
+For a phone-installable local preview, use this signed-local helper even if `assembleDebug` was used to check compilation. A debug-signed APK cannot install in place over the public release-signed app. Keep the same application ID and a nondecreasing version code; the helper creates a separate ignored artifact for a same-version rebuild. Verify its version, v2 signature and certificate fingerprint above, tests/lint result, size and SHA-256; copy only a uniquely named preview APK to the shared drive and verify the copy. Do not publish a preview or switch signing keys if the private signer is unavailable. See the root [agent workflow](../AGENTS.md).
+
 `scripts/initialize-local-signing.ps1` created this host's key using JDK 21 `keytool` with `-storepass:env` and `-keypass:env`; no passphrase was placed in command arguments. It refuses to initialize over an existing private directory. **Do not run initialization again to replace a release key.**
 
 ## Backup before publication

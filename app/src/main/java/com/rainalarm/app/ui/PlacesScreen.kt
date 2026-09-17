@@ -94,6 +94,20 @@ private sealed interface PlaceSearchState {
     data class Failed(val message: String) : PlaceSearchState
 }
 
+internal data class DisplayedPlaceRows(val places: List<SavedPlace>, val pendingOrder: List<String>?)
+
+/** A deletion changes the ID set, so it must invalidate any optimistic drag order. */
+internal object DisplayedPlaceRowsPolicy {
+    fun reconcile(collection: PlaceCollection, pendingOrder: List<String>?): DisplayedPlaceRows {
+        val incomingIds = collection.places.map { it.id }
+        val matches = pendingOrder != null && incomingIds.toSet() == pendingOrder.toSet()
+        val places = if (matches) PlaceCollectionRules.reorder(collection, pendingOrder).places
+            else collection.places
+        val remainingOrder = if (pendingOrder == incomingIds || !matches) null else pendingOrder
+        return DisplayedPlaceRows(places, remainingOrder)
+    }
+}
+
 @Composable
 fun PlacesScreen(
     collection: PlaceCollection,
@@ -151,13 +165,10 @@ fun PlacesScreen(
 
     LaunchedEffect(collection.places, draggingId, pendingOrder) {
         if (draggingId != null) return@LaunchedEffect
-        val incomingIds = collection.places.map { it.id }
-        val optimistic = pendingOrder
-        val next = if (optimistic != null && incomingIds.toSet() == optimistic.toSet())
-            PlaceCollectionRules.reorder(collection, optimistic).places else collection.places
+        val reconciled = DisplayedPlaceRowsPolicy.reconcile(collection, pendingOrder)
         displayedPlaces.clear()
-        displayedPlaces.addAll(next)
-        if (optimistic == incomingIds || optimistic?.toSet() != incomingIds.toSet()) pendingOrder = null
+        displayedPlaces.addAll(reconciled.places)
+        pendingOrder = reconciled.pendingOrder
     }
 
     fun moveDraggedToPointer() {

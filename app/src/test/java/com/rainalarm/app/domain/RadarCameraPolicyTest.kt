@@ -59,6 +59,27 @@ class RadarCameraPolicyTest {
     }
 
     @Test
+    fun `selected header recenter repeats after pan without changing place or zoom`() {
+        val memory = RadarCameraMemory()
+        assertTrue(RadarSelectedCenterPolicy.canCenter(london.id, london))
+        assertFalse(RadarSelectedCenterPolicy.canCenter(london.id, null))
+        assertFalse(RadarSelectedCenterPolicy.canCenter(manchester.id, london))
+        val current = SavedPlace("Current", 54.5, -1.25, isCurrentLocation = true, id = CURRENT_LOCATION_ID)
+        assertTrue(RadarSelectedCenterPolicy.canCenter(CURRENT_LOCATION_ID, current))
+
+        memory.capture(london, 51.62, 0.22, 15.0)
+        for (tick in 1..2) {
+            assertTrue(memory.hasPendingRecenter(tick))
+            val target = memory.target(london, 400, tick)
+            assertEquals(london.latitude, target.latitude, 0.0)
+            assertEquals(london.longitude, target.longitude, 0.0)
+            assertEquals(15.0, target.zoom, 0.0)
+            assertFalse(memory.hasPendingRecenter(tick))
+            memory.capture(london, 51.62, 0.22, target.zoom)
+        }
+    }
+
+    @Test
     fun `antimeridian offset wraps and polar camera clamps safely`() {
         val east = SavedPlace("East", 0.0, 179.9)
         val west = SavedPlace("West", 0.0, -179.9)

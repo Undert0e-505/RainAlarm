@@ -6,22 +6,25 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RadarChartTimeLinkTest {
-    @Test fun continuousPlotTapUsesActualPartialHorizonAndInset() {
+    @Test fun continuousPlotTapUsesFullWidthActualPartialHorizon() {
         val start = 1_700_000_000L
-        val end = 54
         val width = 300f
-        val inset = 24f
-        for (minute in listOf(0f, 0.5f, 13.25f, 27f, 54f)) {
-            val x = NowChartLayout.plotX(minute, width, inset, end)
-            assertEquals(minute, NowChartLayout.minuteAtX(x, width, inset, end)!!, 0.0001f)
-            assertEquals(start + minute * 60.0,
-                NowChartLayout.epochAtX(start, x, width, inset, end)!!, 0.01)
+        for (end in listOf(7, 46, 54, 60)) {
+            for (minute in listOf(0f, 0.5f, end / 4f, end / 2f, end.toFloat())) {
+                val x = NowChartLayout.plotX(minute, width, end)
+                assertEquals(minute, NowChartLayout.minuteAtX(x, width, end)!!, 0.0001f)
+                assertEquals(start + minute * 60.0,
+                    NowChartLayout.epochAtX(start, x, width, end)!!, 0.01)
+            }
+            assertEquals(0f, NowChartLayout.minuteAtX(-100f, width, end)!!, 0f)
+            assertEquals(end.toFloat(), NowChartLayout.minuteAtX(999f, width, end)!!, 0f)
+            assertEquals(start.toDouble(), NowChartLayout.epochAtX(start, 0f, width, end)!!, 0.01)
+            assertEquals(start + end * 60.0,
+                NowChartLayout.epochAtX(start, width, width, end)!!, 0.01)
         }
-        assertEquals(0f, NowChartLayout.minuteAtX(-100f, width, inset, end)!!, 0f)
-        assertEquals(54f, NowChartLayout.minuteAtX(999f, width, inset, end)!!, 0f)
-        assertEquals(0f, NowChartLayout.minuteAtX(150f, width, inset, 0)!!, 0f)
-        assertNull(NowChartLayout.minuteAtX(Float.NaN, width, inset, end))
-        assertNull(NowChartLayout.minuteAtX(20f, 0f, inset, end))
+        assertEquals(0f, NowChartLayout.minuteAtX(150f, width, 0)!!, 0f)
+        assertNull(NowChartLayout.minuteAtX(Float.NaN, width, 54))
+        assertNull(NowChartLayout.minuteAtX(20f, 0f, 54))
     }
 
     @Test fun requestWaitsThenAppliesOnlyToMatchingPlaceAndCoverage() {

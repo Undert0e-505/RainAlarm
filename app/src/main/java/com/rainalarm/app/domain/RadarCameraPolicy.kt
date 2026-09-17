@@ -21,6 +21,13 @@ data class RadarCameraSnapshot(
 
 data class RadarCameraTarget(val latitude: Double, val longitude: Double, val zoom: Double)
 
+/** A header recenter is available only for the actively selected, resolved place. */
+object RadarSelectedCenterPolicy {
+    fun canCenter(selectedPlaceId: String, place: SavedPlace?): Boolean =
+        place != null && place.id == selectedPlaceId &&
+            place.latitude.isFinite() && place.longitude.isFinite()
+}
+
 object RadarCameraPolicy {
     private const val MAX_LATITUDE = 85.05112878
     private const val MAX_ZOOM = 21.0

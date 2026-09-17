@@ -6,6 +6,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlinx.serialization.json.Json
 
 class PlaceAndGeocoderTest {
     @Test fun freshStoreSelectsVirtualCurrentWithoutPersistingAFix() {
@@ -47,8 +48,54 @@ class PlaceAndGeocoderTest {
         collection = PlaceCollectionRules.delete(collection, DEFAULT_PLACE.id)
         assertEquals(york.id, collection.selectedId)
         collection = PlaceCollectionRules.delete(collection, york.id)
-        assertEquals(DEFAULT_PLACE.id, collection.selectedId)
-        assertEquals(1, collection.places.size)
+        assertEquals(CURRENT_LOCATION_ID, collection.selectedId)
+        assertTrue(collection.places.isEmpty())
+        assertEquals(CURRENT_LOCATION_SELECTION, collection.selected)
+        assertEquals(CURRENT_LOCATION_ID, PlaceCollectionRules.resolveDefaultId(collection, york.id))
+        assertEquals(collection, PlaceCollectionRules.normalize(collection))
+    }
+
+    @Test
+    fun deletingExactRowsPreservesOtherOrderAndPinnedSelection() {
+        val york = SavedPlace("York", 53.96, -1.08)
+        val bath = SavedPlace("Bath", 51.38, -2.36)
+        val exeter = SavedPlace("Exeter", 50.72, -3.53)
+        var collection = PlaceCollectionRules.upsert(PlaceCollection(), york)
+        collection = PlaceCollectionRules.upsert(collection, bath, select = false)
+        collection = PlaceCollectionRules.upsert(collection, exeter, select = false)
+        collection = PlaceCollectionRules.setPinned(collection, bath.id, true)
+        collection = PlaceCollectionRules.reorder(collection,
+            listOf(exeter.id, york.id, DEFAULT_PLACE.id, bath.id))
+        collection = PlaceCollectionRules.delete(collection, exeter.id)
+        assertEquals(listOf(york.id, DEFAULT_PLACE.id, bath.id), collection.places.map { it.id })
+        assertEquals(york.id, collection.selectedId)
+        collection = PlaceCollectionRules.delete(collection, DEFAULT_PLACE.id)
+        assertEquals(listOf(york.id, bath.id), collection.places.map { it.id })
+        collection = PlaceCollectionRules.delete(collection, york.id)
+        assertEquals(bath.id, collection.selectedId) // pinned saved place wins
+        assertEquals(listOf(bath.id), collection.places.map { it.id })
+        collection = PlaceCollectionRules.delete(collection, bath.id)
+        assertTrue(collection.places.isEmpty())
+        assertEquals(CURRENT_LOCATION_ID, collection.selectedId)
+    }
+
+    @Test
+    fun emptySavedListSurvivesSerializationSelectionAndStartupFallback() {
+        val york = SavedPlace("York", 53.96, -1.08)
+        var collection = PlaceCollectionRules.upsert(PlaceCollection(), york)
+        collection = PlaceCollectionRules.delete(collection, DEFAULT_PLACE.id)
+        collection = PlaceCollectionRules.delete(collection, york.id)
+        val json = Json { encodeDefaults = true }
+        val restored = PlaceCollectionRules.normalize(json.decodeFromString<PlaceCollection>(
+            json.encodeToString(collection)))
+        assertTrue(restored.places.isEmpty())
+        assertEquals(CURRENT_LOCATION_ID, restored.selectedId)
+        assertEquals(CURRENT_LOCATION_ID, PlaceCollectionRules.resolveDefaultId(restored, york.id))
+        assertEquals(CURRENT_LOCATION_ID, PlaceCollectionRules.resolveDefaultId(restored, null))
+        assertEquals(restored, PlaceCollectionRules.select(restored, CURRENT_LOCATION_ID))
+        assertEquals(restored, PlaceCollectionRules.delete(restored, CURRENT_LOCATION_ID))
+        assertEquals(restored, PlaceCollectionRules.delete(restored, "missing"))
+        assertEquals(listOf(york), PlaceCollectionRules.upsert(restored, york).places)
     }
 
     @Test
