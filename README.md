@@ -2,9 +2,9 @@
 
 ## About
 
-Rain Alarm 0.1.0 is a clean-room, open-source Android app for a simple question: **when will rain reach my selected place?** Now shows a place-specific rain outlook; Radar lets you inspect the source imagery and its available time window. The app does not contain the retired RainToday app, its native library, artwork, credentials or assets. Research material under `Research/RainToday` is development-only and is never packaged.
+Rain Alarm 0.1.1 is a clean-room, open-source Android app for a simple question: **when will rain reach my selected place?** Now shows a place-specific rain outlook; Radar lets you inspect the source imagery and its available time window. The app does not contain the retired RainToday app, its native library, artwork, credentials or assets. Research material under `Research/RainToday` is development-only and is never packaged.
 
-Download the signed APK and read the [v0.1.0 release notes](RELEASE_NOTES.md) before installing. Rain Alarm is an experimental weather aid, not a safety-critical warning service.
+Download the [v0.1.1 signed release](https://github.com/Undert0e-505/RainAlarm/releases/tag/v0.1.1) and read its [patch notes](docs/releases/v0.1.1.md) before installing. The original [v0.1.0 release notes](RELEASE_NOTES.md) remain available. Rain Alarm is an experimental weather aid, not a safety-critical warning service.
 
 The launcher artwork is the project owner's supplied Android icon pack, included as density-specific legacy and adaptive PNG resources under the project's MIT license. The supplied Play Store image is in `artwork/play_store_icon_512.png`. Notifications use a separate white-on-transparent droplet/bell small icon, not the launcher background.
 
@@ -69,7 +69,7 @@ Map data © OpenStreetMap contributors, rendered via OpenFreeMap/OpenMapTiles. O
 
 ## Build and test
 
-The 0.1.0 app has version code 1, supports Android 8.0+ (min SDK 26), and compiles/targets SDK 37. Build requirements are JDK 21, Android SDK Platform 37, Build Tools 36.0.0, Android SDK command-line tools, and network access for first dependency resolution. Open the project in Android Studio or use the included Gradle wrapper. On Windows:
+The 0.1.1 app has version code 2, supports Android 8.0+ (min SDK 26), and compiles/targets SDK 37. Build requirements are JDK 21, Android SDK Platform 37, Build Tools 36.0.0, Android SDK command-line tools, and network access for first dependency resolution. Open the project in Android Studio or use the included Gradle wrapper. On Windows:
 
 ```powershell
 $env:ANDROID_HOME='D:\path\to\android-sdk'
@@ -102,8 +102,8 @@ The owner confirmed off-machine backup of both the keystore and passphrase befor
 The public repository is [Undert0e-505/RainAlarm](https://github.com/Undert0e-505/RainAlarm). **Future builds are not tagged or published by default.** A maintainer with a clean tree, the original private signing key, a configured GitHub remote and authenticated `gh` may explicitly use `-Publish` with signed Release mode:
 
 ```powershell
-.\scripts\build-release.ps1 -Mode Release -Publish -Remote origin -NotesFile .\RELEASE_NOTES.md -WhatIf
-.\scripts\build-release.ps1 -Mode Release -Publish -Remote origin -NotesFile .\RELEASE_NOTES.md
+.\scripts\build-release.ps1 -Mode Release -Publish -Remote origin -NotesFile .\docs\releases\v0.1.1.md -WhatIf
+.\scripts\build-release.ps1 -Mode Release -Publish -Remote origin -NotesFile .\docs\releases\v0.1.1.md
 ```
 
 `-WhatIf` previews without building or publishing; release signer variables are still checked. Actual publication checks Git root, clean tree, remote, `gh` authentication and local/remote tag/release collisions. It then makes annotated tag `v<version>`, pushes branch and tag without force, and creates a GitHub Release with the signed APK. If no notes file is supplied, GitHub generates notes. Use only after reviewing code, tests, device checks, permission disclosures and the exact artifact. A failed partial publication may leave a local or pushed tag; inspect it before retrying rather than forcing an overwrite.

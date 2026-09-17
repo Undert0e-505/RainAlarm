@@ -11,8 +11,19 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 class RadarProviderTest {
+    @Test fun releaseRetainsReflectiveConstructorsForEveryConfiguredProjection() {
+        val rules = listOf(File("proguard-rules.pro"), File("app/proguard-rules.pro"))
+            .first(File::isFile).readText()
+        for (projection in listOf("LongLatProjection", "TransverseMercatorProjection",
+            "StereographicAzimuthalProjection", "SwissObliqueMercatorProjection")) {
+            assertTrue("Missing no-arg constructor keep rule for $projection",
+                rules.contains("org.locationtech.proj4j.proj.$projection { public <init>(); }"))
+        }
+    }
+
     @Test
     fun regionalPointSamplerStaysDryWhenWetNeighboursDoNotCoverMarker() {
         val nearby = FloatArray(25).apply { this[5] = 0.5f; this[6] = 0.5f; this[10] = 0.5f }
