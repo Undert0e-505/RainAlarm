@@ -396,9 +396,11 @@ private fun RainCompass(
     val pointerTextureCrop = remember(rainTexture) {
         rainTexture?.let { NowRainTexturePolicy.pointerCrop(it.width, it.height) }
     }
-    val pointerFill = if (sourceBearing != null && hasRain)
-        Color(series.displayColor(analysis.maximum)).copy(alpha = 0.92f) else null
-    val centerFill = pointerFill ?: NowDeepBlue
+    val rainFill = NowPeakRainColorPolicy.forSeries(series, analysis)?.let {
+        Color(it.argb).copy(alpha = 0.92f)
+    }
+    val pointerFill = if (sourceBearing != null) rainFill else null
+    val centerFill = rainFill ?: NowDeepBlue
     val centerTextMeasurer = rememberTextMeasurer()
     val animatedBearing by animateFloatAsState(
         targetValue = (sourceBearing ?: 0.0).toFloat(),
@@ -541,7 +543,7 @@ private fun RainCompass(
                 Text("N", color = NowText, fontSize = 24.sp, lineHeight = 24.sp,
                     fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopCenter))
                 Text("E", color = NowMuted, fontSize = 24.sp, lineHeight = 24.sp,
-                    modifier = Modifier.align(Alignment.CenterEnd).padding(end = 3.dp))
+                    modifier = Modifier.align(Alignment.CenterEnd).padding(end = NowCompassCardinalPolicy.eastEndInsetDp.dp))
                 Text("S", color = NowMuted, fontSize = 24.sp, lineHeight = 24.sp,
                     modifier = Modifier.align(Alignment.BottomCenter))
                 Text("W", color = NowMuted, fontSize = 24.sp, lineHeight = 24.sp,

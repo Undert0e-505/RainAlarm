@@ -240,7 +240,11 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     private val _startupReady = MutableStateFlow(false)
     val startupReady: StateFlow<Boolean> = _startupReady.asStateFlow()
     private val _livePlace = MutableStateFlow<SavedPlace?>(null)
+    // Foreground-only marker position; small fixes do not invalidate point forecasts.
+    private val _liveMapPlace = MutableStateFlow<SavedPlace?>(null)
+    val liveMapPlace: StateFlow<SavedPlace?> = _liveMapPlace.asStateFlow()
     private var lastLiveFixTimeMillis = 0L
+    private var recenterAfterNextFix = false
     private val _foreground = MutableStateFlow(false)
     val selectedPlace = combine(placesState, _livePlace, _startupReady) { collection, live, ready ->
         if (!ready) null else if (collection.selectedId == CURRENT_LOCATION_ID) live else collection.selected
@@ -316,22 +320,27 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
                 Triple(id, foreground, request)
             }.distinctUntilChanged().collectLatest { (id, foreground, _) ->
                     if (id != CURRENT_LOCATION_ID || !foreground) {
+                        recenterAfterNextFix = false
                         placeNameJob?.cancel()
                         if (id == CURRENT_LOCATION_ID) {
                             _livePlace.value = null
+                            _liveMapPlace.value = null
                             lastLiveFixTimeMillis = 0L
                             ForegroundLocationSnapshot.clear()
                             _locationState.value = LocationUiState.Unavailable("Live location is available only while the app is in the foreground.")
                         } else {
                             _livePlace.value = null
+                            _liveMapPlace.value = null
                             lastLiveFixTimeMillis = 0L
                             ForegroundLocationSnapshot.clear()
                         }
                         return@collectLatest
                     }
                     if (!locationClient.hasForegroundPermission()) {
+                        recenterAfterNextFix = false
                         Log.w(CURRENT_LOCATION_TAG, "Current selected without foreground permission")
                         _livePlace.value = null
+                        _liveMapPlace.value = null
                         lastLiveFixTimeMillis = 0L
                         ForegroundLocationSnapshot.clear()
                         _locationState.value = LocationUiState.Unavailable("Location permission is unavailable. Select a saved place or grant foreground location.")
@@ -349,11 +358,17 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
                     initialFix?.let { acceptLiveFix(it) }
                         ?: run {
                             Log.w(CURRENT_LOCATION_TAG, "No fresh initial fix; awaiting foreground updates")
-                            _livePlace.value = null
-                            lastLiveFixTimeMillis = 0L
-                            ForegroundLocationSnapshot.clear()
-                            _locationState.value = LocationUiState.Unavailable("No fresh device fix is available yet.")
+                            if (!LiveLocationPolicy.isFresh(lastLiveFixTimeMillis, System.currentTimeMillis())) {
+                                _livePlace.value = null
+                                _liveMapPlace.value = null
+                                lastLiveFixTimeMillis = 0L
+                                ForegroundLocationSnapshot.clear()
+                                _locationState.value = LocationUiState.Unavailable("No fresh device fix is available yet.")
+                            }
                         }
+                    if (_locationState.value is LocationUiState.Locating) {
+                        _livePlace.value?.let { _locationState.value = LocationUiState.Active(it) }
+                    }
                     try {
                         coroutineScope {
                             val periodicFix = launch {
@@ -367,6 +382,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
                                     if (refreshed != null) acceptLiveFix(refreshed)
                                     else if (!LiveLocationPolicy.isFresh(lastLiveFixTimeMillis, now)) {
                                         _livePlace.value = null
+                                        _liveMapPlace.value = null
                                         ForegroundLocationSnapshot.clear()
                                         _locationState.value = LocationUiState.Unavailable("No fresh device fix is available yet.")
                                     }
@@ -383,6 +399,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
                     } catch (_: Exception) {
                         Log.w(CURRENT_LOCATION_TAG, "Foreground location updates unavailable")
                         _livePlace.value = null
+                        _liveMapPlace.value = null
                         lastLiveFixTimeMillis = 0L
                         ForegroundLocationSnapshot.clear()
                         _locationState.value = LocationUiState.Unavailable("Live location updates are unavailable.")
@@ -536,8 +553,23 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private suspend fun acceptLiveFix(fix: android.location.Location) {
+        if (!LiveLocationPolicy.isFresh(fix.time, System.currentTimeMillis()) ||
+            !fix.latitude.isFinite() || !fix.longitude.isFinite() ||
+            fix.latitude !in -90.0..90.0 || fix.longitude !in -180.0..180.0) return
+        if (_liveMapPlace.value != null && !LiveLocationPolicy.isNewerFix(fix.time, lastLiveFixTimeMillis)) return
         lastLiveFixTimeMillis = fix.time
         val prior = _livePlace.value
+        val marker = try {
+            (prior ?: SavedPlace(
+                name = LocationNameResolver.fallback(fix.latitude, fix.longitude),
+                latitude = fix.latitude, longitude = fix.longitude, isCurrentLocation = true,
+            )).copy(latitude = fix.latitude, longitude = fix.longitude)
+        } catch (_: Exception) { return }
+        _liveMapPlace.value = marker
+        if (recenterAfterNextFix) {
+            recenterAfterNextFix = false
+            _currentRecenterTick.value++
+        }
         if (prior != null && !LiveLocationPolicy.materiallyMoved(
                 prior.latitude, prior.longitude, fix.latitude, fix.longitude,
             )) {
@@ -556,6 +588,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         }
         _currentWeather.value = null
         _livePlace.value = place
+        _liveMapPlace.value = place
         ForegroundLocationSnapshot.update(place, fix.time)
         _locationState.value = LocationUiState.Active(place)
         Log.i(CURRENT_LOCATION_TAG, "Fresh live fix active")
@@ -607,9 +640,17 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
             return
         }
         placeNameJob?.cancel()
-        _livePlace.value = null
-        lastLiveFixTimeMillis = 0L
-        ForegroundLocationSnapshot.clear()
+        val preserveFix = placesState.value.selectedId == CURRENT_LOCATION_ID &&
+            LiveLocationPolicy.isFresh(lastLiveFixTimeMillis, System.currentTimeMillis()) &&
+            _livePlace.value != null
+        if (preserveFix && recenterMap) _currentRecenterTick.value++
+        if (!preserveFix) {
+            _livePlace.value = null
+            _liveMapPlace.value = null
+            lastLiveFixTimeMillis = 0L
+            ForegroundLocationSnapshot.clear()
+        }
+        recenterAfterNextFix = recenterMap
         _locationState.value = LocationUiState.Locating
         Log.i(CURRENT_LOCATION_TAG, "Selecting virtual Current and requesting a fresh fix")
         pendingPlaceSelectionId = CURRENT_LOCATION_ID
@@ -617,7 +658,6 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         currentSelectionJob?.cancel()
         currentSelectionJob = viewModelScope.launch {
             places.select(transition.selectedId)
-            if (recenterMap) _currentRecenterTick.value++
             alertScheduler.enqueueImmediate()
         }
     }
@@ -632,6 +672,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
             places.upsert(place, select = true)
             if (!place.isCurrentLocation) {
                 _livePlace.value = null
+                _liveMapPlace.value = null
                 ForegroundLocationSnapshot.clear()
             }
             _locationState.value = LocationUiState.Idle
@@ -649,6 +690,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
             places.select(id)
             if (id != CURRENT_LOCATION_ID) {
                 _livePlace.value = null
+                _liveMapPlace.value = null
                 ForegroundLocationSnapshot.clear()
                 _locationState.value = LocationUiState.Idle
             }
@@ -656,10 +698,17 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun deletePlace(id: String) {
+    fun deletePlace(id: String, onResult: (Boolean) -> Unit) {
         viewModelScope.launch {
-            places.delete(id)
-            alertScheduler.enqueueImmediate()
+            val succeeded = try {
+                places.delete(id)
+                true
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                false
+            }
+            onResult(succeeded)
+            if (succeeded) alertScheduler.enqueueImmediate()
         }
     }
 
@@ -834,6 +883,7 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
     val state by viewModel.state.collectAsStateWithLifecycle()
     val refreshStatus by viewModel.refreshStatus.collectAsStateWithLifecycle()
     val selectedPlace by viewModel.selectedPlace.collectAsStateWithLifecycle()
+    val liveMapPlace by viewModel.liveMapPlace.collectAsStateWithLifecycle()
     val placesState by viewModel.placesState.collectAsStateWithLifecycle()
     LaunchedEffect(placesState.selectedId, pendingChartTime?.token) {
         if (RadarChartTimeLink.shouldDiscard(pendingChartTime, placesState.selectedId, false))
@@ -936,6 +986,7 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
                         )
                         Destination.RADAR -> LiveRadarScreen(
                             place = selectedPlace,
+                            liveMapPlace = liveMapPlace,
                             places = placesState,
                             playbackSpeed = radarPlaybackSpeed,
                             darkMap = mapAppearance.isDark(systemDark),

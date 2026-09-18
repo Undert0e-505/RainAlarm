@@ -34,9 +34,30 @@ class WeatherUiWiringTest {
         assertTrue(afterLastDelete.places.isEmpty())
         assertNull(afterLastDelete.pendingOrder)
         val placesUi = source("PlacesScreen.kt")
-        assertTrue(placesUi.contains("onDelete = { deletePlace(place.id) }"))
+        assertTrue(placesUi.contains("displayedPlaces.removeAll { it.id == place.id }"))
+        assertTrue(placesUi.contains("deletePlace(place.id) { succeeded ->"))
         assertTrue(placesUi.contains("IconButton(onClick = onDelete)"))
         assertTrue(placesUi.contains("detectDragGesturesAfterLongPress("))
+    }
+
+    @Test fun `optimistic multiple deletes reconcile success and failed write independently`() {
+        val york = SavedPlace("York", 53.96, -1.08)
+        val bath = SavedPlace("Bath", 51.38, -2.36)
+        var collection = PlaceCollectionRules.upsert(PlaceCollection(), york)
+        collection = PlaceCollectionRules.upsert(collection, bath, select = false)
+        val pending = setOf(york.id, bath.id)
+        val optimistic = DisplayedPlaceRowsPolicy.reconcile(collection, null, pending)
+        assertEquals(listOf("london-default"), optimistic.places.map { it.id })
+        assertEquals(pending, optimistic.pendingDeletes)
+        collection = PlaceCollectionRules.delete(collection, york.id)
+        val oneConfirmed = DisplayedPlaceRowsPolicy.reconcile(collection, null, pending)
+        assertEquals(listOf("london-default"), oneConfirmed.places.map { it.id })
+        assertEquals(setOf(bath.id), oneConfirmed.pendingDeletes)
+        val failureRestored = DisplayedPlaceRowsPolicy.reconcile(collection, null, emptySet())
+        assertEquals(listOf("london-default", bath.id), failureRestored.places.map { it.id })
+        val placesUi = source("PlacesScreen.kt")
+        assertTrue(placesUi.contains("pendingDeletes = pendingDeletes - place.id"))
+        assertTrue(placesUi.contains("Could not delete"))
     }
 
     @Test fun `notification switch lives only in settings and provider rows are titles only`() {
@@ -119,7 +140,7 @@ class WeatherUiWiringTest {
                 ", fontSize = 24.sp, lineHeight = 24.sp"))
         }
         assertTrue(now.contains("fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopCenter)"))
-        assertTrue(now.contains("modifier = Modifier.align(Alignment.CenterEnd).padding(end = 3.dp)"))
+        assertTrue(now.contains("modifier = Modifier.align(Alignment.CenterEnd).padding(end = NowCompassCardinalPolicy.eastEndInsetDp.dp)"))
         assertTrue(now.contains("modifier = Modifier.align(Alignment.BottomCenter)"))
         assertTrue(now.contains("modifier = Modifier.align(Alignment.CenterStart).padding(start = 3.dp)"))
         assertTrue(now.contains("val outer = size.minDimension * 0.43f"))

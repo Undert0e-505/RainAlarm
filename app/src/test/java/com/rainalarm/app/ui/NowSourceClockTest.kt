@@ -3,6 +3,10 @@ package com.rainalarm.app.ui
 import com.rainalarm.app.domain.RainMinuteAvailability
 import com.rainalarm.app.domain.RainMinutePoint
 import com.rainalarm.app.domain.RainMinuteSeries
+import com.rainalarm.app.domain.RainMinuteSeriesAnalyzer
+import com.rainalarm.app.domain.RadarIntensityEncoding
+import com.rainalarm.app.domain.RainAlarmPalette
+import com.rainalarm.app.domain.OpenRadarColorScale
 import com.rainalarm.app.domain.NowVisualGeometry
 import com.rainalarm.app.data.NowWeatherMetric
 import org.junit.Assert.assertEquals
@@ -14,6 +18,62 @@ import java.time.ZoneId
 import javax.imageio.ImageIO
 
 class NowSourceClockTest {
+    @Test
+    fun compassEastInsetAloneMovesInwardAtLargeCardinalSize() {
+        assertEquals(8, NowCompassCardinalPolicy.eastEndInsetDp)
+        val canvas = File("src/main/java/com/rainalarm/app/ui/NowScreen.kt")
+            .takeIf(File::isFile) ?: File("app/src/main/java/com/rainalarm/app/ui/NowScreen.kt")
+        val text = canvas.readText()
+        assertTrue(text.contains("Modifier.align(Alignment.CenterEnd).padding(end = NowCompassCardinalPolicy.eastEndInsetDp.dp)"))
+        assertTrue(text.contains("Modifier.align(Alignment.CenterStart).padding(start = 3.dp)"))
+        assertTrue(text.contains("Text(\"N\", color = NowText, fontSize = 24.sp"))
+        assertTrue(text.contains("Text(\"S\", color = NowMuted, fontSize = 24.sp"))
+    }
+
+    @Test
+    fun rainAssetsUseUpperEnvelopePeakAcrossProviderEncodings() {
+        val openAlphaForRaw: (Float) -> Float = { raw ->
+            RainAlarmPalette.OPEN_FIRST_VISIBLE_ALPHA +
+                (raw - RainAlarmPalette.FIRST_VISIBLE_RAW / 255f) /
+                (1f - RainAlarmPalette.FIRST_VISIBLE_RAW / 255f) *
+                (1f - RainAlarmPalette.OPEN_FIRST_VISIBLE_ALPHA)
+        }
+        val peaks = listOf(
+            RadarIntensityEncoding.REGIONAL_GRAYSCALE to listOf(83f / 255f, 123f / 255f, 153f / 255f),
+            RadarIntensityEncoding.REGIONAL_AREA_CHART to listOf(0.31f, 0.5f, 0.75f),
+            RadarIntensityEncoding.OPEN_ALPHA to listOf(83f / 255f, 123f / 255f, 153f / 255f).map(openAlphaForRaw),
+            RadarIntensityEncoding.OPEN_REFLECTIVITY to listOf(15f, 30f, 45f).map(OpenRadarColorScale::severityForDbz),
+        )
+        val palettePeaks = listOf(83f, 123f, 153f)
+        for ((encoding, values) in peaks) for (index in values.indices) {
+            val threshold = when (encoding) {
+                RadarIntensityEncoding.OPEN_ALPHA -> RainAlarmPalette.OPEN_FIRST_VISIBLE_ALPHA
+                RadarIntensityEncoding.REGIONAL_GRAYSCALE -> RainAlarmPalette.FIRST_VISIBLE_RAW / 255f
+                else -> 0.25f
+            }
+            val series = RainMinuteSeries(1_000,
+                (0..60).map { minute ->
+                    val average = if (minute == 5) threshold + 0.005f else 0f
+                    RainMinutePoint(minute, 0f, average,
+                        if (minute == 50) values[index] else average, minute > 0)
+                }, "test", 1.0, RainMinuteAvailability.AVAILABLE,
+                sourceBearingDegrees = null, intensityEncoding = encoding)
+            val analysis = requireNotNull(RainMinuteSeriesAnalyzer.analyze(series))
+            assertTrue(analysis.maximum < values[index]) // old mean-peak colour missed the later upper peak
+            val color = requireNotNull(NowPeakRainColorPolicy.forSeries(series, analysis))
+            assertEquals(2 - index, color.band) // Light, Medium, Severe
+            val expected = RainAlarmPalette.colorAt(palettePeaks[index] / 255f) or 0xFF000000.toInt()
+            assertEquals("$encoding at band $index", expected, color.argb)
+        }
+        val dry = RainMinuteSeries(1_000, (0..60).map { minute ->
+            RainMinutePoint(minute, 0f, 0f, if (minute == 50) 1f else 0f, minute > 0)
+        }, "dry", 1.0, RainMinuteAvailability.AVAILABLE)
+        assertEquals(null, NowPeakRainColorPolicy.forSeries(dry,
+            requireNotNull(RainMinuteSeriesAnalyzer.analyze(dry))))
+        val unavailable = RainMinuteSeries.unavailable(1_000, "unavailable", "No forecast")
+        assertEquals(null, NowPeakRainColorPolicy.forSeries(unavailable,
+            com.rainalarm.app.domain.RainMinuteAnalysis(true, 0, null, 1f)))
+    }
     @Test
     fun nowHeaderBalancesSwitcherBesideCentredTitle() {
         assertEquals(48, NowHeaderLayoutPolicy.switchDp)
@@ -217,7 +277,7 @@ class NowSourceClockTest {
         assertTrue(!canvas.contains("NowVisualGeometry.rainHat"))
         assertTrue(canvas.contains("NowMotionPolicy.centerDiscScale(entryProgress)"))
         assertTrue(canvas.contains("NowMotionPolicy.centerScale(entryProgress)"))
-        assertTrue(canvas.contains("val centerFill = pointerFill ?: NowDeepBlue"))
+        assertTrue(canvas.contains("val centerFill = rainFill ?: NowDeepBlue"))
         assertTrue(canvas.contains("drawPath(silhouette, requireNotNull(pointerFill))"))
         assertTrue(canvas.contains("drawCircle(centerFill,"))
         assertEquals(1000, NowMotionPolicy.durationMillis)
@@ -321,7 +381,8 @@ class NowSourceClockTest {
         val source = java.io.File("src/main/java/com/rainalarm/app/ui/NowScreen.kt")
             .takeIf(java.io.File::isFile) ?: java.io.File("app/src/main/java/com/rainalarm/app/ui/NowScreen.kt")
         val canvas = source.readText()
-        assertTrue(canvas.contains("val centerFill = pointerFill ?: NowDeepBlue"))
+        assertTrue(canvas.contains("val centerFill = rainFill ?: NowDeepBlue"))
+        assertTrue(canvas.contains("val pointerFill = if (sourceBearing != null) rainFill else null"))
         assertTrue(canvas.contains("Text(centerLabel, color = Color.White"))
         assertTrue(canvas.contains("Text(\"min\", color = Color.White"))
         assertTrue(canvas.contains("style = TextStyle(shadow = CenterGlyphShadow)"))

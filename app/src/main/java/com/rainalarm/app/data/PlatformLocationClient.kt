@@ -159,11 +159,14 @@ class PlatformLocationClient(private val context: Context) {
 object LiveLocationPolicy {
     const val MAX_FIX_AGE_MILLIS = 5 * 60 * 1000L
     const val MATERIAL_MOVE_METRES = 250.0
-    const val UPDATE_INTERVAL_MILLIS = 30_000L
+    const val UPDATE_INTERVAL_MILLIS = 7_500L
     const val UPDATE_DISTANCE_METRES = 0f
     const val ACTIVE_REFRESH_AFTER_MILLIS = 2 * 60 * 1000L
     const val IMMEDIATE_FIX_AGE_MILLIS = 30_000L
     const val REFRESH_CHECK_INTERVAL_MILLIS = 60_000L
+
+    fun isNewerFix(fixTimeMillis: Long, lastAcceptedMillis: Long): Boolean =
+        fixTimeMillis > lastAcceptedMillis
 
     fun allowedProviders(enabled: List<String>, fineGranted: Boolean): List<String> =
         enabled.filter { it != "gps" || fineGranted }

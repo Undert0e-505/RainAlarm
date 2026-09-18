@@ -29,6 +29,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Layers
@@ -75,6 +76,7 @@ import com.rainalarm.app.data.RadarProviderCoordinator
 import com.rainalarm.app.data.RadarProviderKind
 import com.rainalarm.app.data.RadarSettingsRepository
 import com.rainalarm.app.data.SavedPlace
+import com.rainalarm.app.data.CURRENT_LOCATION_ID
 import com.rainalarm.app.data.PlaceCollection
 import com.rainalarm.app.data.RadarPlaybackSpeed
 import com.rainalarm.app.data.RadarMapLayer
@@ -142,6 +144,7 @@ private sealed interface AncillaryStatus {
 @SuppressLint("LogNotTimber") // Local lifecycle diagnostics for device-only radar failures.
 fun LiveRadarScreen(
     place: SavedPlace?,
+    liveMapPlace: SavedPlace?,
     places: PlaceCollection,
     playbackSpeed: RadarPlaybackSpeed,
     darkMap: Boolean,
@@ -185,6 +188,10 @@ fun LiveRadarScreen(
     var locationMessage by remember { mutableStateOf<String?>(null) }
     var locationRequested by remember { mutableStateOf(false) }
     var pendingMapRecenter by remember { mutableStateOf(false) }
+    var followLive by remember { mutableStateOf(false) }
+    LaunchedEffect(selectedPlaceId, liveMapPlace) {
+        if (!RadarLiveMapPolicy.canFollow(selectedPlaceId, liveMapPlace)) followLive = false
+    }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { result ->
@@ -359,6 +366,10 @@ fun LiveRadarScreen(
             session != null && place != null && RadarLiveSessionPolicy.canReuse(session!!, place) -> RadarPlayer(
                 session = session!!,
                 mapPlace = place,
+                markerPlace = RadarLiveMapPolicy.marker(place, liveMapPlace),
+                hasFreshLiveFix = RadarLiveMapPolicy.canFollow(selectedPlaceId, liveMapPlace),
+                followLive = followLive,
+                onFollowLiveChange = { followLive = it },
                 selectedPlaceId = selectedPlaceId,
                 chartTimeRequest = chartTimeRequest,
                 onChartTimeConsumed = onChartTimeConsumed,
@@ -444,6 +455,10 @@ fun LiveRadarScreen(
 private fun ColumnScope.RadarPlayer(
     session: RadarSession,
     mapPlace: SavedPlace,
+    markerPlace: SavedPlace,
+    hasFreshLiveFix: Boolean,
+    followLive: Boolean,
+    onFollowLiveChange: (Boolean) -> Unit,
     selectedPlaceId: String,
     chartTimeRequest: RadarChartTimeRequest?,
     onChartTimeConsumed: (Int) -> Unit,
@@ -546,7 +561,11 @@ private fun ColumnScope.RadarPlayer(
                 session,
                 bracket,
                 mapPlace,
-                onLongPress,
+                markerPlace = markerPlace,
+                followLive = RadarLiveMapPolicy.shouldCenterOnFix(
+                    selectedPlaceId, if (hasFreshLiveFix) markerPlace else null, followLive),
+                onManualCameraGesture = { if (followLive) onFollowLiveChange(false) },
+                onLongPress = onLongPress,
                 recenterSignal = currentRecenterTick,
                 cameraMemory = cameraMemory,
                 isPlaying = playing,
@@ -609,7 +628,8 @@ private fun ColumnScope.RadarPlayer(
             )
             val windBelow = mapLayer == RadarMapLayer.WIND && RadarTopControlsPolicy.windChipBelowControls(mapWidthDp)
             if (windBelow) RadarWindChip(currentWeather, mapWidthDp,
-                Modifier.align(Alignment.TopEnd).padding(top = 54.dp, end = 8.dp))
+                Modifier.align(Alignment.TopEnd).padding(
+                    top = if (selectedPlaceId == CURRENT_LOCATION_ID) 106.dp else 54.dp, end = 8.dp))
             Row(Modifier.align(Alignment.TopEnd).padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (mapLayer == RadarMapLayer.WIND && !windBelow) RadarWindChip(currentWeather, mapWidthDp)
                 Box {
@@ -635,6 +655,18 @@ private fun ColumnScope.RadarPlayer(
                         color = if (darkMap) Color.White else Color.Black, strokeWidth = 2.dp)
                     else Icon(Icons.Default.MyLocation, contentDescription = "Use current device location",
                         tint = if (darkMap) Color.White else Color.Black)
+                }
+            }
+            if (selectedPlaceId == CURRENT_LOCATION_ID) {
+                IconButton(onClick = { onFollowLiveChange(!followLive) },
+                    enabled = hasFreshLiveFix,
+                    modifier = Modifier.align(Alignment.TopEnd).padding(top = 52.dp, end = 4.dp)
+                        .size(48.dp)
+                        .background(if (followLive) Accent.copy(alpha = 0.85f)
+                            else LocalRainAlarmPalette.current.mapLabelSurface, RoundedCornerShape(12.dp))) {
+                    Icon(Icons.Default.Navigation,
+                        contentDescription = if (followLive) "Stop following live location" else "Follow live location",
+                        tint = if (followLive) Color.Black else if (darkMap) Color.White else Color.Black)
                 }
             }
             Box(Modifier.align(Alignment.BottomEnd).padding(8.dp)) {

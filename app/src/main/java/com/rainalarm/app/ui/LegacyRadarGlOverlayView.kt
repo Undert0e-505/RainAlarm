@@ -121,7 +121,27 @@ internal class RadarGlOverlayView(
             markerPlace = mapPlace
             previous?.latitude != mapPlace.latitude || previous.longitude != mapPlace.longitude
         }
-        if (moved) onCameraMoved()
+        if (moved) updateMarkerProjection(mapPlace)
+        requestRender()
+    }
+
+    override fun setMarker(mapPlace: SavedPlace) {
+        if (disposed) return
+        val moved = synchronized(stateLock) {
+            val previous = markerPlace
+            markerPlace = mapPlace
+            previous?.latitude != mapPlace.latitude || previous.longitude != mapPlace.longitude
+        }
+        if (moved) updateMarkerProjection(mapPlace)
+    }
+
+    private fun updateMarkerProjection(mapPlace: SavedPlace) {
+        if (width <= 0 || height <= 0) return
+        val ready = map ?: return
+        val point = ready.projection.toScreenLocation(LatLng(mapPlace.latitude, mapPlace.longitude))
+        synchronized(stateLock) {
+            markerNdc = floatArrayOf(point.x / width * 2f - 1f, 1f - point.y / height * 2f)
+        }
         requestRender()
     }
 

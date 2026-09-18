@@ -94,17 +94,26 @@ private sealed interface PlaceSearchState {
     data class Failed(val message: String) : PlaceSearchState
 }
 
-internal data class DisplayedPlaceRows(val places: List<SavedPlace>, val pendingOrder: List<String>?)
+internal data class DisplayedPlaceRows(
+    val places: List<SavedPlace>,
+    val pendingOrder: List<String>?,
+    val pendingDeletes: Set<String>,
+)
 
 /** A deletion changes the ID set, so it must invalidate any optimistic drag order. */
 internal object DisplayedPlaceRowsPolicy {
-    fun reconcile(collection: PlaceCollection, pendingOrder: List<String>?): DisplayedPlaceRows {
+    fun reconcile(
+        collection: PlaceCollection,
+        pendingOrder: List<String>?,
+        pendingDeletes: Set<String> = emptySet(),
+    ): DisplayedPlaceRows {
         val incomingIds = collection.places.map { it.id }
         val matches = pendingOrder != null && incomingIds.toSet() == pendingOrder.toSet()
         val places = if (matches) PlaceCollectionRules.reorder(collection, pendingOrder).places
             else collection.places
         val remainingOrder = if (pendingOrder == incomingIds || !matches) null else pendingOrder
-        return DisplayedPlaceRows(places, remainingOrder)
+        val awaitingStore = pendingDeletes.intersect(incomingIds.toSet())
+        return DisplayedPlaceRows(places.filterNot { it.id in awaitingStore }, remainingOrder, awaitingStore)
     }
 }
 
@@ -115,7 +124,7 @@ fun PlacesScreen(
     useCurrentLocation: () -> Unit,
     saveAndSelect: (SavedPlace) -> Unit,
     selectPlace: (String) -> Unit,
-    deletePlace: (String) -> Unit,
+    deletePlace: (String, (Boolean) -> Unit) -> Unit,
     setPinned: (String, Boolean) -> Unit,
     renamePlace: (String, String) -> Unit,
     reorderPlaces: (List<String>) -> Unit,
@@ -159,16 +168,18 @@ fun PlacesScreen(
     var dragOffset by remember { mutableFloatStateOf(0f) }
     var pointerY by remember { mutableFloatStateOf(0f) }
     var pendingOrder by remember { mutableStateOf<List<String>?>(null) }
+    var pendingDeletes by remember { mutableStateOf<Set<String>>(emptySet()) }
     var renamingId by remember { mutableStateOf<String?>(null) }
     var editedName by remember { mutableStateOf("") }
     val density = LocalDensity.current
 
-    LaunchedEffect(collection.places, draggingId, pendingOrder) {
+    LaunchedEffect(collection.places, draggingId, pendingOrder, pendingDeletes) {
         if (draggingId != null) return@LaunchedEffect
-        val reconciled = DisplayedPlaceRowsPolicy.reconcile(collection, pendingOrder)
+        val reconciled = DisplayedPlaceRowsPolicy.reconcile(collection, pendingOrder, pendingDeletes)
         displayedPlaces.clear()
         displayedPlaces.addAll(reconciled.places)
         pendingOrder = reconciled.pendingOrder
+        pendingDeletes = reconciled.pendingDeletes
     }
 
     fun moveDraggedToPointer() {
@@ -280,7 +291,19 @@ fun PlacesScreen(
                 place = place,
                 selected = place.id == collection.selectedId,
                 onSelect = { selectPlace(place.id) },
-                onDelete = { deletePlace(place.id) },
+                onDelete = {
+                    if (place.id !in pendingDeletes) {
+                        pendingDeletes = pendingDeletes + place.id
+                        pendingOrder = null
+                        displayedPlaces.removeAll { it.id == place.id }
+                        deletePlace(place.id) { succeeded ->
+                            if (!succeeded) {
+                                pendingDeletes = pendingDeletes - place.id
+                                message = "Could not delete ${place.name}. Try again."
+                            }
+                        }
+                    }
+                },
                 onPin = { setPinned(place.id, !place.pinned) },
                 onRename = { renamingId = place.id; editedName = place.name },
                 modifier = Modifier
@@ -343,7 +366,8 @@ fun PlacesScreen(
                                 draggingId = null
                                 dragOffset = 0f
                                 displayedPlaces.clear()
-                                displayedPlaces.addAll(collection.places)
+                                displayedPlaces.addAll(DisplayedPlaceRowsPolicy.reconcile(
+                                    collection, pendingOrder, pendingDeletes).places)
                             },
                         )
                     },

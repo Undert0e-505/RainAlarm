@@ -290,6 +290,7 @@ internal interface RadarOverlayController {
     fun bindSession(ownedSession: RadarSession)
     fun attachMap(ready: MapLibreMap)
     fun setState(next: RadarTimelineBracket, playing: Boolean, mapPlace: SavedPlace)
+    fun setMarker(mapPlace: SavedPlace)
     fun onCameraMoved()
     fun dispose()
 }
@@ -376,6 +377,14 @@ private class CanvasRadarOverlayView(context: android.content.Context) : View(co
         rebuildPlan(force = true)
         postInvalidateOnAnimation()
         if (playing) scheduleFrame() else cancelFrame()
+    }
+
+    override fun setMarker(mapPlace: SavedPlace) {
+        if (disposed || !::session.isInitialized ||
+            (marker.latitude == mapPlace.latitude && marker.longitude == mapPlace.longitude)) return
+        marker = mapPlace
+        markerLatLng = LatLng(mapPlace.latitude, mapPlace.longitude)
+        postInvalidateOnAnimation()
     }
 
     override fun onCameraMoved() {
@@ -557,6 +566,9 @@ fun RadarImageMap(
     mapPlace: SavedPlace,
     onLongPress: (GeoPoint) -> Unit,
     modifier: Modifier = Modifier,
+    markerPlace: SavedPlace = mapPlace,
+    followLive: Boolean = false,
+    onManualCameraGesture: () -> Unit = {},
     recenterSignal: Int = 0,
     isPlaying: Boolean = false,
     onRendererStatus: (RadarRendererStatus) -> Unit = {},
@@ -575,6 +587,9 @@ fun RadarImageMap(
             mapPlace,
             onLongPress,
             modifier,
+            markerPlace,
+            followLive,
+            onManualCameraGesture,
             recenterSignal,
             isPlaying,
             onRendererStatus,
@@ -596,6 +611,9 @@ private fun RadarImageMapInstance(
     mapPlace: SavedPlace,
     onLongPress: (GeoPoint) -> Unit,
     modifier: Modifier,
+    markerPlace: SavedPlace,
+    followLive: Boolean,
+    onManualCameraGesture: () -> Unit,
     recenterSignal: Int,
     isPlaying: Boolean,
     onRendererStatus: (RadarRendererStatus) -> Unit,
@@ -621,6 +639,8 @@ private fun RadarImageMapInstance(
     val currentWindViewportCallback by rememberUpdatedState(onWindViewportChanged)
     val latestSatellite by rememberUpdatedState(satelliteLayer)
     val latestMapPlace by rememberUpdatedState(mapPlace)
+    val latestMarkerPlace by rememberUpdatedState(markerPlace)
+    val currentManualGesture by rememberUpdatedState(onManualCameraGesture)
     val latestRecenterSignal by rememberUpdatedState(recenterSignal)
     val staticFallback = remember(session) {
         session.legacyArchive?.let { LegacyStaticFallbackOverlayView(context, session) }
@@ -639,8 +659,12 @@ private fun RadarImageMapInstance(
     val mapLifecycle = remember(mapView) { MapViewLifecycle(mapView) }
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
     var cameraListener by remember { mutableStateOf<MapLibreMap.OnCameraMoveListener?>(null) }
+    var cameraStartListener by remember { mutableStateOf<MapLibreMap.OnCameraMoveStartedListener?>(null) }
     var cameraIdleListener by remember { mutableStateOf<MapLibreMap.OnCameraIdleListener?>(null) }
     var appliedPlace by remember(mapView) { mutableStateOf<SavedPlace?>(null) }
+    var lastBracket by remember(session) { mutableStateOf<RadarTimelineBracket?>(null) }
+    var lastPlaying by remember(session) { mutableStateOf<Boolean?>(null) }
+    var lastMarker by remember(session) { mutableStateOf<SavedPlace?>(null) }
     fun saveCamera(ready: MapLibreMap, place: SavedPlace) {
         val position = ready.cameraPosition
         val center = position.target ?: return
@@ -658,6 +682,7 @@ private fun RadarImageMapInstance(
                 val idleListener = cameraIdleListener
                 if (ready != null) appliedPlace?.let { saveCamera(ready, it) }
                 if (ready != null && listener != null) ready.removeOnCameraMoveListener(listener)
+                cameraStartListener?.let { if (ready != null) ready.removeOnCameraMoveStartedListener(it) }
                 if (ready != null && idleListener != null) ready.removeOnCameraIdleListener(idleListener)
             },
             destroyMap = mapLifecycle::destroy,
@@ -742,6 +767,12 @@ private fun RadarImageMapInstance(
                     }
                     cameraListener = listener
                     ready.addOnCameraMoveListener(listener)
+                    val startListener = MapLibreMap.OnCameraMoveStartedListener { reason ->
+                        if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE)
+                            currentManualGesture()
+                    }
+                    cameraStartListener = startListener
+                    ready.addOnCameraMoveStartedListener(startListener)
                     val idle = MapLibreMap.OnCameraIdleListener {
                         if (!teardown.isClosed && mapView.width > 0 && mapView.height > 0) {
                             val bounds = ready.projection.visibleRegion.latLngBounds
@@ -758,8 +789,15 @@ private fun RadarImageMapInstance(
             }
         },
         update = {
-            overlay.setState(bracket, isPlaying, mapPlace)
-            staticFallback?.setPlace(mapPlace)
+            if (lastBracket != bracket || lastPlaying != isPlaying) {
+                overlay.setState(bracket, isPlaying, markerPlace)
+                lastBracket = bracket
+                lastPlaying = isPlaying
+            } else overlay.setMarker(markerPlace)
+            if (lastMarker != markerPlace) {
+                staticFallback?.setPlace(markerPlace)
+                lastMarker = markerPlace
+            }
             windView.update(windGrid, windArrowScale)
         },
         modifier = modifier,
@@ -811,20 +849,39 @@ private fun RadarImageMapInstance(
         onDispose { ready.removeOnMapLongClickListener(listener) }
     }
 
-    LaunchedEffect(map, mapPlace.id, mapPlace.latitude, mapPlace.longitude, recenterSignal) {
+    LaunchedEffect(map, mapPlace.id, recenterSignal) {
         val ready = map ?: return@LaunchedEffect
         if (teardown.isClosed) return@LaunchedEffect
         val oldPlace = appliedPlace
-        if (oldPlace?.id == mapPlace.id && oldPlace.latitude == mapPlace.latitude &&
-            oldPlace.longitude == mapPlace.longitude &&
-            !cameraMemory.hasPendingRecenter(recenterSignal)
-        ) return@LaunchedEffect
+        if (oldPlace?.id == mapPlace.id && !cameraMemory.hasPendingRecenter(recenterSignal)) {
+            appliedPlace = mapPlace
+            return@LaunchedEffect
+        }
         oldPlace?.let { saveCamera(ready, it) }
         val mapWidth = mapView.width.takeIf { it > 0 } ?: mapView.resources.displayMetrics.widthPixels
-        val target = cameraMemory.target(mapPlace, mapWidth, recenterSignal)
-        appliedPlace = mapPlace
+        val cameraPlace = if (mapPlace.isCurrentLocation) latestMarkerPlace else mapPlace
+        val target = cameraMemory.target(cameraPlace, mapWidth, recenterSignal)
+        appliedPlace = cameraPlace
         ready.cameraPosition = northUpCamera(target)
-        saveCamera(ready, mapPlace)
+        saveCamera(ready, cameraPlace)
+    }
+
+    // A live marker changes the snapshot's reference place, not the camera viewport.
+    LaunchedEffect(map, markerPlace) {
+        val ready = map ?: return@LaunchedEffect
+        if (teardown.isClosed || appliedPlace?.id != mapPlace.id) return@LaunchedEffect
+        val reference = if (mapPlace.isCurrentLocation) markerPlace else mapPlace
+        appliedPlace = reference
+        saveCamera(ready, reference)
+    }
+
+    LaunchedEffect(map, followLive, markerPlace.latitude, markerPlace.longitude) {
+        val ready = map ?: return@LaunchedEffect
+        if (!followLive || teardown.isClosed) return@LaunchedEffect
+        val target = RadarCameraTarget(markerPlace.latitude, markerPlace.longitude, ready.cameraPosition.zoom)
+        appliedPlace = markerPlace
+        ready.cameraPosition = northUpCamera(target)
+        saveCamera(ready, markerPlace)
     }
 }
 

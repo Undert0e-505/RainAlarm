@@ -106,6 +106,10 @@ internal object NowWeatherReadoutPolicy {
     }
 }
 
+internal object NowCompassCardinalPolicy {
+    const val eastEndInsetDp = 8
+}
+
 internal object NowChartLayout {
     fun horizonTitle(endMinute: Int): String = when (val end = endMinute.coerceIn(0, 60)) {
         0 -> "Current radar"
