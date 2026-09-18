@@ -636,8 +636,13 @@ private fun RadarImageMapInstance(
         MapLibre.getInstance(context)
         // Texture mode keeps MapLibre in the normal View hierarchy so our transparent GLES
         // TextureView can reliably composite above it on every Android surface compositor.
-        val options = MapLibreMapOptions.createFromAttributes(context, null).textureMode(true)
-        MapView(context, options).apply { onCreate(Bundle()) }
+        val options = MapLibreMapOptions.createFromAttributes(context, null)
+            .textureMode(true)
+            .foregroundLoadColor(RadarMapAppearance.loadingBackgroundArgb(darkMap))
+        MapView(context, options).apply {
+            setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(darkMap))
+            onCreate(Bundle())
+        }
     }
     val currentStatusCallback by rememberUpdatedState(onRendererStatus)
     val currentLayerError by rememberUpdatedState(onLayerError)
@@ -722,9 +727,15 @@ private fun RadarImageMapInstance(
         onDispose { mapView.removeOnTileActionListener(listener) }
     }
 
+    val startingListener = remember(mapView, teardown) {
+        MapView.OnWillStartRenderingFrameListener {
+            if (!teardown.isClosed) mapRevealGate.frameStarted()
+        }
+    }
     val renderedListener = remember(mapView, teardown) {
-        MapView.OnDidFinishRenderingFrameListener { _, _, _ ->
-            val revealCurrentStyle = !teardown.isClosed && mapRevealGate.frameRendered()
+        MapView.OnDidFinishRenderingFrameListener { fully, _, _ ->
+            val revealCurrentStyle = !teardown.isClosed && mapView.width > 0 && mapView.height > 0 &&
+                mapRevealGate.frameRendered(fully)
             if (revealCurrentStyle) mapView.post {
                 if (!teardown.isClosed && !mapRevealGate.isCovered) {
                     mapCover.visibility = View.GONE
@@ -744,8 +755,9 @@ private fun RadarImageMapInstance(
             }
         }
     }
-    DisposableEffect(mapView, teardown, renderedListener, failedListener) {
+    DisposableEffect(mapView, teardown, startingListener, renderedListener, failedListener) {
         onDispose {
+            mapView.removeOnWillStartRenderingFrameListener(startingListener)
             mapView.removeOnDidFinishRenderingFrameListener(renderedListener)
             mapView.removeOnDidFailLoadingMapListener(failedListener)
         }
@@ -757,6 +769,7 @@ private fun RadarImageMapInstance(
                 setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(darkMap))
                 // Register synchronously before attaching MapView: a cached style may render
                 // before Compose's DisposableEffect runs after this factory returns.
+                mapView.addOnWillStartRenderingFrameListener(startingListener)
                 mapView.addOnDidFinishRenderingFrameListener(renderedListener)
                 mapView.addOnDidFailLoadingMapListener(failedListener)
                 addView(
@@ -787,7 +800,7 @@ private fun RadarImageMapInstance(
                     FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
                 windView.bringToFront()
                 // Attach the opaque, map-tone cover before this MapView can display its
-                // default texture; reveal only after the requested style renders a frame.
+                // default texture; reveal only after the requested style renders a full frame.
                 addView(mapCover, FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
                 mapCover.bringToFront()
@@ -837,7 +850,9 @@ private fun RadarImageMapInstance(
                 }
             }
         },
-        update = {
+        update = { container ->
+            container.setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(darkMap))
+            mapView.setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(darkMap))
             if (lastBracket != bracket || lastPlaying != isPlaying) {
                 overlay.setState(bracket, isPlaying, markerPlace)
                 lastBracket = bracket
@@ -858,14 +873,13 @@ private fun RadarImageMapInstance(
         val ready = map
         if (ready == null || teardown.isClosed) return@DisposableEffect onDispose { }
         var active = true
-        mapRevealGate.styleRequested()
+        val styleGeneration = mapRevealGate.styleRequested()
         mapCover.setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(darkMap))
         mapCover.visibility = View.VISIBLE
         currentMapStyleError(null)
         try {
             ready.setStyle(RadarMapAppearance.styleUrl(darkMap)) {
-                if (active && !teardown.isClosed) {
-                    mapRevealGate.styleLoaded()
+                if (active && !teardown.isClosed && mapRevealGate.styleLoaded(styleGeneration)) {
                     try { applySatelliteLayer(it, latestSatellite) }
                     catch (failure: Exception) {
                         Log.e("RainRadarLayers", "Satellite raster style failed", failure)
@@ -886,8 +900,8 @@ private fun RadarImageMapInstance(
     LaunchedEffect(mapView, darkMap) {
         delay(25_000)
         if (!teardown.isClosed && mapRevealGate.isCovered && mapRevealGate.markFailed()) {
-            Log.w("RainRadarMap", "Base map style did not render within 25 seconds")
-            currentMapStyleError("Map style unavailable · refresh to retry")
+            Log.w("RainRadarMap", "Base map did not finish rendering within 25 seconds")
+            currentMapStyleError("Map imagery still loading · refresh to retry")
         }
     }
 

@@ -1,27 +1,41 @@
 package com.rainalarm.app.ui
 
-/** Do not reveal a newly attached MapView until its requested style has rendered a frame. */
+/** Do not reveal a MapView until the current style has rendered a complete frame. */
 internal class RadarMapRevealGate {
-    private var styleLoaded = false
+    private var generation = 0L
+    private var loadedGeneration: Long? = null
+    private var frameStartedAfterStyle = false
     private var revealed = false
     private var failed = false
 
     val isCovered: Boolean get() = !revealed
     val hasFailed: Boolean get() = failed
 
-    fun styleRequested() {
-        styleLoaded = false
+    fun styleRequested(): Long {
+        generation++
+        loadedGeneration = null
+        frameStartedAfterStyle = false
         revealed = false
         failed = false
+        return generation
     }
 
-    fun styleLoaded() {
-        styleLoaded = true
+    /** A late callback from a superseded style must not open the current cover. */
+    fun styleLoaded(requestGeneration: Long): Boolean {
+        if (requestGeneration != generation) return false
+        loadedGeneration = generation
+        return true
     }
 
-    /** Returns true exactly once, after the current style has produced a map frame. */
-    fun frameRendered(): Boolean {
-        if (!styleLoaded || revealed) return false
+    fun frameStarted() {
+        if (loadedGeneration == generation && !revealed) frameStartedAfterStyle = true
+    }
+
+    /** Partial/default and pre-style frames never reveal the map. */
+    fun frameRendered(fully: Boolean): Boolean {
+        val startedAfterCurrentStyle = frameStartedAfterStyle
+        frameStartedAfterStyle = false // A partial finish cannot qualify a later unmatched full finish.
+        if (!fully || !startedAfterCurrentStyle || loadedGeneration != generation || revealed) return false
         revealed = true
         failed = false
         return true
