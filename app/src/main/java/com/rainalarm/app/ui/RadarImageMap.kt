@@ -55,6 +55,7 @@ import org.maplibre.android.style.layers.RasterLayer
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.maps.Style
 import org.maplibre.android.tile.TileOperation
+import kotlinx.coroutines.delay
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.max
@@ -66,6 +67,7 @@ private const val OPEN_FREE_MAP_LIGHT_STYLE = "https://tiles.openfreemap.org/sty
 
 internal object RadarMapAppearance {
     fun styleUrl(dark: Boolean): String = if (dark) OPEN_FREE_MAP_DARK_STYLE else OPEN_FREE_MAP_LIGHT_STYLE
+    fun loadingBackgroundArgb(dark: Boolean): Int = if (dark) 0xFF111C24.toInt() else 0xFFF3F5F4.toInt()
 }
 private const val RADAR_OPACITY = 0.90
 private const val SATELLITE_SOURCE_ID = "rain-alarm-satellite-source"
@@ -578,6 +580,7 @@ fun RadarImageMap(
     windArrowScale: Float = 1f,
     satelliteLayer: EumetLayerMetadata? = null,
     onLayerError: (String) -> Unit = {},
+    onMapStyleError: (String?) -> Unit = {},
     onWindViewportChanged: (WindViewport) -> Unit = {},
 ) {
     key(session) {
@@ -599,6 +602,7 @@ fun RadarImageMap(
             windArrowScale,
             satelliteLayer,
             onLayerError,
+            onMapStyleError,
             onWindViewportChanged,
         )
     }
@@ -623,6 +627,7 @@ private fun RadarImageMapInstance(
     windArrowScale: Float,
     satelliteLayer: EumetLayerMetadata?,
     onLayerError: (String) -> Unit,
+    onMapStyleError: (String?) -> Unit,
     onWindViewportChanged: (WindViewport) -> Unit,
 ) {
     val context = LocalContext.current
@@ -636,6 +641,7 @@ private fun RadarImageMapInstance(
     }
     val currentStatusCallback by rememberUpdatedState(onRendererStatus)
     val currentLayerError by rememberUpdatedState(onLayerError)
+    val currentMapStyleError by rememberUpdatedState(onMapStyleError)
     val currentWindViewportCallback by rememberUpdatedState(onWindViewportChanged)
     val latestSatellite by rememberUpdatedState(satelliteLayer)
     val latestMapPlace by rememberUpdatedState(mapPlace)
@@ -657,6 +663,10 @@ private fun RadarImageMapInstance(
         }.apply { bindSession(session) }
     }
     val mapLifecycle = remember(mapView) { MapViewLifecycle(mapView) }
+    val mapRevealGate = remember(mapView) { RadarMapRevealGate() }
+    val mapCover = remember(mapView) {
+        View(context).apply { setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(darkMap)) }
+    }
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
     var cameraListener by remember { mutableStateOf<MapLibreMap.OnCameraMoveListener?>(null) }
     var cameraStartListener by remember { mutableStateOf<MapLibreMap.OnCameraMoveStartedListener?>(null) }
@@ -712,9 +722,43 @@ private fun RadarImageMapInstance(
         onDispose { mapView.removeOnTileActionListener(listener) }
     }
 
+    val renderedListener = remember(mapView, teardown) {
+        MapView.OnDidFinishRenderingFrameListener { _, _, _ ->
+            val revealCurrentStyle = !teardown.isClosed && mapRevealGate.frameRendered()
+            if (revealCurrentStyle) mapView.post {
+                if (!teardown.isClosed && !mapRevealGate.isCovered) {
+                    mapCover.visibility = View.GONE
+                    currentMapStyleError(null)
+                }
+            }
+        }
+    }
+    val failedListener = remember(mapView, teardown) {
+        MapView.OnDidFailLoadingMapListener { reason ->
+            val showFailure = !teardown.isClosed && mapRevealGate.markFailed()
+            if (showFailure) mapView.post {
+                if (!teardown.isClosed && mapRevealGate.hasFailed) {
+                    Log.w("RainRadarMap", "Base map failed to load: $reason")
+                    currentMapStyleError("Map style unavailable · refresh to retry")
+                }
+            }
+        }
+    }
+    DisposableEffect(mapView, teardown, renderedListener, failedListener) {
+        onDispose {
+            mapView.removeOnDidFinishRenderingFrameListener(renderedListener)
+            mapView.removeOnDidFailLoadingMapListener(failedListener)
+        }
+    }
+
     AndroidView(
         factory = {
             FrameLayout(context).apply {
+                setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(darkMap))
+                // Register synchronously before attaching MapView: a cached style may render
+                // before Compose's DisposableEffect runs after this factory returns.
+                mapView.addOnDidFinishRenderingFrameListener(renderedListener)
+                mapView.addOnDidFailLoadingMapListener(failedListener)
                 addView(
                     mapView,
                     FrameLayout.LayoutParams(
@@ -742,6 +786,11 @@ private fun RadarImageMapInstance(
                 addView(windView, FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
                 windView.bringToFront()
+                // Attach the opaque, map-tone cover before this MapView can display its
+                // default texture; reveal only after the requested style renders a frame.
+                addView(mapCover, FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                mapCover.bringToFront()
                 mapView.getMapAsync { ready ->
                     if (teardown.isClosed) return@getMapAsync
                     map = ready
@@ -809,19 +858,37 @@ private fun RadarImageMapInstance(
         val ready = map
         if (ready == null || teardown.isClosed) return@DisposableEffect onDispose { }
         var active = true
-        ready.setStyle(RadarMapAppearance.styleUrl(darkMap)) {
-            if (active && !teardown.isClosed) {
-                try { applySatelliteLayer(it, latestSatellite) }
-                catch (failure: Exception) {
-                    Log.e("RainRadarLayers", "Satellite raster style failed", failure)
-                    currentLayerError("Satellite layer unavailable")
+        mapRevealGate.styleRequested()
+        mapCover.setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(darkMap))
+        mapCover.visibility = View.VISIBLE
+        currentMapStyleError(null)
+        try {
+            ready.setStyle(RadarMapAppearance.styleUrl(darkMap)) {
+                if (active && !teardown.isClosed) {
+                    mapRevealGate.styleLoaded()
+                    try { applySatelliteLayer(it, latestSatellite) }
+                    catch (failure: Exception) {
+                        Log.e("RainRadarLayers", "Satellite raster style failed", failure)
+                        currentLayerError("Satellite layer unavailable")
+                    }
+                    overlay.onCameraMoved()
+                    staticFallback?.onCameraMoved()
+                    mapView.post { if (!teardown.isClosed) cameraIdleListener?.onCameraIdle() }
                 }
-                overlay.onCameraMoved()
-                staticFallback?.onCameraMoved()
-                mapView.post { if (!teardown.isClosed) cameraIdleListener?.onCameraIdle() }
             }
+        } catch (failure: Exception) {
+            Log.e("RainRadarMap", "Base map style could not start", failure)
+            if (mapRevealGate.markFailed()) currentMapStyleError("Map style unavailable · refresh to retry")
         }
         onDispose { active = false }
+    }
+
+    LaunchedEffect(mapView, darkMap) {
+        delay(25_000)
+        if (!teardown.isClosed && mapRevealGate.isCovered && mapRevealGate.markFailed()) {
+            Log.w("RainRadarMap", "Base map style did not render within 25 seconds")
+            currentMapStyleError("Map style unavailable · refresh to retry")
+        }
     }
 
     DisposableEffect(map, satelliteLayer) {

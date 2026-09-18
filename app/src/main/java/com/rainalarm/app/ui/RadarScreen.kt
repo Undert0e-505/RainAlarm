@@ -356,11 +356,6 @@ fun LiveRadarScreen(
             Text(locationMessage ?: (locationState as LocationUiState.Unavailable).message,
                 color = Danger, fontSize = 12.sp)
         }
-        if (session != null && (refreshing || error != null)) {
-            Text(if (refreshing) "Refreshing radar ${if (progress.second > 0) "${progress.first}/${progress.second}" else "…"}"
-                else "Radar refresh failed: ${error ?: "unknown error"}. Tap refresh to retry.",
-                color = if (error == null) Secondary else Danger, fontSize = 12.sp, maxLines = 2)
-        }
         Spacer(Modifier.height(6.dp))
         when {
             session != null && place != null && RadarLiveSessionPolicy.canReuse(session!!, place) -> RadarPlayer(
@@ -388,6 +383,9 @@ fun LiveRadarScreen(
                 onWindViewportChanged = { windViewport = it },
                 onRefresh = { reload++; layerRefresh++; refreshPointWeather() },
                 onLayerError = { ancillaryStatus = AncillaryStatus.Unavailable(it) },
+                refreshing = refreshing,
+                refreshProgress = progress,
+                refreshError = error,
             )
             error != null -> Card(
                 colors = CardDefaults.cardColors(containerColor = Surface),
@@ -477,6 +475,9 @@ private fun ColumnScope.RadarPlayer(
     onWindViewportChanged: (WindViewport) -> Unit,
     onRefresh: () -> Unit,
     onLayerError: (String) -> Unit,
+    refreshing: Boolean,
+    refreshProgress: Pair<Int, Int>,
+    refreshError: String?,
 ) {
     val secondaryColor = Secondary
     val times = remember(session) { session.timelineFrames.map { it.time } }
@@ -529,6 +530,7 @@ private fun ColumnScope.RadarPlayer(
         }
     }
     var rendererStatus by remember(session) { mutableStateOf<RadarRendererStatus>(RadarRendererStatus.Loading) }
+    var mapStyleError by remember(session) { mutableStateOf<String?>(null) }
     var layerMenuExpanded by remember { mutableStateOf(false) }
     val safeCursor = cursor.takeIf { it.isFinite() }?.coerceIn(0f, endOffset) ?: initialCursor
     val bracket = if (providerForecast) {
@@ -575,8 +577,17 @@ private fun ColumnScope.RadarPlayer(
                 windArrowScale = windArrowScale,
                 satelliteLayer = (ancillaryStatus as? AncillaryStatus.Satellite)?.metadata,
                 onLayerError = onLayerError,
+                onMapStyleError = { mapStyleError = it },
                 onWindViewportChanged = onWindViewportChanged,
             )
+            mapStyleError?.let { message ->
+                Text(message,
+                    color = LocalRainAlarmPalette.current.mapLabelText,
+                    fontSize = 12.sp,
+                    modifier = Modifier.align(Alignment.Center)
+                        .background(LocalRainAlarmPalette.current.mapLabelSurface, RoundedCornerShape(8.dp))
+                        .padding(horizontal = 12.dp, vertical = 8.dp))
+            }
             if (rendererStatus is RadarRendererStatus.Error) {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = LocalRainAlarmPalette.current.mapLabelSurface),
@@ -613,6 +624,11 @@ private fun ColumnScope.RadarPlayer(
                 modifier = Modifier.align(Alignment.TopStart).padding(start = 12.dp, top = RadarTopControlsPolicy.timeTopDp.dp)
                     .background(LocalRainAlarmPalette.current.mapLabelSurface, RoundedCornerShape(4.dp))
                     .padding(horizontal = 4.dp),
+            )
+            val refreshOverlay = RadarRefreshOverlayPolicy.status(
+                hasSession = true, refreshing = refreshing,
+                completed = refreshProgress.first, total = refreshProgress.second,
+                error = refreshError,
             )
             Text(
                 if (session.providerSelection.active == RadarProviderKind.METEOGROUP_REGIONAL) {
@@ -669,7 +685,7 @@ private fun ColumnScope.RadarPlayer(
                         tint = if (followLive) Color.Black else if (darkMap) Color.White else Color.Black)
                 }
             }
-            Box(Modifier.align(Alignment.BottomEnd).padding(8.dp)) {
+            Box(Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = 32.dp)) {
                 Column(horizontalAlignment = Alignment.End) {
                     val layerDescription = when (ancillaryStatus) {
                         AncillaryStatus.Off -> null
@@ -681,6 +697,17 @@ private fun ColumnScope.RadarPlayer(
                             "$name · EUMETSAT · ${Instant.ofEpochSecond(ancillaryStatus.metadata.validEpochSeconds).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("HH:mm"))} · ${((Instant.now().epochSecond - ancillaryStatus.metadata.validEpochSeconds) / 60).coerceAtLeast(0)}m ago"
                         }
                     }
+                    refreshOverlay?.let { status ->
+                        Text(status.label,
+                            color = LocalRainAlarmPalette.current.mapLabelText,
+                            fontSize = 11.sp, lineHeight = 13.sp,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.widthIn(max = (mapWidthDp - 80).coerceIn(100, 208).dp)
+                                .background(LocalRainAlarmPalette.current.mapLabelSurface, RoundedCornerShape(4.dp))
+                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                                .semantics { contentDescription = status.accessibilityLabel })
+                    }
+                    if (refreshOverlay != null && layerDescription != null) Spacer(Modifier.height(4.dp))
                     layerDescription?.let { Text(it, color = LocalRainAlarmPalette.current.mapLabelText,
                         fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.background(LocalRainAlarmPalette.current.mapLabelSurface, RoundedCornerShape(5.dp))
