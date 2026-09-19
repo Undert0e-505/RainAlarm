@@ -2,9 +2,9 @@
 
 ## About
 
-Rain Alarm 0.1.5 is a clean-room, open-source Android app for a simple question: **when will rain reach my selected place?** Now shows a place-specific rain outlook; Radar lets you inspect the source imagery and its available time window. The app does not contain the retired RainToday app, its native library, artwork, credentials or assets. Research material under `Research/RainToday` is development-only and is never packaged.
+Rain Alarm 0.1.6 is a clean-room, open-source Android app for a simple question: **when will rain reach my selected place?** Now shows a place-specific rain outlook; Radar lets you inspect the source imagery and its available time window. The app does not contain the retired RainToday app, its native library, artwork, credentials or assets. Research material under `Research/RainToday` is development-only and is never packaged.
 
-Download the [v0.1.5 signed release](https://github.com/Undert0e-505/RainAlarm/releases/tag/v0.1.5) and read its [release notes](docs/releases/v0.1.5.md) before installing. Rain Alarm is an experimental weather aid, not a safety-critical warning service.
+Download the [v0.1.6 signed release](https://github.com/Undert0e-505/RainAlarm/releases/tag/v0.1.6) and read its [release notes](docs/releases/v0.1.6.md) before installing. Rain Alarm is an experimental weather aid, not a safety-critical warning service.
 
 The launcher artwork is the project owner's supplied Android icon pack, included as density-specific legacy and adaptive PNG resources under the project's MIT license. The supplied Play Store image is in `artwork/play_store_icon_512.png`. Notifications use a separate white-on-transparent droplet/bell small icon, not the launcher background.
 
@@ -49,7 +49,7 @@ The unset defaults are Rain Notification **on when permission allows**, all five
 
 - Search, save, rename, pin, delete and select multiple places in Places. Long-hold and drag saved rows to persist a custom order, or long-press Radar to save a coordinate. A deleted row disappears immediately and stays gone after storage confirms; a failed save restores it. Deleting the last saved place switches to virtual Current location without recreating London. A live Current selection uses foreground device fixes and the platform's locality name when available, falling back to one-decimal latitude and longitude. Live coordinates stay in process memory, not the saved-place store. When a fresh fix is missing, Radar's Try again requests location again; foreground refresh can recover a stationary device without saving its coordinates. Settings chooses a *default startup place* independently from the active selection; a deleted saved default falls back safely.
 - MeteoGroup/DTN regional radar is the default in supported European areas. It supplies map observations, velocity textures and provider forecast frames. For regional Now/alerts, a separate location-selected **area profile** supplies average/minimum/maximum intensity when fresh; it is not exact pin-pixel truth. The raster point series is the fallback. RainViewer is a worldwide open-radar choice and automatic session fallback. Its dense-motion future path is a confidence-gated clean-room **estimate**, not a provider forecast. Source/fallback and unavailable states are shown rather than quietly asserted as dry.
-- Rain Notification is for the **active selected place**, saved or live. It fires only when the available series says dry now but predicts rain within 60 minutes. Text includes the place, ETA and expected local start clock time. Duration and peak are included only when a complete rain episode ends inside the known prediction window. Suppression and re-arming are isolated per place. WorkManager timing is inexact; saved-place alerts need no location permission, while live Current background checks skip without a lawful fresh foreground fix.
+- Rain Notification is for the **active selected place**, saved or live. It fires only when the available series says dry now but predicts rain within 60 minutes. Text includes the place, ETA and expected local start clock time. Duration and peak are included only when a complete rain episode ends inside the known prediction window. Each sent alert suppresses that place until its recorded forecast wet-window end plus a ten-minute grace period; later qualifying rain can alert again without requiring a full-clear forecast. WorkManager timing is inexact; saved-place alerts need no location permission, while live Current background checks skip without a lawful fresh foreground fix.
 
 ### Appearance
 
@@ -69,7 +69,7 @@ Map data © OpenStreetMap contributors, rendered via OpenFreeMap/OpenMapTiles. O
 
 ## Build and test
 
-The 0.1.5 app has version code 6, supports Android 8.0+ (min SDK 26), and compiles/targets SDK 37. Build requirements are JDK 21, Android SDK Platform 37, Build Tools 36.0.0, Android SDK command-line tools, and network access for first dependency resolution. Open the project in Android Studio or use the included Gradle wrapper. On Windows:
+The 0.1.6 app has version code 7, supports Android 8.0+ (min SDK 26), and compiles/targets SDK 37. Build requirements are JDK 21, Android SDK Platform 37, Build Tools 36.0.0, Android SDK command-line tools, and network access for first dependency resolution. Open the project in Android Studio or use the included Gradle wrapper. On Windows:
 
 ```powershell
 $env:ANDROID_HOME='D:\path\to\android-sdk'
@@ -104,8 +104,8 @@ The owner confirmed off-machine backup of both the keystore and passphrase befor
 The public repository is [Undert0e-505/RainAlarm](https://github.com/Undert0e-505/RainAlarm). **Future builds are not tagged or published by default.** A maintainer with a clean tree, the original private signing key, a configured GitHub remote and authenticated `gh` may explicitly use `-Publish` with signed Release mode:
 
 ```powershell
-.\scripts\build-release.ps1 -Mode Release -Publish -Remote origin -NotesFile .\docs\releases\v0.1.5.md -WhatIf
-.\scripts\build-release.ps1 -Mode Release -Publish -Remote origin -NotesFile .\docs\releases\v0.1.5.md
+.\scripts\build-release.ps1 -Mode Release -Publish -Remote origin -NotesFile .\docs\releases\v0.1.6.md -WhatIf
+.\scripts\build-release.ps1 -Mode Release -Publish -Remote origin -NotesFile .\docs\releases\v0.1.6.md
 ```
 
 `-WhatIf` previews without building or publishing; release signer variables are still checked. Actual publication checks Git root, clean tree, remote, `gh` authentication and local/remote tag/release collisions. It then makes annotated tag `v<version>`, pushes branch and tag without force, and creates a GitHub Release with the signed APK. If no notes file is supplied, GitHub generates notes. Use only after reviewing code, tests, device checks, permission disclosures and the exact artifact. A failed partial publication may leave a local or pushed tag; inspect it before retrying rather than forcing an overwrite.

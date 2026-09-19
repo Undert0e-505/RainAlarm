@@ -88,29 +88,76 @@ class RainAlertDecisionTest {
     }
 
     @Test
-    fun deduplicatesCooldownAndRearmsOnlyAfterClear() {
+    fun notificationSuppressesThroughInclusiveForecastEndAndGraceThenRepeatsWithoutClear() {
         val event = RadarAlertEvaluation.Approaching(10, 20, 100)
-        val first = RainAlertDecisionEngine.decide(event, AlertMemory(), 10_000, 3_600)
+        val first = RainAlertDecisionEngine.decide(event, AlertMemory(), 10_000, 600)
         assertTrue(first.shouldNotify)
         assertTrue(first.nextMemory.lastEventIdentity == 100L)
-        val duplicate = RainAlertDecisionEngine.decide(event, first.nextMemory, 10_600, 3_600)
+        // Minute 20 is inclusive: suppression ends at base + 21 min + 10 min grace.
+        assertEquals(11_860L, first.nextMemory.suppressedUntilEpochSeconds)
+        val duplicate = RainAlertDecisionEngine.decide(event, first.nextMemory, 11_859, 600)
         assertFalse(duplicate.shouldNotify)
-        val unknown = RainAlertDecisionEngine.decide(
-            RadarAlertEvaluation.Unknown,
-            duplicate.nextMemory,
-            20_000,
-            3_600,
+        assertEquals(11_860L, duplicate.nextMemory.suppressedUntilEpochSeconds)
+        assertTrue(RainAlertDecisionEngine.decide(event, first.nextMemory, 11_860, 600).shouldNotify)
+        assertTrue(RainAlertDecisionEngine.decide(event, first.nextMemory, 11_861, 600).shouldNotify)
+    }
+
+    @Test fun wetUnknownAndClearDoNotNotifyOrExtendTheAcceptedInterval() {
+        val memory = AlertMemory(10_000, 100, 12_000)
+        listOf(RadarAlertEvaluation.WetNow, RadarAlertEvaluation.Unknown, RadarAlertEvaluation.Clear)
+            .forEach { evaluation ->
+                val result = RainAlertDecisionEngine.decide(evaluation, memory, 20_000)
+                assertFalse(result.shouldNotify)
+                assertEquals(memory, result.nextMemory)
+            }
+    }
+
+    @Test fun wetThenPartialDryCannotMakeThePlaceOneShot() {
+        val event = RadarAlertEvaluation.Approaching(5, 15, 100)
+        val sent = RainAlertDecisionEngine.decide(event, AlertMemory(), 10_000)
+        val wet = RainAlertDecisionEngine.decide(RadarAlertEvaluation.WetNow, sent.nextMemory, 10_600)
+        val partialDry = RainAlertDecisionEngine.decide(RadarAlertEvaluation.Unknown, wet.nextMemory, 11_200)
+        assertFalse(partialDry.shouldNotify)
+        assertEquals(sent.nextMemory.suppressedUntilEpochSeconds,
+            partialDry.nextMemory.suppressedUntilEpochSeconds)
+        assertTrue(RainAlertDecisionEngine.decide(
+            event, partialDry.nextMemory, sent.nextMemory.suppressedUntilEpochSeconds,
+        ).shouldNotify)
+    }
+
+    @Test fun expectedStartAnchorsSuppressionAndUnconfirmedHorizonIsConservative() {
+        val event = RadarAlertEvaluation.Approaching(
+            etaStartMinutes = 5,
+            etaEndMinutes = 60,
+            frameIdentity = 100,
+            expectedStartEpochSeconds = 20_300,
         )
-        assertFalse(unknown.nextMemory.armed)
-        val rearmed = RainAlertDecisionEngine.decide(
-            RadarAlertEvaluation.Clear,
-            unknown.nextMemory,
-            20_100,
-            3_600,
-        )
-        assertTrue(rearmed.nextMemory.armed)
-        val next = RainAlertDecisionEngine.decide(event, rearmed.nextMemory, 20_200, 3_600)
-        assertTrue(next.shouldNotify)
+        // Forecast base=20_000; minute 60 is inclusive; plus ten-minute grace.
+        assertEquals(24_260L, RainAlertDecisionEngine.suppressionUntil(event, 20_010))
+    }
+
+    @Test fun legacyMemoryExpiresInsteadOfRemainingPermanentlyDisarmed() {
+        assertEquals(17_200L, RainAlertMemoryMigration.suppressionUntil(null, 10_000))
+        assertEquals(12_345L, RainAlertMemoryMigration.suppressionUntil(12_345, 10_000))
+        assertEquals(0L, RainAlertMemoryMigration.suppressionUntil(null, 0))
+        val migrated = AlertMemory(lastNotifiedEpochSeconds = 10_000,
+            suppressedUntilEpochSeconds = 17_200)
+        assertFalse(RainAlertDecisionEngine.decide(
+            RadarAlertEvaluation.Approaching(5, 10, 200), migrated, 17_199).shouldNotify)
+        assertTrue(RainAlertDecisionEngine.decide(
+            RadarAlertEvaluation.Approaching(5, 10, 200), migrated, 17_200).shouldNotify)
+    }
+
+    @Test fun deletedSavedPlaceClearsOnlyItsMemoryAndNotificationsUseStablePerPlaceIds() {
+        val york = SavedPlace("York", 53.96, -1.08)
+        assertEquals(setOf(
+            "armed_${york.id}", "last_notified_${york.id}", "last_event_${york.id}",
+            "suppressed_until_${york.id}",
+        ), RainAlertMemoryKeys.forDeletedSavedPlace(york.id))
+        assertTrue(RainAlertMemoryKeys.forDeletedSavedPlace(CURRENT_LOCATION_ID).isEmpty())
+        val first = RainAlertNotificationIdentity.forPlace(york.id)
+        assertEquals(first, RainAlertNotificationIdentity.forPlace(york.id))
+        assertTrue(first != RainAlertNotificationIdentity.forPlace("another-place"))
     }
 
     @Test

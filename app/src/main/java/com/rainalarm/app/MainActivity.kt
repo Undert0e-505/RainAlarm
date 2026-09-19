@@ -702,6 +702,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             val succeeded = try {
                 places.delete(id)
+                alertPreferences.clearDeletedSavedPlace(id)
                 true
             } catch (error: Exception) {
                 if (error is CancellationException) throw error

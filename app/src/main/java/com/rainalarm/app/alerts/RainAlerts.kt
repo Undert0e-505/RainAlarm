@@ -49,6 +49,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.IOException
 import java.time.Instant
 import java.time.ZoneId
@@ -63,8 +65,8 @@ private const val UNIQUE_IMMEDIATE = "rain-approaching-immediate"
 // A new channel lets existing installs receive an audible default-priority alert; Android
 // does not permit changing the importance of an already-created low-priority channel.
 private const val CHANNEL_ID = "rain_approaching_v2"
-private const val NOTIFICATION_ID = 4107
-private const val COOLDOWN_SECONDS = 2 * 60 * 60L
+private const val LEGACY_COOLDOWN_SECONDS = 2 * 60 * 60L
+private const val FORECAST_END_GRACE_SECONDS = 10 * 60L
 
 data class AlertSnapshot(
     val enabled: Boolean = false,
@@ -87,9 +89,9 @@ sealed interface RadarAlertEvaluation {
 }
 
 data class AlertMemory(
-    val armed: Boolean = true,
     val lastNotifiedEpochSeconds: Long = 0,
     val lastEventIdentity: Long = 0,
+    val suppressedUntilEpochSeconds: Long = 0,
 )
 
 data class AlertDecision(
@@ -225,27 +227,66 @@ object RainAlertDecisionEngine {
         evaluation: RadarAlertEvaluation,
         memory: AlertMemory,
         nowEpochSeconds: Long,
-        cooldownSeconds: Long = COOLDOWN_SECONDS,
+        endGraceSeconds: Long = FORECAST_END_GRACE_SECONDS,
     ): AlertDecision = when (evaluation) {
         is RadarAlertEvaluation.Approaching -> {
-            val cooledDown = nowEpochSeconds - memory.lastNotifiedEpochSeconds >= cooldownSeconds
-            val notify = memory.armed && cooledDown
+            val notify = nowEpochSeconds >= memory.suppressedUntilEpochSeconds
             AlertDecision(
                 shouldNotify = notify,
                 nextMemory = if (notify) {
                     AlertMemory(
-                        armed = false,
                         lastNotifiedEpochSeconds = nowEpochSeconds,
                         lastEventIdentity = evaluation.frameIdentity,
+                        suppressedUntilEpochSeconds = suppressionUntil(
+                            evaluation, nowEpochSeconds, endGraceSeconds,
+                        ),
                     )
                 } else {
-                    memory.copy(armed = false, lastEventIdentity = evaluation.frameIdentity)
+                    // A moving forecast must not extend the interval accepted by the user.
+                    memory.copy(lastEventIdentity = evaluation.frameIdentity)
                 },
             )
         }
-        RadarAlertEvaluation.Clear -> AlertDecision(false, memory.copy(armed = true))
+        RadarAlertEvaluation.Clear -> AlertDecision(false, memory)
         RadarAlertEvaluation.WetNow, RadarAlertEvaluation.Unknown -> AlertDecision(false, memory)
     }
+
+    /** etaEndMinutes is the final inclusive wet minute, so expiry starts one minute later. */
+    internal fun suppressionUntil(
+        evaluation: RadarAlertEvaluation.Approaching,
+        evaluatedAtEpochSeconds: Long,
+        endGraceSeconds: Long = FORECAST_END_GRACE_SECONDS,
+    ): Long {
+        val forecastBase = evaluation.expectedStartEpochSeconds
+            ?.minus(evaluation.etaStartMinutes * 60L)
+            ?: evaluatedAtEpochSeconds
+        val inclusiveEnd = evaluation.etaEndMinutes.coerceAtLeast(evaluation.etaStartMinutes)
+        return forecastBase + (inclusiveEnd + 1L) * 60L + endGraceSeconds
+    }
+}
+
+internal object RainAlertMemoryKeys {
+    fun armed(placeId: String) = "armed_$placeId"
+    fun lastNotified(placeId: String) = "last_notified_$placeId"
+    fun lastEvent(placeId: String) = "last_event_$placeId"
+    fun suppressedUntil(placeId: String) = "suppressed_until_$placeId"
+    fun all(placeId: String) = setOf(
+        armed(placeId), lastNotified(placeId), lastEvent(placeId), suppressedUntil(placeId),
+    )
+
+    fun forDeletedSavedPlace(placeId: String): Set<String> =
+        if (placeId == CURRENT_LOCATION_ID) emptySet() else all(placeId)
+}
+
+internal object RainAlertMemoryMigration {
+    fun suppressionUntil(storedSuppression: Long?, lastNotified: Long): Long =
+        storedSuppression ?: if (lastNotified > 0) lastNotified + LEGACY_COOLDOWN_SECONDS else 0
+}
+
+internal object RainAlertNotificationIdentity {
+    /** Stable per place: a later accepted event replaces the old card but can alert again. */
+    fun forPlace(placeId: String): Int =
+        (4107 xor placeId.hashCode()).and(Int.MAX_VALUE).coerceAtLeast(1)
 }
 
 internal object RainAlertNotificationText {
@@ -279,7 +320,7 @@ object RainAlertSelectionGuard {
             forecastSelectionKey(expectedPlace) == forecastSelectionKey(currentPlace)
 }
 
-class RainAlertPreferences(context: Context) {
+class RainAlertPreferences(private val context: Context) {
     private val preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     fun hasExplicitEnabledChoice(): Boolean = preferences.contains("enabled")
@@ -312,11 +353,18 @@ class RainAlertPreferences(context: Context) {
         }
     }
 
-    fun memory(placeId: String): AlertMemory = AlertMemory(
-        armed = preferences.getBoolean("armed_$placeId", true),
-        lastNotifiedEpochSeconds = preferences.getLong("last_notified_$placeId", 0),
-        lastEventIdentity = preferences.getLong("last_event_$placeId", 0),
-    )
+    fun memory(placeId: String): AlertMemory {
+        val lastNotified = preferences.getLong(RainAlertMemoryKeys.lastNotified(placeId), 0)
+        val suppressionKey = RainAlertMemoryKeys.suppressedUntil(placeId)
+        return AlertMemory(
+            lastNotifiedEpochSeconds = lastNotified,
+            lastEventIdentity = preferences.getLong(RainAlertMemoryKeys.lastEvent(placeId), 0),
+            suppressedUntilEpochSeconds = RainAlertMemoryMigration.suppressionUntil(
+                preferences.getLong(suppressionKey, 0).takeIf { preferences.contains(suppressionKey) },
+                lastNotified,
+            ),
+        )
+    }
 
     fun record(
         nowEpochSeconds: Long,
@@ -328,10 +376,20 @@ class RainAlertPreferences(context: Context) {
             putLong("last_checked", nowEpochSeconds)
             putString("status", status)
             if (placeId != null && memory != null) {
-                putBoolean("armed_$placeId", memory.armed)
-                putLong("last_notified_$placeId", memory.lastNotifiedEpochSeconds)
-                putLong("last_event_$placeId", memory.lastEventIdentity)
+                remove(RainAlertMemoryKeys.armed(placeId))
+                putLong(RainAlertMemoryKeys.lastNotified(placeId), memory.lastNotifiedEpochSeconds)
+                putLong(RainAlertMemoryKeys.lastEvent(placeId), memory.lastEventIdentity)
+                putLong(RainAlertMemoryKeys.suppressedUntil(placeId), memory.suppressedUntilEpochSeconds)
             }
+        }
+    }
+
+    fun clearDeletedSavedPlace(placeId: String) {
+        val keys = RainAlertMemoryKeys.forDeletedSavedPlace(placeId)
+        if (keys.isEmpty()) return
+        preferences.edit { keys.forEach { key -> remove(key) } }
+        runCatching {
+            NotificationManagerCompat.from(context).cancel(RainAlertNotificationIdentity.forPlace(placeId))
         }
     }
 }
@@ -390,7 +448,9 @@ class RainApproachingWorker(
     appContext: Context,
     parameters: WorkerParameters,
 ) : CoroutineWorker(appContext, parameters) {
-    override suspend fun doWork(): Result {
+    override suspend fun doWork(): Result = workerMutex.withLock { doWorkSerially() }
+
+    private suspend fun doWorkSerially(): Result {
         val alertPreferences = RainAlertPreferences(applicationContext)
         if (!alertPreferences.snapshot().enabled) return Result.success()
         val now = Instant.now()
@@ -515,7 +575,6 @@ class RainApproachingWorker(
             .setStyle(NotificationCompat.BigTextStyle().bigText(content.detail))
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
-            .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .build()
         if (
@@ -527,11 +586,19 @@ class RainApproachingWorker(
         ) {
             try {
                 NotificationManagerCompat.from(applicationContext)
-                    .notify(NOTIFICATION_ID, notification)
+                    .notify(
+                        RainAlertNotificationIdentity.forPlace(place.id),
+                        notification,
+                    )
             } catch (_: SecurityException) {
                 RainAlertScheduler(applicationContext).disable()
             }
         }
+    }
+
+    private companion object {
+        // Immediate and periodic work have different unique names and can otherwise overlap.
+        val workerMutex = Mutex()
     }
 }
 

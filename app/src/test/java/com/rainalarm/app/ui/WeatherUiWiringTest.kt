@@ -38,6 +38,9 @@ class WeatherUiWiringTest {
         assertTrue(placesUi.contains("deletePlace(place.id) { succeeded ->"))
         assertTrue(placesUi.contains("IconButton(onClick = onDelete)"))
         assertTrue(placesUi.contains("detectDragGesturesAfterLongPress("))
+        val main = listOf(File("src/main/java/com/rainalarm/app/MainActivity.kt"),
+            File("app/src/main/java/com/rainalarm/app/MainActivity.kt")).first(File::isFile).readText()
+        assertTrue(main.contains("places.delete(id)\n                alertPreferences.clearDeletedSavedPlace(id)"))
     }
 
     @Test fun `optimistic multiple deletes reconcile success and failed write independently`() {

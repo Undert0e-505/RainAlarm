@@ -18,6 +18,8 @@ class NotificationIconTest {
         val alerts = source("java/com/rainalarm/app/alerts/RainAlerts.kt")
         assertTrue(alerts.contains(".setSmallIcon(R.drawable.ic_notification)"))
         assertFalse(alerts.contains(".setSmallIcon(R.drawable.ic_launcher)"))
+        assertFalse(alerts.contains(".setOnlyAlertOnce(true)"))
+        assertTrue(alerts.contains("RainAlertNotificationIdentity.forPlace(place.id)"))
         val manifest = source("AndroidManifest.xml")
         assertTrue(manifest.contains("@mipmap/ic_launcher"))
         assertTrue(manifest.contains("@mipmap/ic_launcher_round"))
