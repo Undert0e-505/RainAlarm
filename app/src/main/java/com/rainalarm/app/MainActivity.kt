@@ -202,9 +202,12 @@ sealed interface NowRefreshStatus {
 private data class ForecastLoadRequest(
     val place: SavedPlace?,
     val provider: RadarProviderKind,
+    val showLikelySnow: Boolean,
     val refreshVersion: Long,
 ) {
-    val key: String? = place?.let { "${forecastSelectionKey(it)}|${provider.name}" }
+    val key: String? = place?.let {
+        "${forecastSelectionKey(it)}|${provider.name}|${provider == RadarProviderKind.OPEN_RAINVIEWER && showLikelySnow}"
+    }
 }
 
 sealed interface LocationUiState {
@@ -261,6 +264,9 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope,
         SharingStarted.Eagerly,
         RadarProviderKind.METEOGROUP_REGIONAL,
+    )
+    val showLikelySnow = radarSettings.showLikelySnow.stateIn(
+        viewModelScope, SharingStarted.Eagerly, false,
     )
     val radarPlaybackSpeed = radarSettings.playbackSpeed.stateIn(
         viewModelScope, SharingStarted.Eagerly, RadarPlaybackSpeed.DOUBLE,
@@ -408,8 +414,9 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         }
         viewModelScope.launch {
             var observedKey: String? = null
-            combine(selectedPlace, radarProvider, forecastRefreshVersion) { place, provider, refreshVersion ->
-                ForecastLoadRequest(place, provider, refreshVersion)
+            combine(selectedPlace, radarProvider, showLikelySnow, forecastRefreshVersion) {
+                    place, provider, snow, refreshVersion ->
+                ForecastLoadRequest(place, provider, snow, refreshVersion)
             }.distinctUntilChanged { previous, next ->
                 previous.key == next.key && previous.refreshVersion == next.refreshVersion
             }.collectLatest { request ->
@@ -472,7 +479,10 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     fun refreshOnNowEntry() {
         if (!_startupReady.value) return
         val place = selectedPlace.value
-        val key = place?.let { "${forecastSelectionKey(it)}|${radarProvider.value.name}" }
+        val key = place?.let {
+            "${forecastSelectionKey(it)}|${radarProvider.value.name}|" +
+                (radarProvider.value == RadarProviderKind.OPEN_RAINVIEWER && showLikelySnow.value)
+        }
         val selectionPending = pendingPlaceSelectionId != null || pendingProviderSelection != null
         if (key == null) {
             if (CurrentLocationSelectionPolicy.needsFixRetry(placesState.value.selectedId, false) &&
@@ -748,6 +758,14 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun setShowLikelySnow(enabled: Boolean) {
+        viewModelScope.launch {
+            runCatching { radarSettings.setShowLikelySnow(enabled) }
+                .onSuccess { _settingsMessage.value = null }
+                .onFailure { _settingsMessage.value = "Couldn't save the snow display setting." }
+        }
+    }
+
     fun setRadarPlaybackSpeed(speed: RadarPlaybackSpeed) {
         viewModelScope.launch {
             runCatching { radarSettings.setPlaybackSpeed(speed) }
@@ -896,6 +914,7 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
     val radarCameraMemory = remember { RadarCameraMemory(currentRecenterTick) }
     val alertState by viewModel.alertState.collectAsStateWithLifecycle()
     val radarProvider by viewModel.radarProvider.collectAsStateWithLifecycle()
+    val showLikelySnow by viewModel.showLikelySnow.collectAsStateWithLifecycle()
     val radarPlaybackSpeed by viewModel.radarPlaybackSpeed.collectAsStateWithLifecycle()
     val appAppearance by viewModel.appAppearance.collectAsStateWithLifecycle()
     val mapAppearance by viewModel.mapAppearance.collectAsStateWithLifecycle()
@@ -1009,6 +1028,7 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
                             onChartTimeConsumed = { token ->
                                 if (pendingChartTime?.token == token) pendingChartTime = null
                             },
+                            showLikelySnow = showLikelySnow,
                         )
                         Destination.PLACES -> PlacesScreen(
                             collection = placesState,
@@ -1024,6 +1044,8 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
                         Destination.SETTINGS -> SettingsScreen(
                             selectedProvider = radarProvider,
                             selectProvider = viewModel::setRadarProvider,
+                            showLikelySnow = showLikelySnow,
+                            setShowLikelySnow = viewModel::setShowLikelySnow,
                             playbackSpeed = radarPlaybackSpeed,
                             selectPlaybackSpeed = viewModel::setRadarPlaybackSpeed,
                             appAppearance = appAppearance,

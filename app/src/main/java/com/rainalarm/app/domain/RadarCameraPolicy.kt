@@ -2,11 +2,6 @@ package com.rainalarm.app.domain
 
 import com.rainalarm.app.data.SavedPlace
 import kotlinx.serialization.Serializable
-import kotlin.math.PI
-import kotlin.math.atan
-import kotlin.math.ln
-import kotlin.math.sin
-import kotlin.math.sinh
 
 /** Scalar-only, in-memory camera state; no MapLibre view or network session is retained. */
 @Serializable
@@ -50,29 +45,16 @@ object RadarCameraPolicy {
         val zoom = previous?.zoom?.takeIf { it.isFinite() }?.coerceIn(0.0, MAX_ZOOM)
             ?: RadarEntryZoom.forHorizontalMiles(place.latitude, widthPixels)
         if (previous == null || recenter) return RadarCameraTarget(place.latitude, place.longitude, zoom)
-        if (previous.placeId == place.id && previous.placeLatitude == place.latitude &&
-            previous.placeLongitude == place.longitude
-        ) return RadarCameraTarget(previous.centerLatitude, previous.centerLongitude, zoom)
-
-        // Transfer the signed screen-space/Web-Mercator offset, not a degree offset:
-        // longitude wraps at the antimeridian and latitude compresses toward the poles.
-        var offsetX = mercatorX(previous.centerLongitude) - mercatorX(previous.placeLongitude)
-        if (offsetX > 0.5) offsetX -= 1.0
-        if (offsetX < -0.5) offsetX += 1.0
-        val offsetY = mercatorY(previous.centerLatitude) - mercatorY(previous.placeLatitude)
-        val centerX = wrapUnit(mercatorX(place.longitude) + offsetX)
-        val centerY = (mercatorY(place.latitude) + offsetY).coerceIn(0.0, 1.0)
-        return RadarCameraTarget(mercatorLatitude(centerY), wrapLongitude(centerX * 360.0 - 180.0), zoom)
+        return if (previous.placeId == place.id) {
+            // A same-selection session replacement, tab return, refresh, or live Current
+            // coordinate update must retain the user's exact viewport.
+            RadarCameraTarget(previous.centerLatitude, previous.centerLongitude, zoom)
+        } else {
+            // A newly selected identity starts at its actual coordinate. Carry only zoom;
+            // transferring the old place-relative pan offset made new saved places appear random.
+            RadarCameraTarget(place.latitude, place.longitude, zoom)
+        }
     }
-
-    private fun mercatorX(longitude: Double) = (wrapLongitude(longitude) + 180.0) / 360.0
-    private fun mercatorY(latitude: Double): Double {
-        val s = sin(Math.toRadians(latitude.coerceIn(-MAX_LATITUDE, MAX_LATITUDE)))
-        return 0.5 - ln((1.0 + s) / (1.0 - s)) / (4.0 * PI)
-    }
-    private fun mercatorLatitude(y: Double) = Math.toDegrees(atan(sinh(PI * (1.0 - 2.0 * y))))
-        .coerceIn(-MAX_LATITUDE, MAX_LATITUDE)
-    private fun wrapUnit(value: Double) = ((value % 1.0) + 1.0) % 1.0
     private fun wrapLongitude(value: Double) = ((value + 180.0) % 360.0 + 360.0) % 360.0 - 180.0
 }
 

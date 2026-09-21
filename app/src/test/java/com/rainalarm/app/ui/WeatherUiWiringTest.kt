@@ -84,7 +84,42 @@ class WeatherUiWiringTest {
         assertTrue(map.contains("TileSet(\"2.2.0\", satellite.tileUrl())"))
         assertTrue(map.contains("sourceId == SATELLITE_SOURCE_ID"))
         assertTrue(map.contains("addOnCameraIdleListener"))
+        val idleBody = map.substringAfter("val idle = MapLibreMap.OnCameraIdleListener {")
+            .substringBefore("cameraIdleListener = idle")
+        assertTrue(idleBody.contains("overlay.onCameraMoved()"))
+        assertTrue(idleBody.contains("staticFallback?.onCameraMoved()"))
+        val renderer = source("LegacyRadarGlOverlayView.kt")
+        assertTrue(renderer.contains("val selectedMesh = if (selectedTier != activeTier)"))
+        val publishedProjection = renderer.substringAfter("synchronized(stateLock) {\n            // Tier and its projected vertices")
+            .substringBefore("requestRender()")
+        assertTrue(publishedProjection.contains("activeTier = selectedTier"))
+        assertTrue(publishedProjection.contains("geoMesh = selectedMesh"))
+        assertTrue(publishedProjection.contains("screenVertices = updated"))
         assertFalse(map.contains("canvas.drawText(\"${'$'}{speed.roundToInt()}\""))
+        assertTrue(map.contains("if (oldPlace?.id == mapPlace.id && !cameraMemory.hasPendingRecenter(recenterSignal))"))
+        assertTrue(map.contains("oldPlace?.let { saveCamera(ready, it) }"))
+        assertTrue(map.contains("val target = cameraMemory.target(cameraPlace, mapWidth, recenterSignal)"))
+        assertTrue(radar.contains("saveAndSelect(SavedPlace(name.trim(), point.latitude, point.longitude))"))
+    }
+
+    @Test fun `Now and alerts share dense first open radar minute series builder`() {
+        val forecast = listOf(
+            File("src/main/java/com/rainalarm/app/data/RadarForecastRepository.kt"),
+            File("app/src/main/java/com/rainalarm/app/data/RadarForecastRepository.kt"),
+        ).first(File::isFile).readText()
+        val alerts = listOf(
+            File("src/main/java/com/rainalarm/app/alerts/RainAlerts.kt"),
+            File("app/src/main/java/com/rainalarm/app/alerts/RainAlerts.kt"),
+        ).first(File::isFile).readText()
+        assertTrue(forecast.contains("fun buildOpenRadarMinuteSeries"))
+        assertTrue(forecast.contains("field = session.velocity(samplingTier)?.futureField"))
+        assertTrue(forecast.contains("aggregateMotion = session.motion"))
+        assertTrue(forecast.contains("coverageGrid = session.latestDetailCoverage"))
+        assertTrue(forecast.contains("buildOpenRadarMinuteSeries(session, evaluatedAt.epochSecond)"))
+        assertTrue(forecast.contains("radarSettings.selectedProvider() == RadarProviderKind.OPEN_RAINVIEWER"))
+        assertTrue(forecast.contains("Open radar could not provide a reliable local analysis"))
+        assertTrue(alerts.contains("buildOpenRadarMinuteSeries(session, evaluatedAt.epochSecond)"))
+        assertFalse(alerts.contains("OpenMinuteSeriesBuilder.fromDenseField("))
     }
 
     @Test fun `radar header centers selected place through existing camera tick`() {
@@ -219,5 +254,16 @@ class WeatherUiWiringTest {
         assertTrue(now.contains("refreshStatus, compassAppearance, graphAppearance)"))
         assertTrue(settings.contains("NowCardAppearanceChoice(\"Compass card\""))
         assertTrue(settings.contains("NowCardAppearanceChoice(\"Graph card\""))
+    }
+
+    @Test fun `likely snow setting is visible only for explicitly selected open radar`() {
+        val settings = source("SettingsScreen.kt")
+        val main = source("../MainActivity.kt")
+        val radar = source("RadarScreen.kt")
+        assertTrue(settings.contains("if (selectedProvider == RadarProviderKind.OPEN_RAINVIEWER)"))
+        assertTrue(settings.contains("Text(\"Show likely snow\""))
+        assertTrue(settings.contains("Switch(checked = showLikelySnow"))
+        assertTrue(main.contains("showLikelySnow = showLikelySnow"))
+        assertTrue(radar.contains("LaunchedEffect(RadarLiveSessionPolicy.loadIdentity(place), reload, showLikelySnow)"))
     }
 }

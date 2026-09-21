@@ -9,6 +9,7 @@ import android.graphics.Rect
 import android.util.Log
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -42,6 +43,15 @@ import java.util.concurrent.atomic.AtomicLong
 enum class RadarProviderKind {
     METEOGROUP_REGIONAL,
     OPEN_RAINVIEWER,
+}
+
+object RainViewerSnowPreference {
+    fun decode(stored: Boolean?): Boolean = stored ?: false
+}
+
+object RainViewerSnowPolicy {
+    fun effective(requestedProvider: RadarProviderKind, enabled: Boolean): Boolean =
+        requestedProvider == RadarProviderKind.OPEN_RAINVIEWER && enabled
 }
 
 enum class RadarPlaybackSpeed(val multiplier: Float, val label: String) {
@@ -108,6 +118,7 @@ class RadarSettingsRepository(private val context: Context) {
     private val mapLayerKey = stringPreferencesKey("map_layer")
     private val windArrowScaleKey = floatPreferencesKey("wind_arrow_scale")
     private val nowMetricsKey = stringPreferencesKey("now_weather_metrics")
+    private val showLikelySnowKey = booleanPreferencesKey("rainviewer_show_likely_snow")
 
     val provider: Flow<RadarProviderKind> = context.radarSettingsDataStore.data
         .catch { failure ->
@@ -149,7 +160,12 @@ class RadarSettingsRepository(private val context: Context) {
         .catch { failure -> if (failure is IOException) emit(emptyPreferences()) else throw failure }
         .map { NowWeatherMetricPreference.decode(it[nowMetricsKey]) }
 
+    val showLikelySnow: Flow<Boolean> = context.radarSettingsDataStore.data
+        .catch { failure -> if (failure is IOException) emit(emptyPreferences()) else throw failure }
+        .map { RainViewerSnowPreference.decode(it[showLikelySnowKey]) }
+
     suspend fun selectedProvider(): RadarProviderKind = provider.first()
+    suspend fun selectedShowLikelySnow(): Boolean = showLikelySnow.first()
 
     suspend fun setProvider(provider: RadarProviderKind) {
         context.radarSettingsDataStore.edit { it[providerKey] = RadarProviderPreference.encode(provider) }
@@ -191,6 +207,10 @@ class RadarSettingsRepository(private val context: Context) {
             if (visible) updated.add(metric) else updated.remove(metric)
             preferences[nowMetricsKey] = NowWeatherMetricPreference.encode(updated)
         }
+    }
+
+    suspend fun setShowLikelySnow(enabled: Boolean) {
+        context.radarSettingsDataStore.edit { it[showLikelySnowKey] = enabled }
     }
 }
 
@@ -625,11 +645,13 @@ class RadarProviderCoordinator(
     ): RadarSession {
         val startedNanos = System.nanoTime()
         val totalBudget = RadarLoadDeadline.total(mode)
-        suspend fun loadOpen(message: String? = null): RadarSession {
+        suspend fun loadOpen(message: String? = null, showLikelySnow: Boolean = false): RadarSession {
             val remaining = RadarLoadDeadline.remaining(totalBudget, startedNanos, System.nanoTime())
             if (remaining == 0L) throw RadarLoadTimedOutException("Radar download timed out. Tap refresh to try again.")
             val loaded = try {
-                withTimeout(remaining) { open.load(place, maxFrames, mode, onProgress) }
+                withTimeout(remaining) {
+                    open.load(place, maxFrames, mode, onProgress, showLikelySnow)
+                }
             } catch (_: TimeoutCancellationException) {
                 currentCoroutineContext().ensureActive()
                 throw RadarLoadTimedOutException("Radar download timed out. Tap refresh to try again.")
@@ -643,7 +665,10 @@ class RadarProviderCoordinator(
         return when (settings.selectedProvider()) {
             RadarProviderKind.OPEN_RAINVIEWER -> {
                 Log.i("RainRadarProvider", "Loading requested open radar session")
-                loadOpen()
+                loadOpen(showLikelySnow = RainViewerSnowPolicy.effective(
+                    RadarProviderKind.OPEN_RAINVIEWER,
+                    settings.selectedShowLikelySnow(),
+                ))
             }
             RadarProviderKind.METEOGROUP_REGIONAL -> {
                 val area = RegionalRadarAreas.forPoint(place.latitude, place.longitude)

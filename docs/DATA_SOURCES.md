@@ -2,6 +2,10 @@
 
 Rain Alarm has two selectable radar providers. MeteoGroup regional is the
 default; RainViewer is the open worldwide choice and automatic session fallback.
+They are independent composites with different inputs and processing, so their
+precipitation footprints, intensities and timestamps can materially disagree.
+Rain Alarm normalizes presentation thresholds and colours but does not dilate,
+move or otherwise force either provider's echoes to match the other.
 
 ## MeteoGroup regional
 
@@ -49,11 +53,13 @@ extreme colour bands, but intentionally adapts regional *low-end opacity* to
 the dark basemap. Values through 52/255 are transparent; 52–83/255 ease from
 clear to the original 83/255 alpha instead of jumping from clear to 38/255
 alpha at raw 63. This softens source-cell outlines without blurring or creating
-large low-value JPEG haze. The radar surface opacity is 0.9. RainViewer PNG
-alpha has a different encoding and retains its r13 transfer unchanged:
-values below 0.12 remain invisible. Now/alerts retain the regional 63/255 and
-open 0.12 wet thresholds; faint regional map traces below 63 are not classified
-as rain at the selected point.
+large low-value JPEG haze. The radar surface opacity is 0.9. RainViewer RGB is
+decoded to this same shared intensity scale before upload; its PNG alpha is
+source rendering transparency and is never treated as precipitation strength
+or evidence of geographic radar coverage. Radar,
+Now and alerts therefore share the regional 63/255 wet boundary after decode;
+faint map traces below 63 are not classified as precipitation at the selected
+point.
 
 This is a clean-room visual emulation of observed output, not a claim to have
 recovered the proprietary spatial algorithm or higher meteorological resolution.
@@ -93,9 +99,9 @@ frame's vector. It decodes only a tiny selected-place region and immediately
 recycles the bitmap; unlike the map session it retains no compressed velocity
 images or full-frame grids. A frame without a velocity file uses the renderer's
 neutral-motion fallback for that interval.
-The regional wet threshold is 63/255 normalized intensity, above the faint
-trace portion of the display ramp. RainViewer point forecasts have a separate
-colour-key-derived threshold; PNG alpha alone is not rain strength. If
+The shared wet threshold is 63/255 normalized intensity, above the faint trace
+portion of the display ramp. RainViewer point forecasts use the same decoded
+intensity as its map; PNG alpha alone is not rain strength. If
 the provider forecast ends before
 now+60, the minute series ends at the last covered minute and is explicitly
 partial; missing minutes are never padded as dry, and no-rain alerts are
@@ -197,14 +203,34 @@ References:
   forecast.
 - Images: coordinate-centred 512-pixel PNGs requested at provider zoom 5 for
   regional coverage and zoom 7 for local detail. Scheme ID `2` is Universal
-  Blue. The map continues to use PNG alpha for motion and the Rain Alarm visual
-  LUT; its renderer is unchanged. For Now and alerts, a separate current-frame
-  point grid inverts sparse anchors from RainViewer's published Universal Blue
-  colour key into an approximate reflectivity-derived display severity. Alpha
-  modulates spatial coverage only: it can already be fully opaque at light
-  15 dBZ, so it must not be interpreted as severe rain. This scale is a
-  qualitative Light/Medium/Severe aid, not measured mm/h, and neither RGB
-  smoothing nor radar reflectivity determines ground rainfall precisely.
+  Blue with source smoothing enabled. Explicit Open-radar selection requests
+  `1_0` by default (snow colours off); the persisted **Show likely snow** option
+  requests `1_1`. Automatic fallback from a requested MeteoGroup session always
+  remains snow-off.
+- Point analysis also requests exactly one small, static RainViewer coverage
+  mask at detail tier (`/v2/coverage/0/...`) per loaded analysis session, never
+  one per history frame. In that documented mask, transparent pixels are
+  covered and opaque black pixels are outside radar coverage. A failed or
+  malformed mask is retained as unknown so it cannot turn transparent/no-data
+  precipitation pixels into a false dry result.
+- A centralized decoder projects every RGB value—including source-smoothed
+  intermediate colours—onto RainViewer's published Universal Blue rain curve
+  and, only for `1_1`, its snow curve. The result is pre-encoded as shared Rain
+  Alarm intensity, likely-snow confidence and source alpha. Alpha remains a
+  rendering/motion mask: it can already be fully opaque at light 15 dBZ and is
+  never precipitation strength or proof of geographic coverage. Both map and selected-point series use the
+  same decoded intensity and the regional Rain Alarm LUT, opacity threshold,
+  hardware-linear sampling and temporal motion warp.
+- With likely snow enabled, rain keeps the normal palette while snow-classified
+  pixels use an icy lavender through violet/blue-violet to deep indigo LUT.
+  Radar, Now, graph and alert text carry the type at the relevant current/onset
+  minute. The provider classification is model-assisted, so the UI says
+  **likely snow**; it is not confirmation of surface snowfall. With the option
+  off, snow-coloured echoes are decoded and displayed as rain-style
+  precipitation rather than removed. Intensity remains qualitative
+  reflectivity-derived Light/Medium/Severe display severity, not measured rain
+  or snowfall rate, and neither RGB smoothing nor reflectivity determines
+  ground precipitation precisely.
 - Current public contract: approximately two hours of past data in ten-minute
   steps, maximum zoom 7, Universal Blue only, and a 100 requests/IP/minute rate
   limit. Radar fetches the manifest once per visible place session, normally
@@ -275,9 +301,23 @@ The Now screen and alert worker consume the same normalized minute-series
 contract from Now through the available horizon, up to +60 minutes. The
 MeteoGroup area chart is interpolated from its provider profile; if unavailable,
 regional raster values are interpolated from exact forecast timestamps.
-RainViewer values sample the confidence-gated dense-flow advection field once
-per minute. The area chart and regional raster use a 0.25 normalized rain
-threshold (63/255 for the raster); RainViewer has its own calibrated threshold.
+RainViewer values preferentially sample the confidence-gated dense-flow
+advection field once per minute. If that local field cannot be established but
+the separately confidence-gated whole-field physical translation is usable,
+Now and alerts share a lower-confidence broad-motion path through the same
+latest decoded grid. That fallback converts world displacement into the actual
+sampling tier, includes observation age, and stops as partial at the downloaded
+tile edge instead of padding unknown space as dry. If neither motion estimate
+is reliable while echoes exist, the result remains unavailable. Motion is not
+needed for a genuinely clear latest observation: when no decoded value anywhere
+in the retained detail tile reaches the shared 63/255 wet threshold, the
+observation is fresh, the coverage-mask centre 5×5 neighbourhood is covered,
+and at least 99% of the retained tile is covered, Now and alerts share a 61-point
+zero series with no bearing. The one-percent allowance only tolerates rasterised
+mask-edge pixels at distant tile corners; it never permits a gap at the selected
+point. Missing, stale, invalid or dimension-mismatched evidence remains
+unavailable. The area chart uses its 0.25 normalized provider threshold;
+regional and decoded RainViewer rasters share the 63/255 Rain Alarm threshold.
 Rain ends at the first later minute below the active threshold, and unavailable local motion is
 reported honestly rather than replaced with an invented bearing or arrival.
 The compass shows the source bearing (the opposite of precipitation travel)

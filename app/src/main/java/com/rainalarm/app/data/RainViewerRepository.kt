@@ -83,6 +83,7 @@ fun buildCoordinateRadarUrl(
     place: SavedPlace,
     zoom: Int = RADAR_IMAGE_ZOOM,
     imageSize: Int = RADAR_IMAGE_SIZE,
+    showLikelySnow: Boolean = false,
 ): String {
     val hostUrl = URL(host)
     require(hostUrl.protocol == "https" && hostUrl.host.isNotBlank()) {
@@ -92,7 +93,23 @@ fun buildCoordinateRadarUrl(
     require(zoom in 0..7) { "Radar image zoom must be between 0 and 7" }
     require(imageSize == 256 || imageSize == 512) { "Radar image size must be 256 or 512" }
     return "${host.removeSuffix("/")}${frame.path}/$imageSize/$zoom/" +
-        "${place.latitude}/${place.longitude}/2/1_1.png"
+        "${place.latitude}/${place.longitude}/2/1_${if (showLikelySnow) 1 else 0}.png"
+}
+
+fun buildCoordinateCoverageUrl(
+    host: String,
+    place: SavedPlace,
+    zoom: Int = RADAR_IMAGE_ZOOM,
+    imageSize: Int = RADAR_IMAGE_SIZE,
+): String {
+    val hostUrl = URL(host)
+    require(hostUrl.protocol == "https" && hostUrl.host.isNotBlank()) {
+        "Radar tile host must use HTTPS"
+    }
+    require(zoom in 0..7) { "Radar image zoom must be between 0 and 7" }
+    require(imageSize == 256 || imageSize == 512) { "Radar image size must be 256 or 512" }
+    return "${host.removeSuffix("/")}/v2/coverage/0/$imageSize/$zoom/" +
+        "${place.latitude}/${place.longitude}/0/0_0.png"
 }
 
 enum class RadarLoadMode { SCREEN_TWO_TIER, ALERT_ANALYSIS }
@@ -254,6 +271,8 @@ data class RadarSession(
     val motion: PhysicalRadarMotion?,
     val pairMotions: List<PhysicalRadarMotion?>,
     val latestDetailIntensity: IntensityGrid? = null,
+    val latestDetailSnow: IntensityGrid? = null,
+    val latestDetailCoverage: IntensityGrid? = null,
     val detailFailureMessage: String? = null,
     val providerSelection: RadarProviderSelection = RadarProviderSelection(
         RadarProviderKind.OPEN_RAINVIEWER,
@@ -302,10 +321,25 @@ class RadarSessionLoader(
         maxFrames: Int? = null,
         mode: RadarLoadMode = RadarLoadMode.SCREEN_TWO_TIER,
         onProgress: (completed: Int, total: Int) -> Unit = { _, _ -> },
+        showLikelySnow: Boolean = false,
     ): RadarSession = coroutineScope {
         val manifest = RainViewerManifestParser.parse(endpoint.fetchManifest())
         val selectedFrames = maxFrames?.let { manifest.frames.takeLast(it.coerceAtLeast(2)) }
             ?: manifest.frames
+        // The static coverage product is requested once per point-analysis session, not once
+        // per radar frame. Failure is retained as unknown coverage so wet motion analysis can
+        // still proceed, while a transparent precipitation tile can never be called clear.
+        val coverageDeferred = if (mode == RadarLoadMode.ALERT_ANALYSIS) {
+            async(Dispatchers.IO) {
+                try {
+                    downloadCoverage(manifest.host, place, RadarResolutionTier.DETAIL)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Throwable) {
+                    null
+                }
+            }
+        } else null
         val complete = AtomicInteger(0)
         val total = radarRequestPlan(selectedFrames, mode).size
         onProgress(0, total)
@@ -324,6 +358,7 @@ class RadarSessionLoader(
                     complete,
                     total,
                     onProgress,
+                    showLikelySnow,
                 )
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -341,6 +376,7 @@ class RadarSessionLoader(
                     complete,
                     total,
                     onProgress,
+                    showLikelySnow,
                 )
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -397,6 +433,7 @@ class RadarSessionLoader(
             dense(regionalDownload)?.let { put(RadarResolutionTier.REGIONAL, it) }
             dense(detailDownload)?.let { put(RadarResolutionTier.DETAIL, it) }
         }
+        val detailCoverage = coverageDeferred?.await()
         RadarSession(
             place = place,
             regional = regionalDownload?.tierFrames,
@@ -404,6 +441,8 @@ class RadarSessionLoader(
             motion = RadarMotionPolicy.preferred(regionalAggregate, detailAggregate),
             pairMotions = pairMotions,
             latestDetailIntensity = detailDownload?.latestSamplingGrid,
+            latestDetailSnow = detailDownload?.latestSnowGrid,
+            latestDetailCoverage = detailCoverage,
             detailFailureMessage = detailFailure,
             denseVelocity = denseVelocity,
         )
@@ -413,12 +452,14 @@ class RadarSessionLoader(
         val bitmapFrame: RadarBitmapFrame,
         val analysis: TimedIntensityGrid,
         val samplingGrid: IntensityGrid?,
+        val snowGrid: IntensityGrid?,
     )
 
     private data class DownloadedTier(
         val tierFrames: RadarTierFrames,
         val analyses: List<TimedIntensityGrid>,
         val latestSamplingGrid: IntensityGrid?,
+        val latestSnowGrid: IntensityGrid?,
     )
 
     private suspend fun downloadTier(
@@ -430,6 +471,7 @@ class RadarSessionLoader(
         complete: AtomicInteger,
         total: Int,
         onProgress: (completed: Int, total: Int) -> Unit,
+        showLikelySnow: Boolean,
     ): DownloadedTier = coroutineScope {
         val allocated = Collections.synchronizedList(mutableListOf<Bitmap>())
         val dispatcher = Dispatchers.IO.limitedParallelism(3)
@@ -443,23 +485,23 @@ class RadarSessionLoader(
                             place,
                             zoom = tier.zoom,
                             imageSize = tier.imageSize,
+                            showLikelySnow = showLikelySnow,
                         ),
                     )
                     currentCoroutineContext().ensureActive()
                     val bitmap = decode(bytes, tier.imageSize)
                     allocated += bitmap
                     currentCoroutineContext().ensureActive()
+                    val motionGrid = bitmap.toAnalysisGrid(MOTION_ANALYSIS_SIZE)
+                    val decoded = bitmap.encodeOpenForRendering(
+                        showLikelySnow,
+                        keepLatestSamplingGrid && frame == frames.last(),
+                    )
                     val result = DownloadedFrame(
                         bitmapFrame = RadarBitmapFrame(frame, bitmap),
-                        analysis = TimedIntensityGrid(
-                            frame.time,
-                            bitmap.toAnalysisGrid(MOTION_ANALYSIS_SIZE),
-                        ),
-                        samplingGrid = if (keepLatestSamplingGrid && frame == frames.last()) {
-                            bitmap.toOpenSeverityGrid()
-                        } else {
-                            null
-                        },
+                        analysis = TimedIntensityGrid(frame.time, motionGrid),
+                        samplingGrid = decoded?.severity,
+                        snowGrid = decoded?.snow,
                     )
                     val count = complete.incrementAndGet()
                     withContext(Dispatchers.Main.immediate) { onProgress(count, total) }
@@ -482,12 +524,33 @@ class RadarSessionLoader(
             ),
             analyses = images.map { it.analysis },
             latestSamplingGrid = images.lastOrNull()?.samplingGrid,
+            latestSnowGrid = images.lastOrNull()?.snowGrid,
         )
+    }
+
+    private suspend fun downloadCoverage(
+        host: String,
+        place: SavedPlace,
+        tier: RadarResolutionTier,
+    ): IntensityGrid {
+        val bytes = endpoint.fetchImage(
+            buildCoordinateCoverageUrl(host, place, tier.zoom, tier.imageSize),
+        )
+        currentCoroutineContext().ensureActive()
+        val bitmap = decode(bytes, tier.imageSize)
+        return try {
+            bitmap.toCoverageGrid()
+        } finally {
+            if (!bitmap.isRecycled) bitmap.recycle()
+        }
     }
 
     private fun decode(bytes: ByteArray, expectedSize: Int): Bitmap {
         require(bytes.isNotEmpty()) { "Radar frame was empty" }
-        val options = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }
+        val options = BitmapFactory.Options().apply {
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+            inMutable = true
+        }
         val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
             ?: error("Radar frame could not be decoded")
         require(bitmap.width == expectedSize && bitmap.height == expectedSize) {
@@ -545,10 +608,56 @@ private fun Bitmap.toAnalysisGrid(targetSize: Int): IntensityGrid {
     return IntensityGrid(targetWidth, targetHeight, values)
 }
 
-/** Keep alpha-only motion analysis separate from colour-calibrated point severity. */
-private fun Bitmap.toOpenSeverityGrid(): IntensityGrid {
+private data class DecodedOpenRaster(
+    val severity: IntensityGrid,
+    val snow: IntensityGrid,
+)
+
+/** RainViewer coverage masks are transparent where covered and opaque black where absent. */
+private fun Bitmap.toCoverageGrid(): IntensityGrid {
+    val values = FloatArray(width * height)
+    val row = IntArray(width)
+    for (y in 0 until height) {
+        getPixels(row, 0, width, 0, y, width, 1)
+        for (x in 0 until width) {
+            val alpha = ((row[x] ushr 24) and 0xff) / 255f
+            values[y * width + x] = 1f - alpha
+        }
+    }
+    return IntensityGrid(width, height, values)
+}
+
+/**
+ * Replace provider RGBA with one renderer-friendly fetch: R=shared intensity,
+ * G=likely-snow confidence, B=coverage, A=opaque. Motion was sampled beforehand.
+ */
+private fun Bitmap.encodeOpenForRendering(
+    distinguishSnow: Boolean,
+    retainPointGrid: Boolean,
+): DecodedOpenRaster? {
     val pixels = IntArray(width * height)
     getPixels(pixels, 0, width, 0, 0, width, height)
-    val values = FloatArray(pixels.size) { index -> OpenRadarColorScale.fromArgb(pixels[index]) }
-    return IntensityGrid(width, height, values)
+    val severity = if (retainPointGrid) FloatArray(pixels.size) else null
+    val snowGrid = if (retainPointGrid) FloatArray(pixels.size) else null
+    // RainViewer smoothing produces a small, repeated colour set. Cache decoded
+    // RGBA values so projection onto both published colour curves is not repeated
+    // for every pixel in every frame.
+    val decodedColours = HashMap<Int, com.rainalarm.app.domain.OpenRadarDecoded>()
+    pixels.indices.forEach { index ->
+        val source = pixels[index]
+        val decoded = decodedColours.getOrPut(source) {
+            OpenRadarColorScale.decode(source, distinguishSnow)
+        }
+        severity?.set(index, decoded.severity)
+        snowGrid?.set(index, decoded.snowConfidence)
+        val intensity = (decoded.sharedIntensity * 255f).toInt().coerceIn(0, 255)
+        val snow = (decoded.snowConfidence * 255f).toInt().coerceIn(0, 255)
+        val coverage = (decoded.coverage * 255f).toInt().coerceIn(0, 255)
+        pixels[index] = (0xff shl 24) or (intensity shl 16) or (snow shl 8) or coverage
+    }
+    setPixels(pixels, 0, width, 0, 0, width, height)
+    return severity?.let {
+        DecodedOpenRaster(IntensityGrid(width, height, it),
+            IntensityGrid(width, height, requireNotNull(snowGrid)))
+    }
 }

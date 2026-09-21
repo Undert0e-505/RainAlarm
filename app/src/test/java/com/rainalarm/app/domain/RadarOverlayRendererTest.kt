@@ -147,6 +147,37 @@ class RadarOverlayRendererTest {
     }
 
     @Test
+    fun sameGeographicEchoStaysFixedAcrossTierSwitchPanAndZoom() {
+        val requestCenter = GeoPoint(57.25, -4.0)
+        val echo = WebMercator.displacedCenter(requestCenter, 7, 72.0, -44.0)
+        val regionalBounds = WebMercator.imageBounds(requestCenter, 5, 512)
+        val detailBounds = WebMercator.imageBounds(requestCenter, 7, 512)
+
+        fun renderedPoint(bounds: GeoQuad, sourceDx: Double, sourceDy: Double,
+            camera: GeoPoint, zoom: Double): Pair<Double, Double> {
+            val rect = NorthUpRadarGeoreference.screenRect(bounds, camera, zoom, 1_080, 720)
+            return rect.left + (256.0 + sourceDx) / 512.0 * (rect.right - rect.left) to
+                rect.top + (256.0 + sourceDy) / 512.0 * (rect.bottom - rect.top)
+        }
+        // The same world displacement is 4x fewer source pixels in the z5 image.
+        listOf(
+            requestCenter to 6.34,
+            requestCenter to 6.36,
+            GeoPoint(echo.latitude - 0.18, echo.longitude + 0.22) to 8.1,
+        ).forEach { (camera, zoom) ->
+            val regional = renderedPoint(regionalBounds, 18.0, -11.0, camera, zoom)
+            val detail = renderedPoint(detailBounds, 72.0, -44.0, camera, zoom)
+            assertEquals(regional.first, detail.first, 1e-5)
+            assertEquals(regional.second, detail.second, 1e-5)
+            val direct = NorthUpRadarGeoreference.screenRect(
+                WebMercator.imageBounds(echo, 7, 1), camera, zoom, 1_080, 720,
+            )
+            assertEquals((direct.left + direct.right) / 2.0, detail.first, 0.15)
+            assertEquals((direct.top + direct.bottom) / 2.0, detail.second, 0.15)
+        }
+    }
+
+    @Test
     fun cameraPanAndZoomProduceExpectedNorthUpRectChanges() {
         val bounds = WebMercator.imageBounds(GeoPoint(51.5, -0.1), 7, 512)
         val centered = NorthUpRadarGeoreference.screenRect(

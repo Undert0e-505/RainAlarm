@@ -28,6 +28,7 @@ import com.rainalarm.app.domain.RadarResolutionTier
 import com.rainalarm.app.domain.RadarOverlayPlanner
 import com.rainalarm.app.domain.RadarVelocityField
 import com.rainalarm.app.domain.RainAlarmPalette
+import com.rainalarm.app.domain.SnowAlarmPalette
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
 import java.nio.ByteBuffer
@@ -153,12 +154,9 @@ internal class RadarGlOverlayView(
             session?.regional != null || session?.legacyArchive != null,
             session?.detail != null,
         )
-        if (selectedTier != activeTier) {
-            activeTier = selectedTier
-            geoMesh = meshFor(selectedTier)
-        }
-        val updated = FloatArray(geoMesh.vertices.size * 4)
-        geoMesh.vertices.forEachIndexed { index, vertex ->
+        val selectedMesh = if (selectedTier != activeTier) meshFor(selectedTier) else geoMesh
+        val updated = FloatArray(selectedMesh.vertices.size * 4)
+        selectedMesh.vertices.forEachIndexed { index, vertex ->
             val point = ready.projection.toScreenLocation(LatLng(vertex.latitude, vertex.longitude))
             updated[index * 4] = point.x / width * 2f - 1f
             updated[index * 4 + 1] = 1f - point.y / height * 2f
@@ -171,6 +169,10 @@ internal class RadarGlOverlayView(
             floatArrayOf(point.x / width * 2f - 1f, 1f - point.y / height * 2f)
         }
         synchronized(stateLock) {
+            // Tier and its projected vertices are one render state. Publishing either first can
+            // briefly draw z7 pixels on z5 bounds (or vice versa) while a gesture crosses 6.35.
+            activeTier = selectedTier
+            geoMesh = selectedMesh
             screenVertices = updated
             markerNdc = marker
         }
@@ -793,19 +795,22 @@ internal class RadarGlOverlayView(
         }
 
         private fun uploadLut(): Int {
-            val bytes = ByteBuffer.allocateDirect(256 * 4)
-            repeat(256) { intensity ->
-                val color = radarColor(intensity)
-                bytes.put(((color shr 16) and 0xff).toByte())
-                bytes.put(((color shr 8) and 0xff).toByte())
-                bytes.put((color and 0xff).toByte())
-                bytes.put(((color ushr 24) and 0xff).toByte())
+            val bytes = ByteBuffer.allocateDirect(256 * 2 * 4)
+            repeat(2) { type ->
+                repeat(256) { intensity ->
+                    val color = if (type == 0) RainAlarmPalette.colorAt(intensity / 255f)
+                        else SnowAlarmPalette.colorAt(intensity / 255f)
+                    bytes.put(((color shr 16) and 0xff).toByte())
+                    bytes.put(((color shr 8) and 0xff).toByte())
+                    bytes.put((color and 0xff).toByte())
+                    bytes.put(((color ushr 24) and 0xff).toByte())
+                }
             }
             bytes.position(0)
             val texture = newTexture()
             GLES20.glTexImage2D(
                 GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA,
-                256, 1, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, bytes,
+                256, 2, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, bytes,
             )
             checkGl("uploading radar color LUT")
             return texture
@@ -898,12 +903,6 @@ internal class RadarGlOverlayView(
             val fragment = RadarShaderSources.fragmentFor(precision)
             RadarShaderContract.validateGles2(vertex, fragment).getOrThrow()
             return createProgram(vertex, fragment)
-        }
-
-        private fun radarColor(value: Int): Int = if (legacyArchive != null) {
-            RainAlarmPalette.colorAt(value / 255f)
-        } else {
-            RainAlarmPalette.colorAtOpen(value / 255f)
         }
 
         private class RadarShaderCompileException(message: String) : IllegalStateException(message)

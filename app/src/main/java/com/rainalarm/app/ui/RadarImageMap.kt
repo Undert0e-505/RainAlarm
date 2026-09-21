@@ -837,6 +837,12 @@ private fun RadarImageMapInstance(
                     ready.addOnCameraMoveStartedListener(startListener)
                     val idle = MapLibreMap.OnCameraIdleListener {
                         if (!teardown.isClosed && mapView.width > 0 && mapView.height > 0) {
+                            // MapLibre can publish its final projection after the last move callback.
+                            // Re-project both overlay tiers and the selected marker at the settled
+                            // camera so a zoom-threshold switch cannot retain gesture-era vertices.
+                            overlay.onCameraMoved()
+                            staticFallback?.onCameraMoved()
+                            windView.cameraMoved()
                             val bounds = ready.projection.visibleRegion.latLngBounds
                             currentWindViewportCallback(WindViewport(
                                 bounds.getLatSouth(), bounds.getLonWest(), bounds.getLatNorth(), bounds.getLonEast(),

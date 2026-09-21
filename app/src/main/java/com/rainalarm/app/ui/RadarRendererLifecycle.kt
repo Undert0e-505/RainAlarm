@@ -87,9 +87,6 @@ internal object RadarShaderPrecisionPolicy {
 
 internal object RadarShaderSources {
     private const val SHARED_MARKER_MODE = "uniform mediump float markerMode;"
-    private val REGIONAL_CUTOFF = (RainAlarmPalette.FIRST_VISIBLE_RAW / 255f).toString()
-    private val OPEN_CUTOFF = RainAlarmPalette.OPEN_FIRST_VISIBLE_ALPHA.toString()
-
     val vertex: String get() = vertexFor(RadarShaderPrecision.HIGH)
     val fragment: String get() = fragmentFor(RadarShaderPrecision.HIGH)
 
@@ -127,30 +124,17 @@ internal object RadarShaderSources {
         vec2 textureCoordinate(vec2 p) {
             return textureOffset + clamp(p, 0.0, 1.0) * textureScale;
         }
-        float rawFrom(vec2 p) {
+        vec3 radarFrom(vec2 p) {
             vec4 sample = texture2D(texRadarFrom, textureCoordinate(p));
-            return mix(sample.r, sample.a, coloredSource) * inside(p);
+            return vec3(sample.r, sample.g * coloredSource, mix(1.0, sample.b, coloredSource)) * inside(p);
         }
-        float rawTo(vec2 p) {
+        vec3 radarTo(vec2 p) {
             vec4 sample = texture2D(texRadarTo, textureCoordinate(p));
-            return mix(sample.r, sample.a, coloredSource) * inside(p);
+            return vec3(sample.r, sample.g * coloredSource, mix(1.0, sample.b, coloredSource)) * inside(p);
         }
-        float radarFrom(vec2 p) {
-            return rawFrom(p);
-        }
-        float radarTo(vec2 p) {
-            return rawTo(p);
-        }
-        float paletteIntensity(float value) {
-            if (coloredSource > 0.5) {
-                if (value < $OPEN_CUTOFF) return 0.0;
-                return $REGIONAL_CUTOFF + (value - $OPEN_CUTOFF) *
-                    (1.0 - $REGIONAL_CUTOFF) / (1.0 - $OPEN_CUTOFF);
-            }
-            return value;
-        }
-        vec2 paletteUv(float value) {
-            return vec2((clamp(value, 0.0, 1.0) * 255.0 + 0.5) / 256.0, 0.5);
+        vec2 paletteUv(float value, float snow) {
+            return vec2((clamp(value, 0.0, 1.0) * 255.0 + 0.5) / 256.0,
+                (clamp(snow, 0.0, 1.0) + 0.5) / 2.0);
         }
         void main() {
             if (markerMode > 0.5) {
@@ -163,16 +147,16 @@ internal object RadarShaderSources {
             vec2 velocity = (encoded * 2.0 - 1.0) * velocityScale * pixelSize;
             if (futureFactor > 0.0) {
                 vec2 p = uv - velocity * futureFactor;
-                float projected = paletteIntensity(radarFrom(p));
-                vec4 projectedColor = texture2D(texColorLut, paletteUv(projected));
-                gl_FragColor = vec4(projectedColor.rgb, projectedColor.a * layerAlpha);
+                vec3 projected = radarFrom(p);
+                vec4 projectedColor = texture2D(texColorLut, paletteUv(projected.x, projected.y));
+                gl_FragColor = vec4(projectedColor.rgb, projectedColor.a * projected.z * layerAlpha);
                 return;
             }
-            float fromValue = radarFrom(uv - velocity * time);
-            float toValue = radarTo(uv + velocity * (1.0 - time));
-            float intensity = paletteIntensity(mix(fromValue, toValue, time));
-            vec4 color = texture2D(texColorLut, paletteUv(intensity));
-            gl_FragColor = vec4(color.rgb, color.a * layerAlpha);
+            vec3 fromSample = radarFrom(uv - velocity * time);
+            vec3 toSample = radarTo(uv + velocity * (1.0 - time));
+            vec3 sample = mix(fromSample, toSample, time);
+            vec4 color = texture2D(texColorLut, paletteUv(sample.x, sample.y));
+            gl_FragColor = vec4(color.rgb, color.a * sample.z * layerAlpha);
         }
     """.trimIndent()
 }

@@ -33,6 +33,7 @@ import com.rainalarm.app.data.SavedPlace
 import com.rainalarm.app.data.CURRENT_LOCATION_ID
 import com.rainalarm.app.data.ForegroundLocationSnapshot
 import com.rainalarm.app.data.forecastSelectionKey
+import com.rainalarm.app.data.buildOpenRadarMinuteSeries
 import com.rainalarm.app.domain.IntensityGrid
 import com.rainalarm.app.domain.PhysicalRadarMotion
 import com.rainalarm.app.domain.RadarMotionPolicy
@@ -40,7 +41,6 @@ import com.rainalarm.app.domain.RadarResolutionTier
 import com.rainalarm.app.domain.RadarPointTimeline
 import com.rainalarm.app.domain.RadarVelocityField
 import com.rainalarm.app.domain.DenseRadarAdvection
-import com.rainalarm.app.domain.OpenMinuteSeriesBuilder
 import com.rainalarm.app.domain.ProviderMinuteSeriesBuilder
 import com.rainalarm.app.domain.RainMinuteSeries
 import com.rainalarm.app.domain.RainMinuteSeriesAnalyzer
@@ -82,6 +82,7 @@ sealed interface RadarAlertEvaluation {
         val confirmedDurationMinutes: Int? = null,
         val confirmedPeakIntensity: Float? = null,
         val expectedStartEpochSeconds: Long? = null,
+        val likelySnow: Boolean = false,
     ) : RadarAlertEvaluation
     data object WetNow : RadarAlertEvaluation
     data object Clear : RadarAlertEvaluation
@@ -208,6 +209,7 @@ object RainAlertDecisionEngine {
                 series.points.subList(first, end).maxOfOrNull { it.average }
             },
             expectedStartEpochSeconds = series.startEpochSeconds + first * 60L,
+            likelySnow = series.points[first].likelySnow,
         )
     }
 
@@ -302,7 +304,8 @@ internal object RainAlertNotificationText {
             ?: evaluatedAtEpochSeconds + approaching.etaStartMinutes * 60L
         val clock = DateTimeFormatter.ofPattern("HH:mm", Locale.getDefault())
             .withZone(zone).format(Instant.ofEpochSecond(start))
-        val title = "Rain approaching $placeName"
+        val title = if (approaching.likelySnow) "Snow likely approaching $placeName"
+            else "Rain approaching $placeName"
         val summary = "In ${approaching.etaStartMinutes} min · around $clock"
         val confirmed = approaching.confirmedDurationMinutes?.takeIf { it > 0 }
         val peak = approaching.confirmedPeakIntensity?.takeIf { it.isFinite() && it in 0f..1f }
@@ -496,21 +499,8 @@ class RainApproachingWorker(
                 )
                 RainAlertDecisionEngine.evaluateMinuteSeries(regionalSeries)
             } else {
-                val preferredTier = if (session.detail != null) {
-                    RadarResolutionTier.DETAIL
-                } else {
-                    RadarResolutionTier.REGIONAL
-                }
                 RainAlertDecisionEngine.evaluateMinuteSeries(
-                    OpenMinuteSeriesBuilder.fromDenseField(
-                        grid = requireNotNull(session.latestDetailIntensity) {
-                            "Alert detail frame has no intensity grid"
-                        },
-                        field = session.velocity(preferredTier)?.futureField,
-                        startEpochSeconds = session.frames.last().frame.time,
-                        sourceLabel = "RainViewer radar estimate",
-                        nowEpochSeconds = evaluatedAt.epochSecond,
-                    ),
+                    buildOpenRadarMinuteSeries(session, evaluatedAt.epochSecond),
                 )
             }
             val latestCollection = placePreferences.collection.first()
@@ -536,7 +526,9 @@ class RainApproachingWorker(
                             !alertPreferences.snapshot().enabled) return Result.success()
                         notifyApproaching(place, evaluation, evaluatedAt.epochSecond)
                     }
-                    "${place.name}: rain may start in ${evaluation.etaStartMinutes} min"
+                    if (evaluation.likelySnow) {
+                        "${place.name}: snow likely in ${evaluation.etaStartMinutes} min"
+                    } else "${place.name}: rain may start in ${evaluation.etaStartMinutes} min"
                 }
                 RadarAlertEvaluation.WetNow -> "Rain detected at ${place.name} now"
                 RadarAlertEvaluation.Clear -> "${place.name}: dry; no confident rain in the next 60 min"

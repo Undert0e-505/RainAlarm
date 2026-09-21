@@ -219,6 +219,27 @@ class RainAlertDecisionTest {
         assertTrue(text.summary.contains("23:50"))
     }
 
+    @Test
+    fun `snow wording follows the arrival minute rather than later snow`() {
+        fun series(snowMinutes: Set<Int>) = RainMinuteSeries(1_000, (0..60).map { minute ->
+            val value = if (minute in 10..19) 0.6f else 0f
+            RainMinutePoint(minute, value, value, value, minute > 0, minute in snowMinutes)
+        }, "open", 1.0, RainMinuteAvailability.AVAILABLE,
+            intensityEncoding = com.rainalarm.app.domain.RadarIntensityEncoding.OPEN_REFLECTIVITY)
+
+        val snowAtOnset = RainAlertDecisionEngine.evaluateMinuteSeries(series(setOf(10))) as
+            RadarAlertEvaluation.Approaching
+        assertTrue(snowAtOnset.likelySnow)
+        assertEquals("Snow likely approaching York",
+            RainAlertNotificationText.forApproaching("York", snowAtOnset, 1_000, ZoneId.of("UTC")).title)
+
+        val rainThenSnow = RainAlertDecisionEngine.evaluateMinuteSeries(series(setOf(15))) as
+            RadarAlertEvaluation.Approaching
+        assertFalse(rainThenSnow.likelySnow)
+        assertEquals("Rain approaching York",
+            RainAlertNotificationText.forApproaching("York", rainThenSnow, 1_000, ZoneId.of("UTC")).title)
+    }
+
     private fun gridWithWetSquare(start: Int, endExclusive: Int): IntensityGrid {
         val values = FloatArray(32 * 32)
         for (y in 13 until 20) {

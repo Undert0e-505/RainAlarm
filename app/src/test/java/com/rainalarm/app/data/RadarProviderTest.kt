@@ -109,6 +109,16 @@ class RadarProviderTest {
     }
 
     @Test
+    fun rainViewerSnowPreferenceIsOptInAndRoundTrips() {
+        assertFalse(RainViewerSnowPreference.decode(null))
+        assertFalse(RainViewerSnowPreference.decode(false))
+        assertTrue(RainViewerSnowPreference.decode(true))
+        assertTrue(RainViewerSnowPolicy.effective(RadarProviderKind.OPEN_RAINVIEWER, true))
+        assertFalse(RainViewerSnowPolicy.effective(RadarProviderKind.OPEN_RAINVIEWER, false))
+        assertFalse(RainViewerSnowPolicy.effective(RadarProviderKind.METEOGROUP_REGIONAL, true))
+    }
+
+    @Test
     fun velocityDecodingMatchesRecoveredShaderRange() {
         assertEquals(-1f, VelocityTextureCodec.decode(0, 255).first, 0f)
         assertEquals(1f, VelocityTextureCodec.decode(0, 255).second, 0f)

@@ -239,6 +239,19 @@ internal object NowMotionPolicy {
 
 internal data class NowRainTextureCrop(val left: Int, val top: Int, val side: Int)
 
+internal enum class NowPrecipitationTextureKind {
+    RAIN,
+    LIKELY_SNOW,
+}
+
+/** Selects one conditional texture. Dry forecasts deliberately decode no bitmap. */
+internal object NowPrecipitationTexturePolicy {
+    fun select(rainingNow: Boolean, arrivalMinute: Int?, likelySnow: Boolean): NowPrecipitationTextureKind? =
+        if (!NowRainTexturePolicy.shouldShow(rainingNow, arrivalMinute)) null
+        else if (likelySnow) NowPrecipitationTextureKind.LIKELY_SNOW
+        else NowPrecipitationTextureKind.RAIN
+}
+
 /** The alpha PNG is an exact square crop of the supplied droplet circle (black converted to alpha). */
 internal object NowRainTexturePolicy {
     fun shouldShow(rainingNow: Boolean, arrivalMinute: Int?): Boolean =
@@ -250,15 +263,35 @@ internal object NowRainTexturePolicy {
         return NowRainTextureCrop((width - side) / 2, (height - side) / 2, side)
     }
 
-    /** Interior source window: its top-centre contains a droplet, unlike the transparent outer rim. */
-    fun pointerCrop(width: Int, height: Int): NowRainTextureCrop {
+    /** Centre-disc crop only. Snow removes transparent source padding; rain remains unchanged. */
+    fun discCrop(kind: NowPrecipitationTextureKind, width: Int, height: Int): NowRainTextureCrop {
+        val square = crop(width, height)
+        if (kind == NowPrecipitationTextureKind.RAIN) return square
+        // The alpha>=8 content bounds of the selected 1254px snow extraction fit inside this
+        // centred 1140px window. It removes the empty rim without clipping the outer crystal ring.
+        val side = (square.side * (1140f / 1254f)).toInt().coerceIn(1, square.side)
+        return NowRainTextureCrop((width - side) / 2, (height - side) / 2, side)
+    }
+
+    /** Interior source window whose top-centre reaches the indicator tip after rotation. */
+    fun pointerCrop(kind: NowPrecipitationTextureKind, width: Int, height: Int): NowRainTextureCrop {
         require(width > 0 && height > 0)
-        val scale = minOf(width, height) / 1088f
-        val side = (680f * scale).toInt().coerceAtLeast(1)
-        val left = (224f * scale).toInt() + (width - minOf(width, height)) / 2
-        val top = (144f * scale).toInt() + (height - minOf(width, height)) / 2
+        val sourceSide = minOf(width, height)
+        val (baseSize, baseLeft, baseTop, baseSide) = when (kind) {
+            NowPrecipitationTextureKind.RAIN -> listOf(1088f, 224f, 144f, 680f)
+            // The selected snowflake extraction has a visible crystal at this crop's top-centre,
+            // followed by visible texture inward. This prevents a plain-colour pointer tip.
+            NowPrecipitationTextureKind.LIKELY_SNOW -> listOf(1254f, 227f, 140f, 800f)
+        }
+        val scale = sourceSide / baseSize
+        val side = (baseSide * scale).toInt().coerceAtLeast(1).coerceAtMost(sourceSide)
+        val left = (baseLeft * scale).toInt() + (width - sourceSide) / 2
+        val top = (baseTop * scale).toInt() + (height - sourceSide) / 2
         return NowRainTextureCrop(left, top, side)
     }
+
+    fun pointerCrop(width: Int, height: Int): NowRainTextureCrop =
+        pointerCrop(NowPrecipitationTextureKind.RAIN, width, height)
 
     fun discDiameterPx(dialDiameterPx: Float, entryProgress: Float): Float =
         2f * dialDiameterPx * NowMotionPolicy.centerDiscRadiusFraction *

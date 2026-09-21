@@ -19,6 +19,7 @@ data class RainMinutePoint(
     val average: Float,
     val maximum: Float,
     val forecast: Boolean,
+    val likelySnow: Boolean = false,
 ) {
     init {
         require(minute in 0..60)
@@ -53,6 +54,16 @@ data class RainMinuteSeries(
     fun displayColor(value: Float): Int = if (intensityEncoding == RadarIntensityEncoding.OPEN_ALPHA) {
         RainAlarmPalette.colorAtOpen(displayIntensity(value))
     } else RainAlarmPalette.colorAt(value)
+
+    fun precipitationColor(value: Float, likelySnow: Boolean): Int {
+        val raw = RadarChartSeverity.sharedPaletteIntensity(chartSeverity(value))
+        return if (likelySnow) SnowAlarmPalette.colorAt(raw) else RainAlarmPalette.colorAt(raw)
+    }
+
+    fun likelySnowFor(analysis: RainMinuteAnalysis): Boolean {
+        val minute = if (analysis.rainingNow) 0 else analysis.arrivalMinute ?: return false
+        return points.getOrNull(minute)?.likelySnow == true
+    }
 
     /** Presentation only: zero at the source's wet boundary, without changing alert inputs. */
     fun chartSeverity(value: Float): Float = RadarChartSeverity.forSeries(value, intensityEncoding)
@@ -169,37 +180,158 @@ object OpenMinuteSeriesBuilder {
         startEpochSeconds: Long,
         sourceLabel: String,
         nowEpochSeconds: Long = startEpochSeconds,
+        snowGrid: IntensityGrid? = null,
+        coverageGrid: IntensityGrid? = null,
+    ): RainMinuteSeries {
+        return fromBestAvailableMotion(
+            grid = grid,
+            field = field,
+            aggregateMotion = null,
+            samplingTier = RadarResolutionTier.DETAIL,
+            startEpochSeconds = startEpochSeconds,
+            sourceLabel = sourceLabel,
+            nowEpochSeconds = nowEpochSeconds,
+            snowGrid = snowGrid,
+            coverageGrid = coverageGrid,
+        )
+    }
+
+    /**
+     * Builds an open-radar point forecast from the strongest motion evidence retained by the
+     * session. A local dense field is preferred. The session-wide physical translation is a
+     * deliberately lower-confidence fallback, but is still useful when a coherent rain area
+     * cannot populate enough dense cells.
+     */
+    fun fromBestAvailableMotion(
+        grid: IntensityGrid,
+        field: RadarVelocityField?,
+        aggregateMotion: PhysicalRadarMotion?,
+        samplingTier: RadarResolutionTier,
+        startEpochSeconds: Long,
+        sourceLabel: String,
+        nowEpochSeconds: Long = startEpochSeconds,
+        snowGrid: IntensityGrid? = null,
+        coverageGrid: IntensityGrid? = null,
     ): RainMinuteSeries {
         val age = nowEpochSeconds - startEpochSeconds
         if (age < -300L || age > MAX_OBSERVATION_AGE_SECONDS) {
             return RainMinuteSeries.unavailable(nowEpochSeconds, sourceLabel, "Open radar observation is stale")
         }
-        val reliable = field?.takeIf { it.confidence >= MINIMUM_CONFIDENCE }
-            ?: return RainMinuteSeries.unavailable(
+        if (grid.values.any { !it.isFinite() || it !in 0f..1f }) {
+            return RainMinuteSeries.unavailable(nowEpochSeconds, sourceLabel, "Open radar intensity grid is invalid")
+        }
+        val containsWetEcho = grid.values.any { it >= OpenRadarColorScale.WET_SEVERITY_THRESHOLD }
+        if (!containsWetEcho) {
+            val clearConfidence = OpenRadarCoveragePolicy.clearConfidence(
+                coverageGrid, grid.width, grid.height,
+            ) ?: return RainMinuteSeries.unavailable(
+                nowEpochSeconds,
+                sourceLabel,
+                "Radar coverage could not confirm the clear observation",
+            )
+            return RainMinuteSeries(
+                startEpochSeconds = nowEpochSeconds,
+                points = (0..60).map { minute ->
+                    RainMinutePoint(minute, 0f, 0f, 0f, minute > 0 || age > 0)
+                },
+                sourceLabel = "$sourceLabel · clear field",
+                confidence = clearConfidence,
+                availability = RainMinuteAvailability.AVAILABLE,
+                latestObservationEpochSeconds = startEpochSeconds,
+                travelBearingDegrees = null,
+                sourceBearingDegrees = null,
+                intensityEncoding = RadarIntensityEncoding.OPEN_REFLECTIVITY,
+            )
+        }
+        val reliableDense = field?.takeIf { it.confidence >= MINIMUM_CONFIDENCE }
+        val reliableAggregate = aggregateMotion?.takeIf(RadarMotionPolicy::usable)
+        if (reliableDense == null && reliableAggregate == null) {
+            return RainMinuteSeries.unavailable(
                 startEpochSeconds,
                 sourceLabel,
-                "No reliable local radar motion is available",
+                "No reliable local or broad radar motion is available",
             )
-        val displacement = reliable.displacementAt(0.5, 0.5)
-        val travelBearing = bearingForVector(displacement.first, displacement.second)
-        val points = (0..60).map { minute ->
-            val elapsedMinutes = (nowEpochSeconds - startEpochSeconds) / 60.0 + minute
-            val source = DenseRadarAdvection.sourcePoint(
-                0.5, 0.5, elapsedMinutes, reliable, grid.width, grid.height,
-            )
-            val envelope = grid.envelopeAround(source.first, source.second)
-            RainMinutePoint(minute, envelope.minimum, envelope.average, envelope.maximum, minute > 0 || age > 0)
         }
+        val aggregatePixels = reliableAggregate?.pixelsPerMinute(samplingTier)?.let { (dx, dy) ->
+            dx * grid.width / samplingTier.imageSize to dy * grid.height / samplingTier.imageSize
+        }
+        val denseDisplacement = reliableDense?.displacementAt(0.5, 0.5)
+        val travelBearing = denseDisplacement?.let { bearingForVector(it.first, it.second) }
+            ?: reliableAggregate?.bearingDegrees
+        val points = mutableListOf<RainMinutePoint>()
+        for (minute in 0..60) {
+            val elapsedMinutes = (nowEpochSeconds - startEpochSeconds) / 60.0 + minute
+            val source = reliableDense?.let {
+                DenseRadarAdvection.sourcePoint(0.5, 0.5, elapsedMinutes, it, grid.width, grid.height)
+            } ?: run {
+                val (dx, dy) = requireNotNull(aggregatePixels)
+                grid.width / 2.0 - dx * elapsedMinutes to grid.height / 2.0 - dy * elapsedMinutes
+            }
+            // Stop once the full sampling envelope leaves the downloaded footprint. A clipped
+            // or empty envelope is unknown, never evidence of dry weather.
+            val envelope = grid.envelopeAroundOrNull(source.first, source.second) ?: break
+            val snow = snowGrid?.let {
+                it.envelopeAroundOrNull(source.first, source.second)
+            }?.average
+                ?.let { it >= OpenRadarColorScale.SNOW_CLASSIFICATION_THRESHOLD } == true
+            points += RainMinutePoint(minute, envelope.minimum, envelope.average, envelope.maximum,
+                minute > 0 || age > 0, snow)
+        }
+        if (points.isEmpty()) {
+            return RainMinuteSeries.unavailable(
+                nowEpochSeconds,
+                sourceLabel,
+                "Radar motion leaves the downloaded coverage before the current time",
+            )
+        }
+        val dense = reliableDense != null
+        val lastMinute = points.last().minute
         return RainMinuteSeries(
             nowEpochSeconds,
             points,
-            sourceLabel,
-            reliable.confidence,
-            RainMinuteAvailability.AVAILABLE,
+            if (dense) sourceLabel else "$sourceLabel · broad motion",
+            if (dense) requireNotNull(reliableDense).confidence
+            else (requireNotNull(reliableAggregate).confidence * 0.75).coerceIn(0.0, 1.0),
+            if (lastMinute == 60) RainMinuteAvailability.AVAILABLE else RainMinuteAvailability.PARTIAL,
+            unavailableReason = if (lastMinute == 60) null
+            else "Radar estimate ends at +$lastMinute min at the downloaded coverage edge",
             latestObservationEpochSeconds = startEpochSeconds,
             travelBearingDegrees = travelBearing,
             intensityEncoding = RadarIntensityEncoding.OPEN_REFLECTIVITY,
         )
+    }
+}
+
+/**
+ * RainViewer's precipitation PNG is transparent both for dry pixels and outside radar
+ * coverage. A separate provider coverage mask is therefore required before an all-zero
+ * precipitation grid can be called clear. The selected point must have a fully covered 5x5
+ * sampling neighbourhood and at least 99% of the retained tile must be covered; the small
+ * allowance is for rasterised coverage-boundary pixels at otherwise covered tile corners.
+ */
+object OpenRadarCoveragePolicy {
+    const val MINIMUM_PIXEL_COVERAGE = 0.90f
+    const val MINIMUM_TILE_COVERAGE = 0.99
+
+    fun clearConfidence(
+        coverageGrid: IntensityGrid?,
+        expectedWidth: Int,
+        expectedHeight: Int,
+    ): Double? {
+        val coverage = coverageGrid ?: return null
+        if (coverage.width != expectedWidth || coverage.height != expectedHeight) return null
+        if (coverage.values.any { !it.isFinite() || it !in 0f..1f }) return null
+        val centerX = coverage.width / 2
+        val centerY = coverage.height / 2
+        for (y in centerY - 2..centerY + 2) {
+            for (x in centerX - 2..centerX + 2) {
+                if (x !in 0 until coverage.width || y !in 0 until coverage.height) return null
+                if (coverage[x, y] < MINIMUM_PIXEL_COVERAGE) return null
+            }
+        }
+        val coveredFraction = coverage.values.count { it >= MINIMUM_PIXEL_COVERAGE }.toDouble() /
+            coverage.values.size
+        return coveredFraction.takeIf { it >= MINIMUM_TILE_COVERAGE }
     }
 }
 
@@ -214,6 +346,18 @@ fun IntensityGrid.envelopeAround(centerX: Double, centerY: Double, radius: Int =
     }
     if (values.isEmpty()) return IntensityEnvelope(0f, 0f, 0f)
     return IntensityEnvelope(values.min(), values.average().toFloat(), values.max())
+}
+
+fun IntensityGrid.envelopeAroundOrNull(
+    centerX: Double,
+    centerY: Double,
+    radius: Int = 2,
+): IntensityEnvelope? {
+    if (!centerX.isFinite() || !centerY.isFinite() || radius < 0) return null
+    val x = centerX.roundToInt()
+    val y = centerY.roundToInt()
+    if (x - radius < 0 || x + radius >= width || y - radius < 0 || y + radius >= height) return null
+    return envelopeAround(centerX, centerY, radius)
 }
 
 fun bearingForVector(dx: Double, dy: Double): Double? {

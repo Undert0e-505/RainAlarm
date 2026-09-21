@@ -265,8 +265,15 @@ class PlaceAndGeocoderTest {
         )
         assertEquals(
             "https://tilecache.rainviewer.com/v2/radar/1789378200/512/7/" +
-                "51.5074/-0.1278/2/1_1.png",
+                "51.5074/-0.1278/2/1_0.png",
             detailUrl,
+        )
+        assertEquals(
+            "https://tile-cache.rainviewer.com/v2/radar/1789378200/512/7/51.5074/-0.1278/2/1_1.png",
+            buildCoordinateRadarUrl(
+                "https://tile-cache.rainviewer.com", frame, DEFAULT_PLACE,
+                zoom = 7, imageSize = 512, showLikelySnow = true,
+            ),
         )
         val regionalUrl = buildCoordinateRadarUrl(
             "https://tilecache.rainviewer.com",
@@ -276,9 +283,19 @@ class PlaceAndGeocoderTest {
             imageSize = 512,
         )
         assertTrue(regionalUrl.contains("/512/5/51.5074/-0.1278/"))
+        assertEquals(
+            "https://tilecache.rainviewer.com/v2/coverage/0/512/7/51.5074/-0.1278/0/0_0.png",
+            buildCoordinateCoverageUrl(
+                "https://tilecache.rainviewer.com/",
+                SavedPlace("Here", 51.5074, -0.1278),
+            ),
+        )
         assertFalse(detailUrl.contains("{z}"))
         assertThrows(IllegalArgumentException::class.java) {
             buildCoordinateRadarUrl("http://example.invalid", frame, DEFAULT_PLACE)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            buildCoordinateCoverageUrl("http://example.invalid", DEFAULT_PLACE)
         }
         assertThrows(IllegalArgumentException::class.java) {
             buildCoordinateRadarUrl(

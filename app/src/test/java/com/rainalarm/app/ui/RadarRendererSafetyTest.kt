@@ -1,6 +1,8 @@
 package com.rainalarm.app.ui
 
 import com.rainalarm.app.domain.RainAlarmPalette
+import com.rainalarm.app.domain.RadarLinearSampling
+import java.io.File
 import java.nio.ByteBuffer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -88,6 +90,29 @@ class RadarRendererSafetyTest {
         assertEquals(intensities.toList(), List(row.remaining()) { row.get().toInt() and 0xff })
         assertEquals(0, RainAlarmPalette.alphaAt(52f / 255f))
         assertTrue(RainAlarmPalette.alphaAt(63f / 255f) > 0)
+    }
+
+    @Test
+    fun `regional footprint keeps grayscale rain row and established wet boundary`() {
+        val shader = RadarShaderSources.fragment
+        assertTrue(shader.contains("vec3(sample.r, sample.g * coloredSource"))
+        assertTrue(shader.contains("mix(1.0, sample.b, coloredSource)"))
+        assertTrue(shader.contains("paletteUv(sample.x, sample.y)"))
+        assertEquals(0, RainAlarmPalette.alphaAt(52f / 255f))
+        assertTrue(RainAlarmPalette.alphaAt(62f / 255f) < RainAlarmPalette.alphaAt(63f / 255f))
+        assertEquals(63, RainAlarmPalette.FIRST_VISIBLE_RAW)
+        assertEquals(1, RadarLinearSampling.GPU_TEXTURE_TAPS)
+        val renderer = listOf(
+            File("src/main/java/com/rainalarm/app/ui/LegacyRadarGlOverlayView.kt"),
+            File("app/src/main/java/com/rainalarm/app/ui/LegacyRadarGlOverlayView.kt"),
+        ).first(File::isFile).readText()
+        assertTrue(renderer.contains("GLES20.glUniform1f(uniform(\"layerAlpha\"), 0.90f)"))
+        assertTrue(renderer.contains(
+            "GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)",
+        ))
+        assertTrue(renderer.contains(
+            "GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)",
+        ))
     }
 
     @Test

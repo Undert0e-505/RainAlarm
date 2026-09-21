@@ -319,8 +319,11 @@ private fun NowForecastContent(forecast: ForecastSnapshot, metrics: NowLayoutMet
         return
     }
 
+    val likelySnow = series.likelySnowFor(analysis)
     val title = when {
+        analysis.rainingNow && likelySnow -> "Snow likely"
         analysis.rainingNow -> "Raining now"
+        analysis.arrivalMinute != null && likelySnow -> "Snow likely in"
         analysis.arrivalMinute != null -> "Rain will start in"
         series.availability == RainMinuteAvailability.PARTIAL -> "No rain detected yet"
         else -> "No rain expected in the next hour"
@@ -384,17 +387,31 @@ private fun RainCompass(
     val NowBorder = LocalRainAlarmPalette.current.border
     val NowAccent = LocalRainAlarmPalette.current.accent
     val sourceBearing = series.sourceBearingDegrees
-    val hasRain = NowRainTexturePolicy.shouldShow(analysis.rainingNow, analysis.arrivalMinute)
+    val likelySnow = series.likelySnowFor(analysis)
+    val textureKind = NowPrecipitationTexturePolicy.select(
+        analysis.rainingNow, analysis.arrivalMinute, likelySnow,
+    )
+    val hasRain = textureKind != null
     val resources = LocalContext.current.resources
-    val rainTexture = if (hasRain) remember(resources) {
-        BitmapFactory.decodeResource(resources, R.drawable.now_rain_drops,
-            BitmapFactory.Options().apply { inSampleSize = 2 })?.asImageBitmap()
-    } else null
-    val rainTextureCrop = remember(rainTexture) {
-        rainTexture?.let { NowRainTexturePolicy.crop(it.width, it.height) }
+    val precipitationTexture = remember(resources, textureKind) {
+        textureKind?.let { kind ->
+            val resource = when (kind) {
+                NowPrecipitationTextureKind.RAIN -> R.drawable.now_rain_drops
+                NowPrecipitationTextureKind.LIKELY_SNOW -> R.drawable.now_snowflakes
+            }
+            BitmapFactory.decodeResource(resources, resource,
+                BitmapFactory.Options().apply { inSampleSize = 2 })?.asImageBitmap()
+        }
     }
-    val pointerTextureCrop = remember(rainTexture) {
-        rainTexture?.let { NowRainTexturePolicy.pointerCrop(it.width, it.height) }
+    val precipitationTextureCrop = remember(precipitationTexture, textureKind) {
+        precipitationTexture?.let { texture ->
+            textureKind?.let { NowRainTexturePolicy.discCrop(it, texture.width, texture.height) }
+        }
+    }
+    val pointerTextureCrop = remember(precipitationTexture, textureKind) {
+        precipitationTexture?.let { texture ->
+            textureKind?.let { NowRainTexturePolicy.pointerCrop(it, texture.width, texture.height) }
+        }
     }
     val rainFill = NowPeakRainColorPolicy.forSeries(series, analysis)?.let {
         Color(it.argb).copy(alpha = 0.92f)
@@ -413,15 +430,16 @@ private fun RainCompass(
         else -> weather?.temperatureC?.roundToInt()?.let { "$it°" } ?: "—"
     }
     val directionLabel = if (!hasRain) "No incoming rain detected" else
-        sourceBearing?.let { "From ${cardinalDirection(it)}" } ?: "Direction unavailable"
+        sourceBearing?.let { "${if (series.likelySnowFor(analysis)) "Likely snow from" else "From"} ${cardinalDirection(it)}" }
+            ?: "Direction unavailable"
     val description = if (!hasRain) {
         "No incoming rain detected in the available forecast. " +
             (weather?.temperatureC?.let { "Model temperature ${it.roundToInt()} degrees Celsius. " } ?: "") + "North is up."
     } else if (sourceBearing == null) {
-        if (analysis.rainingNow) "Raining now. Rain direction unavailable. North is up."
-        else "$centerLabel minutes. Rain direction unavailable. North is up."
+        if (analysis.rainingNow) "${if (series.likelySnowFor(analysis)) "Snow likely" else "Raining now"}. Direction unavailable. North is up."
+        else "$centerLabel minutes. ${if (series.likelySnowFor(analysis)) "Likely snow" else "Rain"} direction unavailable. North is up."
     } else {
-        if (analysis.rainingNow) "Raining now. $directionLabel at ${sourceBearing.toInt()} degrees. North is up."
+        if (analysis.rainingNow) "${if (series.likelySnowFor(analysis)) "Snow likely" else "Raining now"}. $directionLabel at ${sourceBearing.toInt()} degrees. North is up."
         else if (hasRain) "$centerLabel minutes. $directionLabel at ${sourceBearing.toInt()} degrees. North is up."
         else "No incoming rain detected. North is up."
     }
@@ -498,13 +516,13 @@ private fun RainCompass(
                             close()
                         }
                         drawPath(silhouette, requireNotNull(pointerFill))
-                        if (rainTexture != null && pointerTextureCrop != null) {
+                        if (precipitationTexture != null && pointerTextureCrop != null) {
                             val textureSide = NowRainTexturePolicy.pointerTextureDiameterPx(radius)
                             val halfTexture = textureSide / 2f
                             clipPath(silhouette) {
                                 rotate(animatedBearing, pivot = indicator) {
                                     val sidePx = textureSide.roundToInt().coerceAtLeast(1)
-                                    drawImage(rainTexture,
+                                    drawImage(precipitationTexture,
                                         srcOffset = IntOffset(pointerTextureCrop.left, pointerTextureCrop.top),
                                         srcSize = IntSize(pointerTextureCrop.side, pointerTextureCrop.side),
                                         dstOffset = IntOffset((indicator.x - halfTexture).roundToInt(),
@@ -520,16 +538,16 @@ private fun RainCompass(
                     val discScale = NowMotionPolicy.centerDiscScale(entryProgress)
                     val discRadius = NowRainTexturePolicy.discDiameterPx(size.minDimension, entryProgress) / 2f
                     drawCircle(centerFill, discRadius, center)
-                    if (hasRain && rainTexture != null && rainTextureCrop != null) {
+                    if (hasRain && precipitationTexture != null && precipitationTextureCrop != null) {
                         val clip = Path().apply {
                             addOval(Rect(center.x - discRadius, center.y - discRadius,
                                 center.x + discRadius, center.y + discRadius))
                         }
                         val diameterPx = (discRadius * 2f).roundToInt().coerceAtLeast(1)
                         clipPath(clip) {
-                            drawImage(rainTexture,
-                                srcOffset = IntOffset(rainTextureCrop.left, rainTextureCrop.top),
-                                srcSize = IntSize(rainTextureCrop.side, rainTextureCrop.side),
+                            drawImage(precipitationTexture,
+                                srcOffset = IntOffset(precipitationTextureCrop.left, precipitationTextureCrop.top),
+                                srcSize = IntSize(precipitationTextureCrop.side, precipitationTextureCrop.side),
                                 dstOffset = IntOffset((center.x - discRadius).roundToInt(),
                                     (center.y - discRadius).roundToInt()),
                                 dstSize = IntSize(diameterPx, diameterPx),
@@ -668,8 +686,9 @@ private fun RainTimeline(
     val description = buildString {
         append("$chartTitle ${if (series.intensityEncoding == com.rainalarm.app.domain.RadarIntensityEncoding.REGIONAL_AREA_CHART) "area forecast intensity" else "radar intensity"}. ")
         val analysis = RainMinuteSeriesAnalyzer.analyze(series)
-        if (analysis?.rainingNow == true) append("Raining now. ")
-        else if (analysis?.arrivalMinute != null) append("Rain starts in ${analysis.arrivalMinute} minutes. ")
+        val likelySnow = analysis?.let(series::likelySnowFor) == true
+        if (analysis?.rainingNow == true) append(if (likelySnow) "Snow likely now. " else "Raining now. ")
+        else if (analysis?.arrivalMinute != null) append(if (likelySnow) "Snow likely in ${analysis.arrivalMinute} minutes. " else "Rain starts in ${analysis.arrivalMinute} minutes. ")
         else if (series.availability == RainMinuteAvailability.PARTIAL) {
             append("No rain detected before +${series.points.last().minute} minutes; later minutes unavailable. ")
         } else append("No rain expected. ")
@@ -748,7 +767,22 @@ private fun RainTimeline(
                 val revealRight = NowMotionPolicy.revealRight(plotX(0), plotX(endMinute), entryProgress)
                 if (entryProgress > 0f) clipRect(left = 0f, top = 0f, right = revealRight, bottom = chartHeight) {
                     drawPath(envelope, NowAccent.copy(alpha = 0.15f))
-                    drawPath(average, NowAccent, style = Stroke(width = 3f, cap = StrokeCap.Round))
+                    series.points.zipWithNext().forEach { (previous, point) ->
+                        val segment = Path().apply {
+                            val px = plotX(previous.minute)
+                            val py = NowVisualGeometry.chartY(series.chartSeverity(previous.average), chartHeight)
+                            val x = plotX(point.minute)
+                            val y = NowVisualGeometry.chartY(series.chartSeverity(point.average), chartHeight)
+                            moveTo(px, py)
+                            quadraticTo((px + x) / 2f, py, x, y)
+                        }
+                        val segmentColor = if (point.likelySnow) {
+                            Color(series.precipitationColor(point.average, true))
+                        } else NowAccent
+                        drawPath(segment, segmentColor, style = Stroke(width = 3f, cap = StrokeCap.Round))
+                    }
+                    if (series.points.size == 1) drawPath(average, NowAccent,
+                        style = Stroke(width = 3f, cap = StrokeCap.Round))
                 }
                 if (endMinute > 0) drawLine(NowAccent.copy(alpha = 0.35f),
                     Offset(plotX(0), 0f), Offset(plotX(0), chartHeight), 1f)

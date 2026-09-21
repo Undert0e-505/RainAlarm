@@ -6,16 +6,36 @@ import com.rainalarm.app.domain.OpenMinuteSeriesBuilder
 import com.rainalarm.app.domain.ProviderMinuteSeriesBuilder
 import com.rainalarm.app.domain.RainMinuteAvailability
 import com.rainalarm.app.domain.RainAnalyzer
+import com.rainalarm.app.domain.RainMinuteSeries
+import com.rainalarm.app.domain.RadarResolutionTier
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.CancellationException
 import java.time.Instant
+
+/** One open-radar analysis path shared by the foreground Now screen and background alerts. */
+fun buildOpenRadarMinuteSeries(session: RadarSession, nowEpochSeconds: Long): RainMinuteSeries {
+    val samplingTier = if (session.detail != null) RadarResolutionTier.DETAIL
+    else RadarResolutionTier.REGIONAL
+    return OpenMinuteSeriesBuilder.fromBestAvailableMotion(
+        grid = requireNotNull(session.latestDetailIntensity) { "Open radar has no point sampling grid" },
+        field = session.velocity(samplingTier)?.futureField,
+        aggregateMotion = session.motion,
+        samplingTier = samplingTier,
+        startEpochSeconds = session.frames.last().frame.time,
+        sourceLabel = "RainViewer radar estimate",
+        nowEpochSeconds = nowEpochSeconds,
+        snowGrid = session.latestDetailSnow,
+        coverageGrid = session.latestDetailCoverage,
+    )
+}
 
 /** Builds the selected provider's compact radar minute series without retaining renderer resources. */
 class RadarAwareForecastRepository(
     context: Context,
     private val fallback: OpenMeteoForecastRepository = OpenMeteoForecastRepository(context),
     private val places: PlacePreferences = PlacePreferences(context),
-    private val coordinator: RadarProviderCoordinator = RadarProviderCoordinator(RadarSettingsRepository(context)),
+    private val radarSettings: RadarSettingsRepository = RadarSettingsRepository(context),
+    private val coordinator: RadarProviderCoordinator = RadarProviderCoordinator(radarSettings),
     private val areaChart: RegionalRainChartService = RegionalRainChartService(),
 ) : ForecastRepository {
     override suspend fun forecast(now: Instant): ForecastSnapshot {
@@ -42,16 +62,7 @@ class RadarAwareForecastRepository(
                 )
                 areaChart.preferChart(place, evaluatedAt.epochSecond, rasterFallback)
             } else {
-                val preferredTier = if (session.detail != null) {
-                    com.rainalarm.app.domain.RadarResolutionTier.DETAIL
-                } else com.rainalarm.app.domain.RadarResolutionTier.REGIONAL
-                OpenMinuteSeriesBuilder.fromDenseField(
-                    requireNotNull(session.latestDetailIntensity) { "Open radar has no point sampling grid" },
-                    session.velocity(preferredTier)?.futureField,
-                    session.frames.last().frame.time,
-                    "RainViewer radar estimate",
-                    evaluatedAt.epochSecond,
-                )
+                buildOpenRadarMinuteSeries(session, evaluatedAt.epochSecond)
             }
             val slots = if (series.availability != RainMinuteAvailability.UNAVAILABLE) {
                 (0..series.points.lastIndex step 15).map { minute ->
@@ -85,7 +96,24 @@ class RadarAwareForecastRepository(
             // A slow radar session is unknown, not a dry Open-Meteo result.
             throw timedOut
         } catch (_: Throwable) {
-            fallback.forecastFor(place, now)
+            if (radarSettings.selectedProvider() == RadarProviderKind.OPEN_RAINVIEWER) {
+                val unavailable = com.rainalarm.app.domain.RainMinuteSeries.unavailable(
+                    now.epochSecond,
+                    "RainViewer radar estimate",
+                    "Open radar could not provide a reliable local analysis",
+                )
+                ForecastSnapshot(
+                    locationName = place.name,
+                    fetchedAt = now,
+                    slots = emptyList(),
+                    summary = RainAnalyzer.analyze(null, now, now),
+                    isDemo = false,
+                    sourceLabel = unavailable.sourceLabel,
+                    isCached = false,
+                    isRadarNowcast = true,
+                    nowcastSeries = unavailable,
+                )
+            } else fallback.forecastFor(place, now)
         } finally {
             session?.release()
         }

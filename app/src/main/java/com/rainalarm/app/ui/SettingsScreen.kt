@@ -65,6 +65,8 @@ private val SettingsBorder: Color @Composable get() = LocalRainAlarmPalette.curr
 fun SettingsScreen(
     selectedProvider: RadarProviderKind,
     selectProvider: (RadarProviderKind) -> Unit,
+    showLikelySnow: Boolean,
+    setShowLikelySnow: (Boolean) -> Unit,
     playbackSpeed: RadarPlaybackSpeed,
     selectPlaybackSpeed: (RadarPlaybackSpeed) -> Unit,
     appAppearance: AppearanceMode,
@@ -146,6 +148,16 @@ fun SettingsScreen(
                 selected = selectedProvider == RadarProviderKind.OPEN_RAINVIEWER,
                 onClick = { selectProvider(RadarProviderKind.OPEN_RAINVIEWER) },
             )
+            if (selectedProvider == RadarProviderKind.OPEN_RAINVIEWER) {
+                HorizontalDivider(color = SettingsBorder)
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Show likely snow", modifier = Modifier.weight(1f))
+                    Switch(checked = showLikelySnow, onCheckedChange = setShowLikelySnow)
+                }
+            }
         }
         Spacer(Modifier.height(24.dp))
         Text("NOW INDICATORS", color = SettingsAccent, fontSize = 12.sp, fontWeight = FontWeight.Bold)

@@ -8,6 +8,8 @@ import com.rainalarm.app.domain.RadarIntensityEncoding
 import com.rainalarm.app.domain.RainAlarmPalette
 import com.rainalarm.app.domain.OpenRadarColorScale
 import com.rainalarm.app.domain.NowVisualGeometry
+import com.rainalarm.app.domain.RadarChartSeverity
+import com.rainalarm.app.domain.SnowAlarmPalette
 import com.rainalarm.app.data.NowWeatherMetric
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -336,7 +338,7 @@ class NowSourceClockTest {
         val pointerStart = canvas.indexOf("if (sourceBearing != null && hasRain) {")
         val fill = canvas.indexOf("drawPath(silhouette, requireNotNull(pointerFill))", pointerStart)
         val clip = canvas.indexOf("clipPath(silhouette)", fill)
-        val textureIndex = canvas.indexOf("drawImage(rainTexture,", clip)
+        val textureIndex = canvas.indexOf("drawImage(precipitationTexture,", clip)
         val outline = canvas.indexOf("drawPath(silhouette, NowAccent.copy(alpha = 0.85f)", textureIndex)
         val disc = canvas.indexOf("drawCircle(centerFill, discRadius, center)", outline)
         assertTrue(pointerStart >= 0 && pointerStart < fill && fill < clip && clip < textureIndex && textureIndex < outline && outline < disc)
@@ -346,6 +348,7 @@ class NowSourceClockTest {
         assertTrue(canvas.contains("indicator.x - halfTexture"))
         assertTrue(canvas.contains("indicator.y - halfTexture"))
         assertEquals(1, Regex("BitmapFactory\\.decodeResource\\(").findAll(canvas).count())
+        assertEquals(2, Regex("drawImage\\(precipitationTexture,").findAll(canvas).count())
         assertTrue(!canvas.contains("BlendMode.Screen"))
 
         assertEquals(NowRainTextureCrop(224, 144, 680), NowRainTexturePolicy.pointerCrop(1088, 1088))
@@ -374,6 +377,139 @@ class NowSourceClockTest {
                 }
             }
         }
+    }
+
+    @Test
+    fun precipitationTextureSelectionDecodesOneRainOrSnowAssetAndNoneWhenDry() {
+        assertEquals(NowPrecipitationTextureKind.RAIN,
+            NowPrecipitationTexturePolicy.select(true, null, likelySnow = false))
+        assertEquals(NowPrecipitationTextureKind.RAIN,
+            NowPrecipitationTexturePolicy.select(false, 12, likelySnow = false))
+        assertEquals(NowPrecipitationTextureKind.LIKELY_SNOW,
+            NowPrecipitationTexturePolicy.select(true, null, likelySnow = true))
+        assertEquals(NowPrecipitationTextureKind.LIKELY_SNOW,
+            NowPrecipitationTexturePolicy.select(false, 12, likelySnow = true))
+        assertEquals(null, NowPrecipitationTexturePolicy.select(false, null, likelySnow = true))
+
+        val canvas = File("src/main/java/com/rainalarm/app/ui/NowScreen.kt")
+            .takeIf(File::isFile) ?: File("app/src/main/java/com/rainalarm/app/ui/NowScreen.kt")
+        val source = canvas.readText()
+        assertTrue(source.contains("NowPrecipitationTextureKind.RAIN -> R.drawable.now_rain_drops"))
+        assertTrue(source.contains("NowPrecipitationTextureKind.LIKELY_SNOW -> R.drawable.now_snowflakes"))
+        assertTrue(source.contains("val precipitationTexture = remember(resources, textureKind)"))
+        assertTrue(source.contains("textureKind?.let { kind ->"))
+        assertEquals(1, Regex("BitmapFactory\\.decodeResource\\(").findAll(source).count())
+        assertEquals(2, Regex("drawImage\\(precipitationTexture,").findAll(source).count())
+    }
+
+    @Test
+    fun snowTextureHasTransparentBackgroundAndVisiblePointerTipCrop() {
+        val rainFile = File("src/main/res/drawable-nodpi/now_rain_drops.png")
+            .takeIf(File::isFile) ?: File("app/src/main/res/drawable-nodpi/now_rain_drops.png")
+        val snowFile = File("src/main/res/drawable-nodpi/now_snowflakes.png")
+            .takeIf(File::isFile) ?: File("app/src/main/res/drawable-nodpi/now_snowflakes.png")
+        for ((kind, asset) in listOf(
+            NowPrecipitationTextureKind.RAIN to rainFile,
+            NowPrecipitationTextureKind.LIKELY_SNOW to snowFile,
+        )) {
+            val image = ImageIO.read(asset)
+            assertEquals("$kind is square", image.width, image.height)
+            assertEquals("$kind top-left is transparent", 0, image.getRGB(0, 0) ushr 24)
+            assertEquals("$kind bottom-right is transparent", 0,
+                image.getRGB(image.width - 1, image.height - 1) ushr 24)
+            var transparent = 0
+            var visible = 0
+            var translucent = 0
+            var opaqueBlack = 0
+            for (y in 0 until image.height step 4) for (x in 0 until image.width step 4) {
+                val argb = image.getRGB(x, y)
+                val alpha = argb ushr 24
+                val averageRgb = ((argb ushr 16 and 0xff) + (argb ushr 8 and 0xff) +
+                    (argb and 0xff)) / 3
+                if (alpha == 0) transparent++ else visible++
+                if (alpha in 1..254) translucent++
+                if (alpha >= 224 && averageRgb < 24) opaqueBlack++
+            }
+            assertTrue("$kind keeps broad transparent gaps", transparent > 1_000)
+            assertTrue("$kind has visible texture", visible > 500)
+            assertTrue("$kind keeps antialiased alpha", translucent > 100)
+            assertEquals("$kind has no opaque black matte", 0, opaqueBlack)
+
+            val crop = NowRainTexturePolicy.pointerCrop(kind, image.width, image.height)
+            val tipX = crop.left + crop.side / 2
+            assertTrue("$kind pointer tip samples visible texture",
+                image.getRGB(tipX, crop.top) ushr 24 >= 60)
+            val inwardOffset = if (kind == NowPrecipitationTextureKind.LIKELY_SNOW) 10 else 20
+            assertTrue("$kind texture continues inward from tip",
+                image.getRGB(tipX, crop.top + inwardOffset) ushr 24 >= 60)
+        }
+        assertEquals(NowRainTextureCrop(227, 140, 800), NowRainTexturePolicy.pointerCrop(
+            NowPrecipitationTextureKind.LIKELY_SNOW, 1254, 1254))
+    }
+
+    @Test
+    fun snowDiscCropRemovesOnlyTransparentPaddingAndRainDiscStaysUnchanged() {
+        assertEquals(NowRainTextureCrop(0, 0, 1088), NowRainTexturePolicy.discCrop(
+            NowPrecipitationTextureKind.RAIN, 1088, 1088))
+        assertEquals(NowRainTextureCrop(57, 57, 1140), NowRainTexturePolicy.discCrop(
+            NowPrecipitationTextureKind.LIKELY_SNOW, 1254, 1254))
+
+        val snowFile = File("src/main/res/drawable-nodpi/now_snowflakes.png")
+            .takeIf(File::isFile) ?: File("app/src/main/res/drawable-nodpi/now_snowflakes.png")
+        val image = ImageIO.read(snowFile)
+        var minX = image.width
+        var minY = image.height
+        var maxX = -1
+        var maxY = -1
+        for (y in 0 until image.height) for (x in 0 until image.width) {
+            if (image.getRGB(x, y) ushr 24 >= 8) {
+                minX = minOf(minX, x); minY = minOf(minY, y)
+                maxX = maxOf(maxX, x); maxY = maxOf(maxY, y)
+            }
+        }
+        val crop = NowRainTexturePolicy.discCrop(
+            NowPrecipitationTextureKind.LIKELY_SNOW, image.width, image.height)
+        assertTrue("snow crop retains the left outer ring", crop.left <= minX)
+        assertTrue("snow crop retains the top outer ring", crop.top <= minY)
+        assertTrue("snow crop retains the right outer ring", crop.left + crop.side - 1 >= maxX)
+        assertTrue("snow crop retains the bottom outer ring", crop.top + crop.side - 1 >= maxY)
+        assertTrue("snow crop removes left empty rim", minX - crop.left <= 10)
+        assertTrue("snow crop removes right empty rim", crop.left + crop.side - 1 - maxX <= 10)
+        assertTrue("snow crop leaves no broad vertical rim", minY - crop.top <= 10)
+        assertTrue("snow crop leaves no broad vertical rim", crop.top + crop.side - 1 - maxY <= 10)
+
+        val canvas = File("src/main/java/com/rainalarm/app/ui/NowScreen.kt")
+            .takeIf(File::isFile) ?: File("app/src/main/java/com/rainalarm/app/ui/NowScreen.kt")
+        val source = canvas.readText()
+        assertTrue(source.contains("NowRainTexturePolicy.discCrop(it, texture.width, texture.height)"))
+        assertTrue(source.contains("NowRainTexturePolicy.pointerCrop(it, texture.width, texture.height)"))
+    }
+
+    @Test
+    fun likelySnowUsesSamePeakPaletteFillForCentreAndPointer() {
+        val points = (0..60).map { minute ->
+            val wet = minute >= 8
+            RainMinutePoint(minute, if (wet) 0.25f else 0f, if (wet) 0.35f else 0f,
+                if (minute == 40) 0.75f else if (wet) 0.4f else 0f, minute > 0,
+                likelySnow = wet)
+        }
+        val series = RainMinuteSeries(1_000, points, "Open radar", 1.0,
+            RainMinuteAvailability.AVAILABLE,
+            sourceBearingDegrees = 300.0,
+            intensityEncoding = RadarIntensityEncoding.OPEN_REFLECTIVITY)
+        val analysis = requireNotNull(RainMinuteSeriesAnalyzer.analyze(series))
+        val peak = requireNotNull(NowPeakRainColorPolicy.forSeries(series, analysis))
+        assertTrue(peak.likelySnow)
+        assertEquals(SnowAlarmPalette.colorAt(RadarChartSeverity.sharedPaletteIntensity(peak.chartSeverity)) or
+            0xFF000000.toInt(), peak.argb)
+
+        val canvas = File("src/main/java/com/rainalarm/app/ui/NowScreen.kt")
+            .takeIf(File::isFile) ?: File("app/src/main/java/com/rainalarm/app/ui/NowScreen.kt")
+        val source = canvas.readText()
+        assertTrue(source.contains("val pointerFill = if (sourceBearing != null) rainFill else null"))
+        assertTrue(source.contains("val centerFill = rainFill ?: NowDeepBlue"))
+        assertTrue(source.contains("drawPath(silhouette, requireNotNull(pointerFill))"))
+        assertTrue(source.contains("drawCircle(centerFill, discRadius, center)"))
     }
 
     @Test
@@ -424,11 +560,11 @@ class NowSourceClockTest {
             .takeIf(File::isFile) ?: File("app/src/main/java/com/rainalarm/app/ui/NowScreen.kt")
         val canvas = source.readText()
         val fill = canvas.indexOf("drawCircle(centerFill, discRadius, center)")
-        val texture = canvas.lastIndexOf("drawImage(rainTexture,")
+        val texture = canvas.lastIndexOf("drawImage(precipitationTexture,")
         val outline = canvas.indexOf("drawCircle(NowAccent.copy(alpha = 0.32f)")
         val text = canvas.indexOf("Text(centerLabel, color = Color.White")
         assertTrue(fill >= 0 && fill < texture && texture < outline && outline < text)
-        assertTrue(canvas.contains("if (hasRain && rainTexture != null && rainTextureCrop != null)"))
+        assertTrue(canvas.contains("if (hasRain && precipitationTexture != null && precipitationTextureCrop != null)"))
         assertTrue(canvas.contains("clipPath(clip)"))
         assertTrue(!canvas.contains("BlendMode.Screen"))
     }

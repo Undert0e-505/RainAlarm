@@ -164,6 +164,7 @@ fun LiveRadarScreen(
     selectedPlaceId: String,
     chartTimeRequest: RadarChartTimeRequest? = null,
     onChartTimeConsumed: (Int) -> Unit = {},
+    showLikelySnow: Boolean = false,
 ) {
     val context = LocalContext.current
     val loader = remember { RadarProviderCoordinator(RadarSettingsRepository(context)) }
@@ -219,7 +220,7 @@ fun LiveRadarScreen(
 
     // Live fixes move the marker immediately, but must not cancel a regional download or
     // destroy its GL session for every 250 m location update.
-    LaunchedEffect(RadarLiveSessionPolicy.loadIdentity(place), reload) {
+    LaunchedEffect(RadarLiveSessionPolicy.loadIdentity(place), reload, showLikelySnow) {
         val keepVisible = place != null && session?.let { RadarLiveSessionPolicy.canReuse(it, place) } == true
         if (!keepVisible) session = null
         refreshing = keepVisible

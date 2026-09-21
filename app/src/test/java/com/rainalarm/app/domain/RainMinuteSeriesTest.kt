@@ -229,8 +229,9 @@ class RainMinuteSeriesTest {
 
     @Test
     fun `open dense series and alert evaluation share the same timeline`() {
-        val grid = IntensityGrid(9, 9, FloatArray(81).apply {
-            for (y in 2..6) for (x in 0..2) this[y * 9 + x] = 0.8f
+        val size = 129
+        val grid = IntensityGrid(size, size, FloatArray(size * size).apply {
+            for (y in 40..88) for (x in 0..40) this[y * size + x] = 0.8f
         })
         val scale = 4f
         val field = RadarVelocityField(
@@ -238,20 +239,217 @@ class RainMinuteSeriesTest {
             byteArrayOf(RadarVelocityField.encodeChannel(1.0, scale), RadarVelocityField.encodeChannel(0.0, scale)),
             scale, 300, 0.9,
         )
-        val open = OpenMinuteSeriesBuilder.fromDenseField(grid, field, 1_000, "open")
+        val coverage = IntensityGrid(size, size, FloatArray(size * size) { 1f })
+        val open = OpenMinuteSeriesBuilder.fromDenseField(
+            grid, field, 1_000, "open", coverageGrid = coverage,
+        )
         assertEquals(61, open.points.size)
         assertEquals(0.9, open.confidence, 0.0)
         val evaluation = RainAlertDecisionEngine.evaluateMinuteSeries(open)
         val analysis = requireNotNull(RainMinuteSeriesAnalyzer.analyze(open))
         assertEquals(analysis.rainingNow, evaluation is RadarAlertEvaluation.WetNow)
-        val unavailable = OpenMinuteSeriesBuilder.fromDenseField(grid, field.copy(confidence = 0.1), 1_000, "open")
+        val unavailable = OpenMinuteSeriesBuilder.fromDenseField(
+            grid, field.copy(confidence = 0.1), 1_000, "open", coverageGrid = coverage,
+        )
         assertEquals(RainMinuteAvailability.UNAVAILABLE, unavailable.availability)
-        val delayed = OpenMinuteSeriesBuilder.fromDenseField(grid, field, 1_000, "open", 1_300)
+        val delayed = OpenMinuteSeriesBuilder.fromDenseField(
+            grid, field, 1_000, "open", 1_300, coverageGrid = coverage,
+        )
         assertEquals(1_300L, delayed.startEpochSeconds)
         assertEquals(1_000L, delayed.latestObservationEpochSeconds)
         assertTrue(delayed.points.first().forecast)
         assertEquals(RainMinuteAvailability.UNAVAILABLE,
-            OpenMinuteSeriesBuilder.fromDenseField(grid, field, 1_000, "open", 2_000).availability)
+            OpenMinuteSeriesBuilder.fromDenseField(
+                grid, field, 1_000, "open", 2_000, coverageGrid = coverage,
+            ).availability)
+    }
+
+    @Test
+    fun `fresh covered all clear grid needs no motion and produces the shared clear result`() {
+        val size = 17
+        val clear = IntensityGrid(size, size, FloatArray(size * size).apply {
+            // A decoded trace below the production wet boundary remains dry.
+            this[3] = OpenRadarColorScale.WET_SEVERITY_THRESHOLD - 0.001f
+        })
+        val coverage = IntensityGrid(size, size, FloatArray(size * size) { 1f })
+        val withoutMotion = OpenMinuteSeriesBuilder.fromBestAvailableMotion(
+            clear, null, null, RadarResolutionTier.DETAIL, 1_000, "open",
+            coverageGrid = coverage,
+        )
+
+        assertEquals(RainMinuteAvailability.AVAILABLE, withoutMotion.availability)
+        assertEquals(61, withoutMotion.points.size)
+        assertTrue(withoutMotion.points.all { it.minimum == 0f && it.average == 0f && it.maximum == 0f })
+        assertNull(withoutMotion.travelBearingDegrees)
+        assertNull(withoutMotion.sourceBearingDegrees)
+        assertFalse(requireNotNull(RainMinuteSeriesAnalyzer.analyze(withoutMotion)).rainingNow)
+        assertNull(requireNotNull(RainMinuteSeriesAnalyzer.analyze(withoutMotion)).arrivalMinute)
+        assertEquals(RadarAlertEvaluation.Clear,
+            RainAlertDecisionEngine.evaluateMinuteSeries(withoutMotion))
+
+        val motion = PhysicalRadarMotion.fromAnalysisPixels(
+            MotionEstimate(1.0, 0.0, 0.9, 3), RadarResolutionTier.DETAIL, 64, 64,
+        )
+        val withMotion = OpenMinuteSeriesBuilder.fromBestAvailableMotion(
+            clear, null, motion, RadarResolutionTier.DETAIL, 1_000, "open",
+            coverageGrid = coverage,
+        )
+        assertEquals(RainMinuteAvailability.AVAILABLE, withMotion.availability)
+        assertNull(withMotion.travelBearingDegrees)
+        assertTrue(withMotion.sourceLabel.endsWith("· clear field"))
+    }
+
+    @Test
+    fun `clear grid is never asserted from missing invalid stale or insufficient coverage`() {
+        val size = 17
+        val clear = IntensityGrid(size, size, FloatArray(size * size))
+        fun build(
+            grid: IntensityGrid = clear,
+            coverage: IntensityGrid? = null,
+            now: Long = 1_000,
+        ) = OpenMinuteSeriesBuilder.fromBestAvailableMotion(
+            grid, null, null, RadarResolutionTier.DETAIL, 1_000, "open",
+            nowEpochSeconds = now, coverageGrid = coverage,
+        )
+
+        assertEquals(RainMinuteAvailability.UNAVAILABLE, build().availability)
+        assertEquals(RainMinuteAvailability.UNAVAILABLE,
+            build(coverage = IntensityGrid(size, size, FloatArray(size * size))).availability)
+        assertEquals(RainMinuteAvailability.UNAVAILABLE,
+            build(coverage = IntensityGrid(size - 1, size, FloatArray((size - 1) * size) { 1f })).availability)
+        val missingCenter = FloatArray(size * size) { 1f }.apply { this[(size / 2) * size + size / 2] = 0f }
+        assertEquals(RainMinuteAvailability.UNAVAILABLE,
+            build(coverage = IntensityGrid(size, size, missingCenter)).availability)
+        val overOnePercentMissing = FloatArray(size * size) { index -> if (index < 4) 0f else 1f }
+        assertEquals(RainMinuteAvailability.UNAVAILABLE,
+            build(coverage = IntensityGrid(size, size, overOnePercentMissing)).availability)
+        assertEquals(RainMinuteAvailability.UNAVAILABLE,
+            build(grid = IntensityGrid(size, size, FloatArray(size * size).apply { this[0] = Float.NaN }),
+                coverage = IntensityGrid(size, size, FloatArray(size * size) { 1f })).availability)
+        assertEquals(RainMinuteAvailability.UNAVAILABLE,
+            build(coverage = IntensityGrid(size, size, FloatArray(size * size) { 1f }), now = 2_000).availability)
+    }
+
+    @Test
+    fun `wet echoes without reliable motion stay unknown rather than falsely clear`() {
+        val size = 17
+        val values = FloatArray(size * size).apply { this[(size / 2) * size + 2] = 0.8f }
+        val series = OpenMinuteSeriesBuilder.fromBestAvailableMotion(
+            IntensityGrid(size, size, values), null, null, RadarResolutionTier.DETAIL,
+            1_000, "open", coverageGrid = IntensityGrid(size, size, FloatArray(size * size) { 1f }),
+        )
+        assertEquals(RainMinuteAvailability.UNAVAILABLE, series.availability)
+        assertEquals(RadarAlertEvaluation.Unknown, RainAlertDecisionEngine.evaluateMinuteSeries(series))
+    }
+
+    @Test
+    fun `open aggregate motion supplies bounded lower confidence timeline when dense field is absent`() {
+        val size = 65
+        val rain = FloatArray(size * size)
+        val snow = FloatArray(size * size) { 1f }
+        for (y in 26..38) for (x in 8..18) {
+            rain[y * size + x] = 0.8f
+        }
+        val aggregate = PhysicalRadarMotion.fromAnalysisPixels(
+            MotionEstimate(1.0, 0.0, 0.8, 3),
+            RadarResolutionTier.DETAIL,
+            64,
+            64,
+        )
+        val series = OpenMinuteSeriesBuilder.fromBestAvailableMotion(
+            IntensityGrid(size, size, rain),
+            field = null,
+            aggregateMotion = aggregate,
+            samplingTier = RadarResolutionTier.DETAIL,
+            startEpochSeconds = 1_000,
+            sourceLabel = "open",
+            snowGrid = IntensityGrid(size, size, snow),
+        )
+
+        assertEquals(RainMinuteAvailability.PARTIAL, series.availability)
+        assertTrue(series.sourceLabel.endsWith("· broad motion"))
+        val analysis = requireNotNull(RainMinuteSeriesAnalyzer.analyze(series))
+        assertTrue(requireNotNull(analysis.arrivalMinute) in 10..22)
+        assertTrue(series.points[requireNotNull(analysis.arrivalMinute)].likelySnow)
+        val alert = RainAlertDecisionEngine.evaluateMinuteSeries(series)
+        assertTrue(alert is RadarAlertEvaluation.Approaching)
+        assertTrue((alert as RadarAlertEvaluation.Approaching).likelySnow)
+    }
+
+    @Test
+    fun `dense field remains preferred over aggregate motion`() {
+        val grid = IntensityGrid(65, 65, FloatArray(65 * 65).apply {
+            for (y in 28..36) for (x in 10..14) this[y * 65 + x] = 0.8f
+        })
+        val dense = RadarVelocityField(
+            1, 1,
+            byteArrayOf(
+                RadarVelocityField.encodeChannel(-1.0, 4f),
+                RadarVelocityField.encodeChannel(0.0, 4f),
+            ),
+            4f, 60, 0.9,
+        )
+        val aggregate = PhysicalRadarMotion.fromAnalysisPixels(
+            MotionEstimate(1.0, 0.0, 0.9, 3), RadarResolutionTier.DETAIL, 64, 64,
+        )
+        val series = OpenMinuteSeriesBuilder.fromBestAvailableMotion(
+            grid, dense, aggregate, RadarResolutionTier.DETAIL, 1_000, "open",
+        )
+        assertEquals("open", series.sourceLabel)
+        assertNull(RainMinuteSeriesAnalyzer.analyze(series)?.arrivalMinute)
+    }
+
+    @Test
+    fun `aggregate fallback rejects stationary low confidence stale and out of bounds evidence`() {
+        val grid = IntensityGrid(17, 17, FloatArray(17 * 17) { 0.8f })
+        fun motion(dx: Double, confidence: Double) = PhysicalRadarMotion.fromAnalysisPixels(
+            MotionEstimate(dx, 0.0, confidence, 2), RadarResolutionTier.DETAIL, 64, 64,
+        )
+        assertEquals(
+            RainMinuteAvailability.UNAVAILABLE,
+            OpenMinuteSeriesBuilder.fromBestAvailableMotion(
+                grid, null, motion(0.0, 0.9), RadarResolutionTier.DETAIL, 1_000, "open",
+            ).availability,
+        )
+        assertEquals(
+            RainMinuteAvailability.UNAVAILABLE,
+            OpenMinuteSeriesBuilder.fromBestAvailableMotion(
+                grid, null, motion(1.0, 0.2), RadarResolutionTier.DETAIL, 1_000, "open",
+            ).availability,
+        )
+        assertEquals(
+            RainMinuteAvailability.UNAVAILABLE,
+            OpenMinuteSeriesBuilder.fromBestAvailableMotion(
+                grid, null, motion(1.0, 0.9), RadarResolutionTier.DETAIL,
+                1_000, "open", nowEpochSeconds = 2_000,
+            ).availability,
+        )
+        val bounded = OpenMinuteSeriesBuilder.fromBestAvailableMotion(
+            grid, null, motion(2.0, 0.9), RadarResolutionTier.DETAIL, 1_000, "open",
+        )
+        assertEquals(RainMinuteAvailability.PARTIAL, bounded.availability)
+        assertTrue(bounded.points.last().minute < 60)
+        assertTrue(bounded.unavailableReason.orEmpty().contains("coverage edge"))
+    }
+
+    @Test
+    fun `dense sampling stops at the downloaded edge instead of padding dry`() {
+        val size = 17
+        val field = RadarVelocityField(
+            1, 1,
+            byteArrayOf(
+                RadarVelocityField.encodeChannel(1.0, 4f),
+                RadarVelocityField.encodeChannel(0.0, 4f),
+            ),
+            4f, 60, 0.9,
+        )
+        val series = OpenMinuteSeriesBuilder.fromBestAvailableMotion(
+            IntensityGrid(size, size, FloatArray(size * size) { 0.8f }),
+            field, null, RadarResolutionTier.DETAIL, 1_000, "open",
+        )
+        assertEquals(RainMinuteAvailability.PARTIAL, series.availability)
+        assertTrue(series.points.last().minute < 60)
+        assertTrue(series.unavailableReason.orEmpty().contains("coverage edge"))
     }
 
     @Test
@@ -266,7 +464,8 @@ class RainMinuteSeriesTest {
             scale, 300, 0.9,
         )
         val series = OpenMinuteSeriesBuilder.fromDenseField(
-            IntensityGrid(5, 5, FloatArray(25)), field, 1_000, "open",
+            IntensityGrid(7, 7, FloatArray(49) { 0.8f }), field, 1_000, "open",
+            coverageGrid = IntensityGrid(7, 7, FloatArray(49) { 1f }),
         )
         assertEquals(270.0, requireNotNull(series.travelBearingDegrees), 1.0)
         assertEquals(90.0, requireNotNull(series.sourceBearingDegrees), 1.0)
