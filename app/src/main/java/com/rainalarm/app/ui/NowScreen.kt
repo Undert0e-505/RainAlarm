@@ -271,12 +271,7 @@ private fun NowPlaceholder(title: String, detail: String, metrics: NowLayoutMetr
 
 @Composable
 private fun NowCardTheme(mode: NowCardAppearance, content: @Composable () -> Unit) {
-    val inherited = LocalRainAlarmPalette.current
-    val palette = when (mode) {
-        NowCardAppearance.FOLLOW_APP -> inherited
-        NowCardAppearance.LIGHT -> LightRainPalette
-        NowCardAppearance.DARK -> DarkRainPalette
-    }
+    val palette = NowCardPalettePolicy.resolve(mode, LocalRainAlarmPalette.current)
     CompositionLocalProvider(LocalRainAlarmPalette provides palette) {
         MaterialTheme(colorScheme = palette.materialScheme(), content = content)
     }

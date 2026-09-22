@@ -3,6 +3,8 @@ package com.rainalarm.app.ui
 import com.rainalarm.app.data.PlaceCollection
 import com.rainalarm.app.data.PlaceCollectionRules
 import com.rainalarm.app.data.SavedPlace
+import com.rainalarm.app.data.AppearanceMode
+import com.rainalarm.app.data.NowCardAppearance
 import java.io.File
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
@@ -291,12 +293,90 @@ class WeatherUiWiringTest {
     @Test fun `Now compass and graph appearance wrap ready and placeholder cards independently`() {
         val now = source("NowScreen.kt")
         val settings = source("SettingsScreen.kt")
-        assertTrue(now.contains("NowCardTheme(compassAppearance)"))
-        assertTrue(now.contains("NowCardTheme(graphAppearance)"))
+        assertEquals(2, Regex("NowCardTheme\\(compassAppearance\\)").findAll(now).count())
+        assertEquals(2, Regex("NowCardTheme\\(graphAppearance\\)").findAll(now).count())
+        assertTrue(now.contains("NowCardPalettePolicy.resolve(mode, LocalRainAlarmPalette.current)"))
         assertTrue(now.contains("MaterialTheme(colorScheme = palette.materialScheme(), content = content)"))
         assertTrue(now.contains("refreshStatus, compassAppearance, graphAppearance)"))
         assertTrue(settings.contains("NowCardAppearanceChoice(\"Compass card\""))
         assertTrue(settings.contains("NowCardAppearanceChoice(\"Graph card\""))
+    }
+
+    @Test fun `appearance settings use four aligned columns and Slate excludes only App`() {
+        assertEquals(4, AppearanceGridPolicy.columnCount)
+        assertEquals(listOf(AppearanceMode.DARK, AppearanceMode.LIGHT,
+            AppearanceMode.FOLLOW_SYSTEM, null), AppearanceGridPolicy.appColumns)
+        assertEquals(listOf(AppearanceMode.DARK, AppearanceMode.LIGHT,
+            AppearanceMode.FOLLOW_SYSTEM, AppearanceMode.SLATE), AppearanceGridPolicy.mapColumns)
+        assertEquals(listOf(NowCardAppearance.DARK, NowCardAppearance.LIGHT,
+            NowCardAppearance.FOLLOW_APP, NowCardAppearance.SLATE), AppearanceGridPolicy.cardColumns)
+        assertFalse(AppearanceMode.SLATE in AppearanceGridPolicy.appColumns)
+        assertTrue(AppearanceMode.SLATE in AppearanceGridPolicy.mapColumns)
+        assertTrue(NowCardAppearance.SLATE in AppearanceGridPolicy.cardColumns)
+        assertEquals(null, AppearanceGridPolicy.appColumns[3])
+
+        val settings = source("SettingsScreen.kt")
+        val repository = source("../data/RadarProviders.kt")
+        assertTrue(settings.contains("AppearanceChoice(\"App\", appAppearance, AppearanceGridPolicy.appColumns"))
+        assertTrue(settings.contains("AppearanceChoice(\"Map\", mapAppearance, AppearanceGridPolicy.mapColumns"))
+        assertTrue(settings.contains("if (mode == null) Spacer(Modifier.weight(1f))"))
+        assertTrue(settings.contains("require(columns.size == AppearanceGridPolicy.columnCount)"))
+        assertTrue(settings.contains("maxLines = 2"))
+        assertFalse(settings.contains("horizontalScroll"))
+        assertTrue(repository.contains("AppearanceMode.decodeApp(it[appAppearanceKey])"))
+        assertTrue(repository.contains("mode.takeUnless { it == AppearanceMode.SLATE } ?: AppearanceMode.DARK"))
+    }
+
+    @Test fun `Slate card palette uses the shared base and dark high contrast scheme`() {
+        val appearance = source("RainAlarmAppearance.kt")
+        assertTrue(appearance.contains("fun materialScheme(): ColorScheme = if (usesDarkMaterialScheme) darkColorScheme("))
+        assertTrue(appearance.contains("val SlateRainPalette = RainAlarmPalette("))
+        assertTrue(appearance.contains("usesDarkMaterialScheme = true,"))
+        assertTrue(appearance.contains("background = Color(0xFF45516E), surface = Color(0xFF45516E), elevated = Color(0xFF45516E)"))
+        assertTrue(appearance.contains("text = Color.White, muted = Color(0xFFD7DCE7), accent = Color(0xFF4FC3F7)"))
+        assertTrue(appearance.contains("border = Color(0xFF9EAAC1)"))
+        assertTrue(appearance.contains("NowCardAppearance.SLATE -> SlateRainPalette"))
+        assertTrue(contrast(0xFFFFFFFF, 0xFF45516E) >= 4.5)
+        assertTrue(contrast(0xFFD7DCE7, 0xFF45516E) >= 4.5)
+        assertTrue(contrast(0xFF9EAAC1, 0xFF45516E) >= 3.0)
+    }
+
+    @Test fun `card appearance changes do not replace precipitation or chart rendering rules`() {
+        val now = source("NowScreen.kt")
+        assertTrue(now.contains("NowPeakRainColorPolicy.forSeries(series, analysis)"))
+        assertTrue(now.contains("R.drawable.now_rain_drops"))
+        assertTrue(now.contains("R.drawable.now_snowflakes"))
+        assertTrue(now.contains("drawRect(Color(series.displayColor(0.88f)).copy(alpha = 0.045f)"))
+        assertTrue(now.contains("series.chartSeverity(point.maximum)"))
+        assertTrue(now.contains("series.chartSeverity(point.minimum)"))
+    }
+
+    private fun contrast(foreground: Long, background: Long): Double {
+        fun luminance(argb: Long): Double {
+            fun linear(channel: Long): Double {
+                val value = channel / 255.0
+                return if (value <= 0.04045) value / 12.92
+                else Math.pow((value + 0.055) / 1.055, 2.4)
+            }
+            val red = linear((argb shr 16) and 0xff)
+            val green = linear((argb shr 8) and 0xff)
+            val blue = linear(argb and 0xff)
+            return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+        }
+        val lighter = maxOf(luminance(foreground), luminance(background))
+        val darker = minOf(luminance(foreground), luminance(background))
+        return (lighter + 0.05) / (darker + 0.05)
+    }
+
+    @Test fun `resolved map style identity reaches map rendering while control contrast stays dark for Slate`() {
+        val main = source("../MainActivity.kt")
+        val radar = source("RadarScreen.kt")
+        val map = source("RadarImageMap.kt")
+        assertTrue(main.contains("mapStyle = mapAppearance.resolveMapStyle(systemDark)"))
+        assertTrue(radar.contains("val darkMap = mapStyle.darkControls"))
+        assertTrue(radar.contains("mapStyle = mapStyle"))
+        assertTrue(map.contains("DisposableEffect(map, mapStyle)"))
+        assertTrue(map.contains("ready.setStyle(RadarMapAppearance.styleUrl(mapStyle))"))
     }
 
     @Test fun `likely snow setting is visible only for explicitly selected open radar`() {

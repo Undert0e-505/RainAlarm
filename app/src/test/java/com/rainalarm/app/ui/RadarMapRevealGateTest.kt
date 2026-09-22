@@ -1,8 +1,12 @@
 package com.rainalarm.app.ui
 
+import com.rainalarm.app.data.RadarMapStyle
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -52,8 +56,12 @@ class RadarMapRevealGateTest {
         gate.frameStarted()
         assertTrue(gate.frameRendered(true))
         assertFalse(gate.isCovered)
-        assertEquals(0xFF111C24.toInt(), RadarMapAppearance.loadingBackgroundArgb(true))
-        assertEquals(0xFFF3F5F4.toInt(), RadarMapAppearance.loadingBackgroundArgb(false))
+        assertEquals(0xFF111C24.toInt(),
+            RadarMapAppearance.loadingBackgroundArgb(RadarMapStyle.DARK))
+        assertEquals(0xFFF3F5F4.toInt(),
+            RadarMapAppearance.loadingBackgroundArgb(RadarMapStyle.LIGHT))
+        assertEquals(0xFF45516E.toInt(),
+            RadarMapAppearance.loadingBackgroundArgb(RadarMapStyle.SLATE))
     }
 
     @Test fun failureKeepsTheCoverButReportsItAndCanRecover() {
@@ -91,11 +99,94 @@ class RadarMapRevealGateTest {
         assertTrue(source.contains("MapView.OnDidFinishRenderingFrameListener"))
         assertTrue(source.contains("mapRevealGate.frameStarted()"))
         assertTrue(source.contains("mapRevealGate.frameRendered(fully)"))
-        assertTrue(source.contains(".foregroundLoadColor(RadarMapAppearance.loadingBackgroundArgb(darkMap))"))
-        assertTrue(source.contains("container.setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(darkMap))"))
+        assertTrue(source.contains(".foregroundLoadColor(RadarMapAppearance.loadingBackgroundArgb(mapStyle))"))
+        assertTrue(source.contains("container.setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(mapStyle))"))
         assertTrue(source.contains("mapView.removeOnWillStartRenderingFrameListener(startingListener)"))
         assertTrue(source.contains("mapView.removeOnDidFinishRenderingFrameListener(renderedListener)"))
         assertTrue(source.contains("mapView.removeOnDidFailLoadingMapListener(failedListener)"))
         assertTrue(source.contains("mapRevealGate.markFailed()"))
+    }
+
+    @Test fun darkAndSlateAreDistinctStyleChangesWithoutRecreatingSessionOrCamera() {
+        val mapSource = listOf(
+            File("src/main/java/com/rainalarm/app/ui/RadarImageMap.kt"),
+            File("app/src/main/java/com/rainalarm/app/ui/RadarImageMap.kt"),
+        ).first(File::isFile).readText()
+        val screenSource = listOf(
+            File("src/main/java/com/rainalarm/app/ui/RadarScreen.kt"),
+            File("app/src/main/java/com/rainalarm/app/ui/RadarScreen.kt"),
+        ).first(File::isFile).readText()
+        assertTrue(mapSource.contains("key(session)"))
+        assertFalse(mapSource.contains("key(session, mapStyle)"))
+        assertTrue(mapSource.contains("DisposableEffect(map, mapStyle)"))
+        assertTrue(mapSource.contains("ready.setStyle(RadarMapAppearance.styleUrl(mapStyle))"))
+        assertTrue(mapSource.contains("val target = cameraMemory.target(cameraPlace, mapWidth, recenterSignal)"))
+        assertTrue(screenSource.contains("var cursor by remember(session)"))
+        assertFalse(screenSource.contains("remember(session, mapStyle)"))
+        assertFalse(screenSource.contains("LaunchedEffect(RadarLiveSessionPolicy.loadIdentity(place), reload, showLikelySnow, mapStyle)"))
+    }
+
+    @Test fun darkAndSlateLiftKnownTextLabelsWithDistinctReadableHierarchy() {
+        val dark = RadarMapLabelContrastPolicy.paletteFor(RadarMapStyle.DARK)
+        val slate = RadarMapLabelContrastPolicy.paletteFor(RadarMapStyle.SLATE)
+        assertNotNull(dark)
+        assertNotNull(slate)
+        assertNull(RadarMapLabelContrastPolicy.paletteFor(RadarMapStyle.LIGHT))
+        assertEquals(RadarMapLabelCategory.PLACE,
+            RadarMapLabelContrastPolicy.category("place_village", "place"))
+        assertEquals(RadarMapLabelCategory.WATER,
+            RadarMapLabelContrastPolicy.category("water_name", "water_name"))
+        assertEquals(RadarMapLabelCategory.ROAD,
+            RadarMapLabelContrastPolicy.category("highway_name_other", "transportation_name"))
+        assertEquals(RadarMapLabelCategory.ROAD_REFERENCE,
+            RadarMapLabelContrastPolicy.category("highway_ref", "transportation_name"))
+        assertEquals(RadarMapLabelCategory.ROAD_REFERENCE,
+            RadarMapLabelContrastPolicy.category("highway_name_motorway", "transportation_name"))
+        assertNull(RadarMapLabelContrastPolicy.category("poi_icon", "poi"))
+
+        listOf(requireNotNull(dark) to 0xFF0C0C0C.toInt(),
+            requireNotNull(slate) to 0xFF45516E.toInt()).forEach { (palette, background) ->
+            listOf(palette.placeTextArgb, palette.roadTextArgb, palette.waterTextArgb,
+                palette.roadReferenceTextArgb).forEach { foreground ->
+                assertTrue(contrast(foreground, background) >= 4.5)
+            }
+            assertTrue(luminance(palette.placeTextArgb) > luminance(palette.roadTextArgb))
+            assertTrue(luminance(palette.placeTextArgb) > luminance(palette.roadReferenceTextArgb))
+            assertNotEquals(palette.placeTextArgb, palette.waterTextArgb)
+            assertTrue(palette.haloWidth > 0f)
+        }
+    }
+
+    @Test fun labelContrastRunsInsideEachDarkOrSlateStyleCallbackBeforeReveal() {
+        val source = listOf(
+            File("src/main/java/com/rainalarm/app/ui/RadarImageMap.kt"),
+            File("app/src/main/java/com/rainalarm/app/ui/RadarImageMap.kt"),
+        ).first(File::isFile).readText()
+        val callback = source.substring(source.indexOf("ready.setStyle(RadarMapAppearance.styleUrl(mapStyle))"))
+        assertTrue(callback.contains("if (RadarMapLabelContrastPolicy.paletteFor(mapStyle) != null)"))
+        assertTrue(callback.contains("applyMapLabelContrast(it, mapStyle)"))
+        assertTrue(callback.indexOf("applyMapLabelContrast(it, mapStyle)") <
+            callback.indexOf("mapRevealGate.styleLoaded(styleGeneration)"))
+        assertTrue(source.contains("if (layer.textField.isNull) return@forEach"))
+        assertTrue(source.contains("style.layers.filterIsInstance<SymbolLayer>()"))
+        assertTrue(source.contains("PropertyFactory.textColor(palette.textArgb(category))"))
+        assertTrue(source.contains("PropertyFactory.textHaloColor(palette.haloArgb)"))
+    }
+
+    private fun contrast(foreground: Int, background: Int): Double {
+        val lighter = maxOf(luminance(foreground), luminance(background))
+        val darker = minOf(luminance(foreground), luminance(background))
+        return (lighter + 0.05) / (darker + 0.05)
+    }
+
+    private fun luminance(argb: Int): Double {
+        fun linear(channel: Int): Double {
+            val value = channel / 255.0
+            return if (value <= 0.04045) value / 12.92
+            else Math.pow((value + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linear((argb ushr 16) and 0xff) +
+            0.7152 * linear((argb ushr 8) and 0xff) +
+            0.0722 * linear(argb and 0xff)
     }
 }

@@ -81,17 +81,31 @@ object NowWeatherMetricPreference {
 }
 
 enum class AppearanceMode(val label: String) {
-    DARK("Dark"), LIGHT("Light"), FOLLOW_SYSTEM("Follow system");
+    DARK("Dark"), LIGHT("Light"), FOLLOW_SYSTEM("Follow system"), SLATE("Slate");
 
     fun isDark(systemDark: Boolean): Boolean = when (this) {
-        DARK -> true
+        DARK, SLATE -> true
         LIGHT -> false
         FOLLOW_SYSTEM -> systemDark
     }
 
+    fun resolveMapStyle(systemDark: Boolean): RadarMapStyle = when (this) {
+        DARK -> RadarMapStyle.DARK
+        LIGHT -> RadarMapStyle.LIGHT
+        FOLLOW_SYSTEM -> if (systemDark) RadarMapStyle.DARK else RadarMapStyle.LIGHT
+        SLATE -> RadarMapStyle.SLATE
+    }
+
     companion object {
         fun decode(value: String?): AppearanceMode = entries.firstOrNull { it.name == value } ?: DARK
+        /** Slate is map-only; a corrupt or future app-theme value falls back safely. */
+        fun decodeApp(value: String?): AppearanceMode = decode(value).takeUnless { it == SLATE } ?: DARK
     }
+}
+
+/** A resolved style identity keeps Dark and Slate distinct while sharing dark control contrast. */
+enum class RadarMapStyle(val darkControls: Boolean) {
+    DARK(true), LIGHT(false), SLATE(true),
 }
 
 object RadarPlaybackSpeedPreference {
@@ -134,7 +148,7 @@ class RadarSettingsRepository(private val context: Context) {
 
     val appAppearance: Flow<AppearanceMode> = context.radarSettingsDataStore.data
         .catch { failure -> if (failure is IOException) emit(emptyPreferences()) else throw failure }
-        .map { AppearanceMode.decode(it[appAppearanceKey]) }
+        .map { AppearanceMode.decodeApp(it[appAppearanceKey]) }
 
     val mapAppearance: Flow<AppearanceMode> = context.radarSettingsDataStore.data
         .catch { failure -> if (failure is IOException) emit(emptyPreferences()) else throw failure }
@@ -176,7 +190,8 @@ class RadarSettingsRepository(private val context: Context) {
     }
 
     suspend fun setAppAppearance(mode: AppearanceMode) {
-        context.radarSettingsDataStore.edit { it[appAppearanceKey] = mode.name }
+        val safeMode = mode.takeUnless { it == AppearanceMode.SLATE } ?: AppearanceMode.DARK
+        context.radarSettingsDataStore.edit { it[appAppearanceKey] = safeMode.name }
     }
 
     suspend fun setMapAppearance(mode: AppearanceMode) {

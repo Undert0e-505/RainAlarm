@@ -5,6 +5,7 @@ import com.rainalarm.app.data.RadarProviderPreference
 import com.rainalarm.app.data.RadarPlaybackSpeed
 import com.rainalarm.app.data.RadarPlaybackSpeedPreference
 import com.rainalarm.app.data.AppearanceMode
+import com.rainalarm.app.data.RadarMapStyle
 import com.rainalarm.app.data.NowCardAppearance
 import com.rainalarm.app.data.StartupPermissionPolicy
 import com.rainalarm.app.data.StartupPermissionStep
@@ -52,15 +53,30 @@ class NavigationAndSettingsTest {
     }
 
     @Test
-    fun `app and map appearance defaults preserve dark and system mode resolves independently`() {
+    fun `app and map appearance defaults preserve dark and map styles resolve independently`() {
         assertEquals(AppearanceMode.DARK, AppearanceMode.decode(null))
         assertEquals(AppearanceMode.DARK, AppearanceMode.decode("unknown"))
         AppearanceMode.entries.forEach { assertEquals(it, AppearanceMode.decode(it.name)) }
+        assertEquals(AppearanceMode.DARK, AppearanceMode.decodeApp(AppearanceMode.SLATE.name))
+        assertEquals(AppearanceMode.DARK, AppearanceMode.decodeApp(null))
         assertTrue(AppearanceMode.FOLLOW_SYSTEM.isDark(true))
         assertTrue(!AppearanceMode.FOLLOW_SYSTEM.isDark(false))
         assertTrue(!AppearanceMode.LIGHT.isDark(true))
-        assertEquals("https://tiles.openfreemap.org/styles/dark", RadarMapAppearance.styleUrl(true))
-        assertEquals("https://tiles.openfreemap.org/styles/liberty", RadarMapAppearance.styleUrl(false))
+        assertTrue(AppearanceMode.SLATE.isDark(false))
+        assertEquals(RadarMapStyle.DARK, AppearanceMode.DARK.resolveMapStyle(false))
+        assertEquals(RadarMapStyle.LIGHT, AppearanceMode.LIGHT.resolveMapStyle(true))
+        assertEquals(RadarMapStyle.DARK, AppearanceMode.FOLLOW_SYSTEM.resolveMapStyle(true))
+        assertEquals(RadarMapStyle.LIGHT, AppearanceMode.FOLLOW_SYSTEM.resolveMapStyle(false))
+        assertEquals(RadarMapStyle.SLATE, AppearanceMode.SLATE.resolveMapStyle(false))
+        assertTrue(RadarMapStyle.DARK.darkControls)
+        assertTrue(RadarMapStyle.SLATE.darkControls)
+        assertTrue(!RadarMapStyle.LIGHT.darkControls)
+        assertEquals("https://tiles.openfreemap.org/styles/dark",
+            RadarMapAppearance.styleUrl(RadarMapStyle.DARK))
+        assertEquals("https://tiles.openfreemap.org/styles/liberty",
+            RadarMapAppearance.styleUrl(RadarMapStyle.LIGHT))
+        assertEquals("https://tiles.openfreemap.org/styles/fiord",
+            RadarMapAppearance.styleUrl(RadarMapStyle.SLATE))
     }
 
     @Test fun `compass and graph card preferences independently follow app by default`() {
@@ -73,5 +89,7 @@ class NavigationAndSettingsTest {
         assertTrue(!NowCardAppearance.FOLLOW_APP.isDark(false))
         assertTrue(!NowCardAppearance.LIGHT.isDark(true))
         assertTrue(NowCardAppearance.DARK.isDark(false))
+        assertTrue(NowCardAppearance.SLATE.isDark(false))
+        assertEquals(NowCardAppearance.SLATE, NowCardAppearance.decode("SLATE"))
     }
 }

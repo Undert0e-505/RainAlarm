@@ -79,6 +79,7 @@ import com.rainalarm.app.data.CURRENT_LOCATION_ID
 import com.rainalarm.app.data.PlaceCollection
 import com.rainalarm.app.data.RadarPlaybackSpeed
 import com.rainalarm.app.data.RadarMapLayer
+import com.rainalarm.app.data.RadarMapStyle
 import com.rainalarm.app.data.CurrentWeather
 import com.rainalarm.app.data.WindGrid
 import com.rainalarm.app.data.WindViewport
@@ -186,7 +187,7 @@ fun LiveRadarScreen(
     liveMapPlace: SavedPlace?,
     places: PlaceCollection,
     playbackSpeed: RadarPlaybackSpeed,
-    darkMap: Boolean,
+    mapStyle: RadarMapStyle,
     saveAndSelect: (SavedPlace) -> Unit,
     locationState: LocationUiState,
     currentRecenterTick: Int,
@@ -409,7 +410,7 @@ fun LiveRadarScreen(
                 chartTimeRequest = chartTimeRequest,
                 onChartTimeConsumed = onChartTimeConsumed,
                 playbackSpeed = playbackSpeed,
-                darkMap = darkMap,
+                mapStyle = mapStyle,
                 onLongPress = { longPressed = it },
                 locationState = locationState,
                 currentRecenterTick = currentRecenterTick,
@@ -501,7 +502,7 @@ private fun ColumnScope.RadarPlayer(
     chartTimeRequest: RadarChartTimeRequest?,
     onChartTimeConsumed: (Int) -> Unit,
     playbackSpeed: RadarPlaybackSpeed,
-    darkMap: Boolean,
+    mapStyle: RadarMapStyle,
     onLongPress: (GeoPoint) -> Unit,
     locationState: LocationUiState,
     currentRecenterTick: Int,
@@ -519,6 +520,7 @@ private fun ColumnScope.RadarPlayer(
     refreshProgress: Pair<Int, Int>,
     refreshError: String?,
 ) {
+    val darkMap = mapStyle.darkControls
     val secondaryColor = Secondary
     val times = remember(session) { session.timelineFrames.map { it.time } }
     val forecastFlags = remember(session) { session.timelineFrames.map { it.forecast } }
@@ -612,7 +614,7 @@ private fun ColumnScope.RadarPlayer(
                 cameraMemory = cameraMemory,
                 isPlaying = playing,
                 onRendererStatus = { rendererStatus = it },
-                darkMap = darkMap,
+                mapStyle = mapStyle,
                 windGrid = (ancillaryStatus as? AncillaryStatus.Wind)?.grid,
                 windArrowScale = windArrowScale,
                 satelliteLayer = (ancillaryStatus as? AncillaryStatus.Satellite)?.metadata,

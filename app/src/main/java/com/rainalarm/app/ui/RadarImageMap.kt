@@ -33,6 +33,7 @@ import com.rainalarm.app.data.WindGrid
 import com.rainalarm.app.data.WindViewport
 import com.rainalarm.app.data.EumetLayerMetadata
 import com.rainalarm.app.data.RadarMapLayer
+import com.rainalarm.app.data.RadarMapStyle
 import com.rainalarm.app.domain.GeoPoint
 import com.rainalarm.app.domain.NorthUpRadarGeoreference
 import com.rainalarm.app.domain.RadarMotionPolicy
@@ -53,6 +54,7 @@ import org.maplibre.android.maps.MapView
 import org.maplibre.android.style.sources.TileSet
 import org.maplibre.android.style.sources.RasterSource
 import org.maplibre.android.style.layers.RasterLayer
+import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.maps.Style
 import org.maplibre.android.tile.TileOperation
@@ -65,10 +67,95 @@ import kotlin.math.roundToInt
 
 private const val OPEN_FREE_MAP_DARK_STYLE = "https://tiles.openfreemap.org/styles/dark"
 private const val OPEN_FREE_MAP_LIGHT_STYLE = "https://tiles.openfreemap.org/styles/liberty"
+private const val OPEN_FREE_MAP_SLATE_STYLE = "https://tiles.openfreemap.org/styles/fiord"
 
 internal object RadarMapAppearance {
-    fun styleUrl(dark: Boolean): String = if (dark) OPEN_FREE_MAP_DARK_STYLE else OPEN_FREE_MAP_LIGHT_STYLE
-    fun loadingBackgroundArgb(dark: Boolean): Int = if (dark) 0xFF111C24.toInt() else 0xFFF3F5F4.toInt()
+    fun styleUrl(style: RadarMapStyle): String = when (style) {
+        RadarMapStyle.DARK -> OPEN_FREE_MAP_DARK_STYLE
+        RadarMapStyle.LIGHT -> OPEN_FREE_MAP_LIGHT_STYLE
+        RadarMapStyle.SLATE -> OPEN_FREE_MAP_SLATE_STYLE
+    }
+
+    fun loadingBackgroundArgb(style: RadarMapStyle): Int = when (style) {
+        RadarMapStyle.DARK -> 0xFF111C24.toInt()
+        RadarMapStyle.LIGHT -> 0xFFF3F5F4.toInt()
+        RadarMapStyle.SLATE -> 0xFF45516E.toInt()
+    }
+}
+
+internal enum class RadarMapLabelCategory { PLACE, ROAD, WATER, ROAD_REFERENCE }
+
+internal data class RadarMapLabelPalette(
+    val placeTextArgb: Int,
+    val roadTextArgb: Int,
+    val waterTextArgb: Int,
+    val roadReferenceTextArgb: Int,
+    val haloArgb: Int,
+    val haloWidth: Float,
+    val haloBlur: Float,
+) {
+    fun textArgb(category: RadarMapLabelCategory): Int = when (category) {
+        RadarMapLabelCategory.PLACE -> placeTextArgb
+        RadarMapLabelCategory.ROAD -> roadTextArgb
+        RadarMapLabelCategory.WATER -> waterTextArgb
+        RadarMapLabelCategory.ROAD_REFERENCE -> roadReferenceTextArgb
+    }
+}
+
+/** Text-only contrast lift; layout, typography, icons and non-label paint remain style-owned. */
+internal object RadarMapLabelContrastPolicy {
+    private val dark = RadarMapLabelPalette(
+        placeTextArgb = 0xFFE2E6ED.toInt(),
+        roadTextArgb = 0xFFAEB6C2.toInt(),
+        waterTextArgb = 0xFF78BFE3.toInt(),
+        roadReferenceTextArgb = 0xFFC5CFDC.toInt(),
+        haloArgb = 0xFF080B12.toInt(),
+        haloWidth = 1.1f,
+        haloBlur = 0.25f,
+    )
+    private val slate = RadarMapLabelPalette(
+        placeTextArgb = 0xFFF2F4F8.toInt(),
+        roadTextArgb = 0xFFC4CBD7.toInt(),
+        waterTextArgb = 0xFF9FD8F0.toInt(),
+        roadReferenceTextArgb = 0xFFD6DFEB.toInt(),
+        haloArgb = 0xFF273149.toInt(),
+        haloWidth = 1.2f,
+        haloBlur = 0.3f,
+    )
+
+    fun paletteFor(style: RadarMapStyle): RadarMapLabelPalette? = when (style) {
+        RadarMapStyle.DARK -> dark
+        RadarMapStyle.SLATE -> slate
+        RadarMapStyle.LIGHT -> null
+    }
+
+    fun category(layerId: String, sourceLayer: String?): RadarMapLabelCategory? = when (sourceLayer) {
+        "place" -> RadarMapLabelCategory.PLACE
+        "water_name" -> RadarMapLabelCategory.WATER
+        "transportation_name" -> if (layerId.contains("ref", ignoreCase = true) ||
+            layerId.contains("motorway", ignoreCase = true)) {
+            RadarMapLabelCategory.ROAD_REFERENCE
+        } else RadarMapLabelCategory.ROAD
+        else -> null
+    }
+}
+
+private fun applyMapLabelContrast(style: Style, mapStyle: RadarMapStyle) {
+    val palette = RadarMapLabelContrastPolicy.paletteFor(mapStyle) ?: return
+    style.layers.filterIsInstance<SymbolLayer>().forEach { layer ->
+        val category = RadarMapLabelContrastPolicy.category(layer.id, layer.sourceLayer) ?: return@forEach
+        if (layer.textField.isNull) return@forEach // Never recolour an icon-only symbol layer.
+        try {
+            layer.setProperties(
+                PropertyFactory.textColor(palette.textArgb(category)),
+                PropertyFactory.textHaloColor(palette.haloArgb),
+                PropertyFactory.textHaloWidth(palette.haloWidth),
+                PropertyFactory.textHaloBlur(palette.haloBlur),
+            )
+        } catch (failure: Exception) {
+            Log.w("RainRadarMap", "Could not lift label contrast for ${layer.id}", failure)
+        }
+    }
 }
 private const val RADAR_OPACITY = 0.90
 private const val SATELLITE_SOURCE_ID = "rain-alarm-satellite-source"
@@ -575,7 +662,7 @@ fun RadarImageMap(
     recenterSignal: Int = 0,
     isPlaying: Boolean = false,
     onRendererStatus: (RadarRendererStatus) -> Unit = {},
-    darkMap: Boolean = true,
+    mapStyle: RadarMapStyle = RadarMapStyle.DARK,
     cameraMemory: RadarCameraMemory,
     windGrid: WindGrid? = null,
     windArrowScale: Float = 1f,
@@ -597,7 +684,7 @@ fun RadarImageMap(
             recenterSignal,
             isPlaying,
             onRendererStatus,
-            darkMap,
+            mapStyle,
             cameraMemory,
             windGrid,
             windArrowScale,
@@ -622,7 +709,7 @@ private fun RadarImageMapInstance(
     recenterSignal: Int,
     isPlaying: Boolean,
     onRendererStatus: (RadarRendererStatus) -> Unit,
-    darkMap: Boolean,
+    mapStyle: RadarMapStyle,
     cameraMemory: RadarCameraMemory,
     windGrid: WindGrid?,
     windArrowScale: Float,
@@ -639,7 +726,7 @@ private fun RadarImageMapInstance(
         // TextureView can reliably composite above it on every Android surface compositor.
         val options = MapLibreMapOptions.createFromAttributes(context, null)
             .textureMode(true)
-            .foregroundLoadColor(RadarMapAppearance.loadingBackgroundArgb(darkMap))
+            .foregroundLoadColor(RadarMapAppearance.loadingBackgroundArgb(mapStyle))
             // The style's attribution remains available through MapLibre's compact info
             // control. The optional MapLibre logo and the old duplicate Compose credit are
             // intentionally omitted.
@@ -650,7 +737,7 @@ private fun RadarImageMapInstance(
                 (it * context.resources.displayMetrics.density).roundToInt()
             }.toIntArray())
         MapView(context, options).apply {
-            setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(darkMap))
+            setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(mapStyle))
             onCreate(Bundle())
         }
     }
@@ -680,7 +767,7 @@ private fun RadarImageMapInstance(
     val mapLifecycle = remember(mapView) { MapViewLifecycle(mapView) }
     val mapRevealGate = remember(mapView) { RadarMapRevealGate() }
     val mapCover = remember(mapView) {
-        View(context).apply { setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(darkMap)) }
+        View(context).apply { setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(mapStyle)) }
     }
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
     var cameraListener by remember { mutableStateOf<MapLibreMap.OnCameraMoveListener?>(null) }
@@ -776,7 +863,7 @@ private fun RadarImageMapInstance(
     AndroidView(
         factory = {
             FrameLayout(context).apply {
-                setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(darkMap))
+                setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(mapStyle))
                 // Register synchronously before attaching MapView: a cached style may render
                 // before Compose's DisposableEffect runs after this factory returns.
                 mapView.addOnWillStartRenderingFrameListener(startingListener)
@@ -867,8 +954,8 @@ private fun RadarImageMapInstance(
             }
         },
         update = { container ->
-            container.setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(darkMap))
-            mapView.setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(darkMap))
+            container.setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(mapStyle))
+            mapView.setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(mapStyle))
             if (lastBracket != bracket || lastPlaying != isPlaying) {
                 overlay.setState(bracket, isPlaying, markerPlace)
                 lastBracket = bracket
@@ -885,16 +972,21 @@ private fun RadarImageMapInstance(
 
     // Only the basemap style changes: MapView, camera, overlay and session retain ownership.
     // Camera was explicitly positioned before style loading, so style defaults cannot reset it.
-    androidx.compose.runtime.DisposableEffect(map, darkMap) {
+    androidx.compose.runtime.DisposableEffect(map, mapStyle) {
         val ready = map
         if (ready == null || teardown.isClosed) return@DisposableEffect onDispose { }
         var active = true
         val styleGeneration = mapRevealGate.styleRequested()
-        mapCover.setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(darkMap))
+        mapCover.setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(mapStyle))
         mapCover.visibility = View.VISIBLE
         currentMapStyleError(null)
         try {
-            ready.setStyle(RadarMapAppearance.styleUrl(darkMap)) {
+            ready.setStyle(RadarMapAppearance.styleUrl(mapStyle)) {
+                if (active && !teardown.isClosed) {
+                    if (RadarMapLabelContrastPolicy.paletteFor(mapStyle) != null) {
+                        applyMapLabelContrast(it, mapStyle)
+                    }
+                }
                 if (active && !teardown.isClosed && mapRevealGate.styleLoaded(styleGeneration)) {
                     try { applySatelliteLayer(it, latestSatellite) }
                     catch (failure: Exception) {
@@ -913,7 +1005,7 @@ private fun RadarImageMapInstance(
         onDispose { active = false }
     }
 
-    LaunchedEffect(mapView, darkMap) {
+    LaunchedEffect(mapView, mapStyle) {
         delay(25_000)
         if (!teardown.isClosed && mapRevealGate.isCovered && mapRevealGate.markFailed()) {
             Log.w("RainRadarMap", "Base map did not finish rendering within 25 seconds")

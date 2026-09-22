@@ -43,6 +43,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selectableGroup
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rainalarm.app.data.RadarProviderKind
@@ -60,6 +61,19 @@ private val SettingsSurface: Color @Composable get() = LocalRainAlarmPalette.cur
 private val SettingsSecondary: Color @Composable get() = LocalRainAlarmPalette.current.muted
 private val SettingsAccent: Color @Composable get() = LocalRainAlarmPalette.current.accent
 private val SettingsBorder: Color @Composable get() = LocalRainAlarmPalette.current.border
+
+internal object AppearanceGridPolicy {
+    const val columnCount = 4
+    val appColumns: List<AppearanceMode?> = listOf(
+        AppearanceMode.DARK, AppearanceMode.LIGHT, AppearanceMode.FOLLOW_SYSTEM, null,
+    )
+    val mapColumns: List<AppearanceMode?> = listOf(
+        AppearanceMode.DARK, AppearanceMode.LIGHT, AppearanceMode.FOLLOW_SYSTEM, AppearanceMode.SLATE,
+    )
+    val cardColumns: List<NowCardAppearance?> = listOf(
+        NowCardAppearance.DARK, NowCardAppearance.LIGHT, NowCardAppearance.FOLLOW_APP, NowCardAppearance.SLATE,
+    )
+}
 
 @Composable
 fun SettingsScreen(
@@ -246,9 +260,9 @@ fun SettingsScreen(
         Spacer(Modifier.height(10.dp))
         Card(colors = CardDefaults.cardColors(containerColor = SettingsSurface),
             shape = RoundedCornerShape(22.dp), modifier = Modifier.fillMaxWidth()) {
-            AppearanceChoice("App", appAppearance, selectAppAppearance)
+            AppearanceChoice("App", appAppearance, AppearanceGridPolicy.appColumns, selectAppAppearance)
             HorizontalDivider(color = SettingsBorder)
-            AppearanceChoice("Map", mapAppearance, selectMapAppearance)
+            AppearanceChoice("Map", mapAppearance, AppearanceGridPolicy.mapColumns, selectMapAppearance)
         }
         Spacer(Modifier.height(12.dp))
         Card(colors = CardDefaults.cardColors(containerColor = SettingsSurface),
@@ -257,7 +271,7 @@ fun SettingsScreen(
             HorizontalDivider(color = SettingsBorder)
             NowCardAppearanceChoice("Graph card", graphAppearance, selectGraphAppearance)
         }
-        Text("App and map can follow the device theme independently. Dark is the default.",
+        Text("App and map can follow the device theme independently. Dark is the default. Map and cards offer Slate; cards can follow the app.",
             color = SettingsSecondary, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
         Spacer(Modifier.height(24.dp))
         Text("ABOUT THE DATA", color = SettingsAccent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
@@ -292,17 +306,7 @@ private fun NowCardAppearanceChoice(title: String, selected: NowCardAppearance,
     onSelect: (NowCardAppearance) -> Unit) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
         Text(title, fontWeight = FontWeight.SemiBold)
-        Row(Modifier.fillMaxWidth(),
-            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(5.dp)) {
-            NowCardAppearance.entries.forEach { mode ->
-                androidx.compose.material3.FilterChip(
-                    selected = selected == mode,
-                    onClick = { onSelect(mode) },
-                    label = { Text(mode.label, fontSize = 11.sp, maxLines = 1) },
-                    modifier = Modifier.weight(1f),
-                )
-            }
-        }
+        AppearanceGrid(AppearanceGridPolicy.cardColumns, selected, { it.label }, onSelect)
     }
 }
 
@@ -328,18 +332,31 @@ private fun WindArrowPreview(scale: Float) {
 }
 
 @Composable
-private fun AppearanceChoice(title: String, selected: AppearanceMode, onSelect: (AppearanceMode) -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(16.dp)) {
+private fun AppearanceChoice(title: String, selected: AppearanceMode, columns: List<AppearanceMode?>,
+    onSelect: (AppearanceMode) -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
         Text(title, fontWeight = FontWeight.SemiBold)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(5.dp)) {
-            AppearanceMode.entries.forEach { mode ->
-                androidx.compose.material3.FilterChip(
-                    selected = selected == mode,
-                    onClick = { onSelect(mode) },
-                    label = { Text(mode.label, fontSize = 11.sp, maxLines = 2) },
-                    modifier = Modifier.weight(1f),
-                )
-            }
+        AppearanceGrid(columns, selected, { it.label }, onSelect)
+    }
+}
+
+@Composable
+private fun <T> AppearanceGrid(columns: List<T?>, selected: T, label: (T) -> String,
+    onSelect: (T) -> Unit) {
+    require(columns.size == AppearanceGridPolicy.columnCount)
+    Row(Modifier.fillMaxWidth(),
+        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(5.dp)) {
+        columns.forEach { mode ->
+            if (mode == null) Spacer(Modifier.weight(1f))
+            else androidx.compose.material3.FilterChip(
+                selected = selected == mode,
+                onClick = { onSelect(mode) },
+                label = {
+                    Text(label(mode), fontSize = 11.sp, lineHeight = 13.sp, maxLines = 2,
+                        textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+                },
+                modifier = Modifier.weight(1f),
+            )
         }
     }
 }

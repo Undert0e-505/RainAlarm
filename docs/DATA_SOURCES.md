@@ -357,9 +357,20 @@ Android references:
 ## Map and basemap
 
 - Map renderer: MapLibre Native for Android.
-- Basemap style: OpenFreeMap dark style.
+- Basemap styles: OpenFreeMap Dark (default), Liberty (Light), and Fiord
+  (map Slate). Follow system resolves to Dark or Liberty from Android
+  night mode; Fiord remains an explicit selection.
+- Appearance choices use a fixed four-column matrix: App offers Dark, Light
+  and Follow system; Map adds Slate; Compass and Graph independently offer
+  Dark, Light, Follow app and Slate. Their default remains Follow app. Card
+  Slate uses `#45516E` for both surfaces and a dark high-contrast palette.
+- Dark and Slate apply style-specific text colours and dark halos to known
+  text-bearing place, road, road-reference and water label layers. They do
+  not change label layout, fonts, icons, radar/ancillary overlays or opacity.
+  Liberty/Light label paint is left unchanged.
 - Map data: OpenStreetMap contributors.
-- Attribution remains visible over the radar map.
+- MapLibre's compact native attribution control remains available over the
+  radar map.
 
 References:
 
