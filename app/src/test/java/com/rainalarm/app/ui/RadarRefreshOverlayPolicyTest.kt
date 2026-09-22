@@ -29,9 +29,10 @@ class RadarRefreshOverlayPolicyTest {
     @Test fun feedbackIsOverlayInsideMapNotAConditionalColumnRow() {
         val screen = source()
         assertTrue(screen.contains("refreshOverlay?.let { status ->"))
-        assertTrue(screen.contains("Box(Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = 32.dp))"))
-        assertTrue(screen.indexOf("refreshOverlay?.let { status ->") > screen.indexOf("Box(Modifier.align(Alignment.BottomEnd)"))
-        assertTrue(screen.contains("if (refreshOverlay != null && layerDescription != null) Spacer(Modifier.height(4.dp))"))
+        assertTrue(screen.contains("modifier = Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = 32.dp)"))
+        assertTrue(screen.contains("RadarLayerStatus(mapLayer, ancillaryStatus, currentWeather, mapWidthDp"))
+        assertTrue(screen.contains("Modifier.align(Alignment.TopEnd).padding("))
+        assertTrue(!screen.contains("layerDescription"))
         assertTrue(screen.contains(".semantics { contentDescription = status.accessibilityLabel }"))
         assertTrue(!screen.contains("if (session != null && (refreshing || error != null))"))
         assertTrue(screen.contains("session != null && place != null && RadarLiveSessionPolicy.canReuse"))

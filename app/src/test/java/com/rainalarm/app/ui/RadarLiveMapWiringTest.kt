@@ -10,10 +10,13 @@ class RadarLiveMapWiringTest {
         File("app/src/main/java/com/rainalarm/app/ui/$name"),
     ).first(File::isFile).readText()
 
-    @Test fun followControlIsCurrentOnlyBelowDeviceRecenterAndHasAccessibleStates() {
+    @Test fun followControlIsCurrentOnlyInTopRowAndHasAccessibleStates() {
         val screen = source("RadarScreen.kt")
-        assertTrue(screen.contains("if (selectedPlaceId == CURRENT_LOCATION_ID) {\n                IconButton"))
-        assertTrue(screen.contains("padding(top = 52.dp, end = 4.dp)"))
+        val topRow = screen.substringAfter(
+            "Row(Modifier.align(Alignment.TopEnd).padding(4.dp), verticalAlignment = Alignment.CenterVertically)",
+        ).substringBefore("RadarLayerStatus(mapLayer")
+        assertTrue(topRow.contains("if (selectedPlaceId == CURRENT_LOCATION_ID) {"))
+        assertTrue(topRow.contains("IconButton(onClick = { onFollowLiveChange(!followLive) }"))
         assertTrue(screen.contains("Stop following live location"))
         assertTrue(screen.contains("Follow live location"))
         assertTrue(screen.contains("enabled = hasFreshLiveFix"))

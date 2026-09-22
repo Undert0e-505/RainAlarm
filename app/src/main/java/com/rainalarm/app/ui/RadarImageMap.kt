@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import android.view.Choreographer
+import android.view.Gravity
 import android.view.View
 import android.widget.FrameLayout
 import androidx.compose.runtime.Composable
@@ -639,6 +640,15 @@ private fun RadarImageMapInstance(
         val options = MapLibreMapOptions.createFromAttributes(context, null)
             .textureMode(true)
             .foregroundLoadColor(RadarMapAppearance.loadingBackgroundArgb(darkMap))
+            // The style's attribution remains available through MapLibre's compact info
+            // control. The optional MapLibre logo and the old duplicate Compose credit are
+            // intentionally omitted.
+            .logoEnabled(false)
+            .attributionEnabled(true)
+            .attributionGravity(Gravity.BOTTOM or Gravity.START)
+            .attributionMargins(intArrayOf(4, 4, 4, 4).map {
+                (it * context.resources.displayMetrics.density).roundToInt()
+            }.toIntArray())
         MapView(context, options).apply {
             setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(darkMap))
             onCreate(Bundle())

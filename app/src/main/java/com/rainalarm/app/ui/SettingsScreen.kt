@@ -269,7 +269,7 @@ fun SettingsScreen(
             Column(Modifier.padding(20.dp)) {
                 Text("Independent rain nowcasting", fontWeight = FontWeight.SemiBold)
                 Text(
-                    "Regional imagery is served by MeteoGroup/DTN. Open radar imagery is served by RainViewer. Maps © OpenStreetMap contributors via OpenFreeMap.",
+                    "Regional radar: MeteoGroup/DTN. Open radar: RainViewer. Wind and selected-place model weather: Open-Meteo (CC BY 4.0). Satellite lightning and fog / low-cloud layers: © EUMETSAT (CC BY 4.0). Maps: © OpenStreetMap contributors via OpenFreeMap/OpenMapTiles.",
                     color = SettingsSecondary,
                     fontSize = 13.sp,
                     lineHeight = 19.sp,

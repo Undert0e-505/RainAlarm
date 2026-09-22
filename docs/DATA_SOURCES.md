@@ -141,9 +141,11 @@ configurations pass the native-projection mesh tests.
   support Now indicators and the Fog night gate; they do not alter radar
   prediction or alerts. A separate request only while Wind is selected carries
   25 distinct coordinates spanning the settled **visible map viewport** with
-  a small margin. Arrows are georeferenced and point downwind; one selected-
-  place chip reports speed and meteorological *from* direction. Map arrows do
-  not repeat numeric speed labels.
+  a small margin. Arrows are georeferenced and point downwind; one compact
+  status beneath the map's current-location control reports selected-place
+  speed and meteorological *from* direction when the layer is available. Map
+  arrows do not repeat numeric speed labels. Provider and licence details are
+  kept in Settings > About the data rather than repeated over the map.
 - The point request is place-aware, cached for 15 minutes and rejected when
   its model valid time is older than 60 minutes. Day/night status expires after
   30 minutes. Wind grids are cached by quantized viewport for 15 minutes,
@@ -181,8 +183,9 @@ References:
   older than 30 minutes for flash areas or 60 minutes for fog, or if the
   selected place is outside the reported coverage bounds. Empty transparent
   flash imagery is **not** evidence that no lightning occurred.
-- EUMETSAT attribution is shown in the Radar status and TileSet metadata;
-  core product data are subject to CC BY 4.0. WMS tile substitution on Android
+- EUMETSAT attribution is listed in Settings > About the data and retained in
+  TileSet metadata exposed by MapLibre's attribution control; core product data
+  are subject to CC BY 4.0. WMS tile substitution on Android
   still needs a physical-device visual check on each supported MapLibre/API
   combination. This implementation does **not** ingest the separate per-flash
   NetCDF collection, which requires registered access/token and parsing.

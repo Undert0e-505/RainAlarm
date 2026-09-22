@@ -73,7 +73,6 @@ import androidx.compose.ui.unit.sp
 import com.rainalarm.app.LocationUiState
 import com.rainalarm.app.data.RadarSession
 import com.rainalarm.app.data.RadarProviderCoordinator
-import com.rainalarm.app.data.RadarProviderKind
 import com.rainalarm.app.data.RadarSettingsRepository
 import com.rainalarm.app.data.SavedPlace
 import com.rainalarm.app.data.CURRENT_LOCATION_ID
@@ -111,25 +110,65 @@ private val Danger: Color @Composable get() = LocalRainAlarmPalette.current.dang
 
 internal object RadarTopControlsPolicy {
     const val timeTopDp = 12
+    const val controlSizeDp = 48
+    const val controlsEndDp = 4
+    const val statusTopDp = 54
     fun timeLabelSp(mapWidthDp: Int): Int = if (mapWidthDp < 340) 18 else 20
-    fun windChipSp(mapWidthDp: Int): Int = if (mapWidthDp < 420) 10 else 11
-    fun windChipBelowControls(mapWidthDp: Int): Boolean = mapWidthDp < 340
+    fun timeLabelMaxWidthDp(mapWidthDp: Int, showFollow: Boolean): Int {
+        val controlCount = if (showFollow) 4 else 3
+        return (mapWidthDp - 12 - controlsEndDp - controlCount * controlSizeDp - 8)
+            .coerceAtLeast(72)
+    }
+    fun statusMaxWidthDp(mapWidthDp: Int): Int = (mapWidthDp - 24).coerceIn(100, 220)
 }
 
-/** The icon–title–icon group stays centred; only long titles consume spare width. */
 @Composable
-private fun RadarWindChip(weather: CurrentWeather?, mapWidthDp: Int, modifier: Modifier = Modifier) {
-    val wind = weather?.takeIf { it.freshAt(Instant.now().epochSecond) }
-    val speed = wind?.windSpeedKmh
-    val from = wind?.windFromDegrees
-    Text(if (speed != null && from != null) "${speed.toInt()} km/h ${cardinalDirection(from)}" else "Wind unavailable",
+private fun RadarLayerStatus(
+    mapLayer: RadarMapLayer,
+    ancillaryStatus: AncillaryStatus,
+    weather: CurrentWeather?,
+    mapWidthDp: Int,
+    modifier: Modifier = Modifier,
+) {
+    if (mapLayer == RadarMapLayer.OFF) return
+    val (status, accessibilityStatus) = when (mapLayer) {
+        RadarMapLayer.OFF -> return
+        RadarMapLayer.WIND -> {
+            val wind = weather?.takeIf { it.freshAt(Instant.now().epochSecond) }
+            val speed = wind?.windSpeedKmh
+            val from = wind?.windFromDegrees
+            when {
+                ancillaryStatus == AncillaryStatus.Loading || ancillaryStatus == AncillaryStatus.Off ->
+                    "Wind loading" to "Wind layer loading"
+                ancillaryStatus !is AncillaryStatus.Wind || speed == null || from == null ->
+                    "Wind unavailable" to "Selected-place wind unavailable"
+                else -> "${speed.toInt()} km/h ${cardinalDirection(from)}" to
+                    "Selected-place wind from ${cardinalDirection(from)} at ${speed.toInt()} kilometres per hour"
+            }
+        }
+        RadarMapLayer.LIGHTNING -> when (ancillaryStatus) {
+            AncillaryStatus.Loading, AncillaryStatus.Off -> "Lightning loading"
+            is AncillaryStatus.Satellite -> "Lightning available"
+            else -> "Lightning unavailable"
+        }.let { it to it }
+        RadarMapLayer.FOG -> when (ancillaryStatus) {
+            AncillaryStatus.Loading, AncillaryStatus.Off -> "Fog loading"
+            is AncillaryStatus.Satellite -> "Fog available"
+            else -> "Fog unavailable"
+        }
+        .let { it to it }
+    }
+    Text(status,
         color = LocalRainAlarmPalette.current.mapLabelText,
-        fontSize = RadarTopControlsPolicy.windChipSp(mapWidthDp).sp,
-        maxLines = 1, modifier = modifier.background(LocalRainAlarmPalette.current.mapLabelSurface,
-            RoundedCornerShape(5.dp)).padding(horizontal = if (mapWidthDp < 420) 2.dp else 5.dp, vertical = 2.dp)
-            .semantics { contentDescription = if (speed != null && from != null)
-                "Selected-place model wind from ${cardinalDirection(from)} at ${speed.toInt()} kilometres per hour"
-                else "Selected-place wind unavailable" })
+        fontSize = 10.sp,
+        textAlign = TextAlign.End,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = modifier.widthIn(max = RadarTopControlsPolicy.statusMaxWidthDp(mapWidthDp).dp)
+            .background(LocalRainAlarmPalette.current.mapLabelSurface, RoundedCornerShape(5.dp))
+            .padding(horizontal = 5.dp, vertical = 2.dp)
+            .semantics { contentDescription = accessibilityStatus },
+    )
 }
 
 private sealed interface AncillaryStatus {
@@ -622,7 +661,10 @@ private fun ColumnScope.RadarPlayer(
                 lineHeight = (RadarTopControlsPolicy.timeLabelSp(mapWidthDp) + 2).sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.align(Alignment.TopStart).padding(start = 12.dp, top = RadarTopControlsPolicy.timeTopDp.dp)
+                modifier = Modifier.align(Alignment.TopStart)
+                    .padding(start = 12.dp, top = RadarTopControlsPolicy.timeTopDp.dp)
+                    .widthIn(max = RadarTopControlsPolicy.timeLabelMaxWidthDp(
+                        mapWidthDp, selectedPlaceId == CURRENT_LOCATION_ID).dp)
                     .background(LocalRainAlarmPalette.current.mapLabelSurface, RoundedCornerShape(4.dp))
                     .padding(horizontal = 4.dp),
             )
@@ -631,24 +673,17 @@ private fun ColumnScope.RadarPlayer(
                 completed = refreshProgress.first, total = refreshProgress.second,
                 error = refreshError,
             )
-            Text(
-                if (session.providerSelection.active == RadarProviderKind.METEOGROUP_REGIONAL) {
-                    "Radar: MeteoGroup/DTN | Map: OpenFreeMap, © OpenStreetMap contributors"
-                } else {
-                    "Radar: RainViewer | Map: OpenFreeMap, © OpenStreetMap contributors"
-                },
-                color = LocalRainAlarmPalette.current.mapLabelText,
-                fontSize = 10.sp,
-                modifier = Modifier.align(Alignment.BottomStart).padding(10.dp)
-                    .background(LocalRainAlarmPalette.current.mapLabelSurface, RoundedCornerShape(4.dp))
-                    .padding(horizontal = 3.dp),
-            )
-            val windBelow = mapLayer == RadarMapLayer.WIND && RadarTopControlsPolicy.windChipBelowControls(mapWidthDp)
-            if (windBelow) RadarWindChip(currentWeather, mapWidthDp,
-                Modifier.align(Alignment.TopEnd).padding(
-                    top = if (selectedPlaceId == CURRENT_LOCATION_ID) 106.dp else 54.dp, end = 8.dp))
             Row(Modifier.align(Alignment.TopEnd).padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (mapLayer == RadarMapLayer.WIND && !windBelow) RadarWindChip(currentWeather, mapWidthDp)
+                if (selectedPlaceId == CURRENT_LOCATION_ID) {
+                    IconButton(onClick = { onFollowLiveChange(!followLive) },
+                        enabled = hasFreshLiveFix,
+                        modifier = Modifier.size(RadarTopControlsPolicy.controlSizeDp.dp)) {
+                        Icon(Icons.Default.Navigation,
+                            contentDescription = if (followLive) "Stop following live location" else "Follow live location",
+                            tint = if (followLive) Accent.copy(alpha = 0.85f)
+                                else if (darkMap) Color.White else Color.Black)
+                    }
+                }
                 Box {
                     IconButton(onClick = { layerMenuExpanded = true }) {
                         Icon(Icons.Default.Layers, contentDescription = "Map layers, ${mapLayer.label}",
@@ -674,46 +709,20 @@ private fun ColumnScope.RadarPlayer(
                         tint = if (darkMap) Color.White else Color.Black)
                 }
             }
-            if (selectedPlaceId == CURRENT_LOCATION_ID) {
-                IconButton(onClick = { onFollowLiveChange(!followLive) },
-                    enabled = hasFreshLiveFix,
-                    modifier = Modifier.align(Alignment.TopEnd).padding(top = 52.dp, end = 4.dp)
-                        .size(48.dp)
-                        .background(if (followLive) Accent.copy(alpha = 0.85f)
-                            else LocalRainAlarmPalette.current.mapLabelSurface, RoundedCornerShape(12.dp))) {
-                    Icon(Icons.Default.Navigation,
-                        contentDescription = if (followLive) "Stop following live location" else "Follow live location",
-                        tint = if (followLive) Color.Black else if (darkMap) Color.White else Color.Black)
-                }
-            }
-            Box(Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = 32.dp)) {
-                Column(horizontalAlignment = Alignment.End) {
-                    val layerDescription = when (ancillaryStatus) {
-                        AncillaryStatus.Off -> null
-                        AncillaryStatus.Loading -> "${mapLayer.label} · loading"
-                        is AncillaryStatus.Unavailable -> ancillaryStatus.message
-                        is AncillaryStatus.Wind -> "Wind · Open-Meteo model · ${Instant.ofEpochSecond(ancillaryStatus.grid.points[12].validEpochSeconds).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("HH:mm"))} · ${((Instant.now().epochSecond - ancillaryStatus.grid.points[12].validEpochSeconds) / 60).coerceAtLeast(0)}m ago"
-                        is AncillaryStatus.Satellite -> {
-                            val name = if (mapLayer == RadarMapLayer.LIGHTNING) "Satellite flash areas" else "Fog / low cloud"
-                            "$name · EUMETSAT · ${Instant.ofEpochSecond(ancillaryStatus.metadata.validEpochSeconds).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("HH:mm"))} · ${((Instant.now().epochSecond - ancillaryStatus.metadata.validEpochSeconds) / 60).coerceAtLeast(0)}m ago"
-                        }
-                    }
-                    refreshOverlay?.let { status ->
-                        Text(status.label,
-                            color = LocalRainAlarmPalette.current.mapLabelText,
-                            fontSize = 11.sp, lineHeight = 13.sp,
-                            maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.widthIn(max = (mapWidthDp - 80).coerceIn(100, 208).dp)
-                                .background(LocalRainAlarmPalette.current.mapLabelSurface, RoundedCornerShape(4.dp))
-                                .padding(horizontal = 4.dp, vertical = 2.dp)
-                                .semantics { contentDescription = status.accessibilityLabel })
-                    }
-                    if (refreshOverlay != null && layerDescription != null) Spacer(Modifier.height(4.dp))
-                    layerDescription?.let { Text(it, color = LocalRainAlarmPalette.current.mapLabelText,
-                        fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.background(LocalRainAlarmPalette.current.mapLabelSurface, RoundedCornerShape(5.dp))
-                            .padding(horizontal = 5.dp, vertical = 2.dp)) }
-                }
+            RadarLayerStatus(mapLayer, ancillaryStatus, currentWeather, mapWidthDp,
+                Modifier.align(Alignment.TopEnd).padding(
+                    top = RadarTopControlsPolicy.statusTopDp.dp,
+                    end = RadarTopControlsPolicy.controlsEndDp.dp))
+            refreshOverlay?.let { status ->
+                Text(status.label,
+                    color = LocalRainAlarmPalette.current.mapLabelText,
+                    fontSize = 11.sp, lineHeight = 13.sp,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = 32.dp)
+                        .widthIn(max = (mapWidthDp - 80).coerceIn(100, 208).dp)
+                        .background(LocalRainAlarmPalette.current.mapLabelSurface, RoundedCornerShape(4.dp))
+                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                        .semantics { contentDescription = status.accessibilityLabel })
             }
         }
     }
