@@ -43,6 +43,27 @@ class NavigationAndSettingsTest {
     }
 
     @Test
+    fun `rapid provider correction keeps the last deliberate choice`() {
+        val regional = RadarProviderKind.METEOGROUP_REGIONAL
+        val open = RadarProviderKind.OPEN_RAINVIEWER
+
+        assertTrue(RadarProviderSwitchPolicy.accepts(open, regional, null))
+        assertEquals(open, RadarProviderSwitchPolicy.effective(regional, open))
+        // A tap back to the currently persisted provider must not be discarded while Open is
+        // pending; it is a new last-choice intent that cancels the earlier write/load.
+        assertTrue(RadarProviderSwitchPolicy.accepts(regional, regional, open))
+        assertEquals(regional, RadarProviderSwitchPolicy.effective(regional, regional))
+        assertTrue(!RadarProviderSwitchPolicy.shouldPersist(regional, regional))
+        assertTrue(RadarProviderSwitchPolicy.shouldPersist(open, regional))
+    }
+
+    @Test
+    fun `provider switch quiet period is short and explicit`() {
+        assertEquals(400L, RadarProviderSwitchPolicy.settleMillis)
+        assertTrue(RadarProviderSwitchPolicy.settleMillis in 250L..750L)
+    }
+
+    @Test
     fun `playback speed has stable persisted values and two times default`() {
         assertEquals(RadarPlaybackSpeed.DOUBLE, RadarPlaybackSpeedPreference.decode(null))
         assertEquals(RadarPlaybackSpeed.DOUBLE, RadarPlaybackSpeedPreference.decode("old-value"))

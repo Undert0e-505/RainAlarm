@@ -39,6 +39,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -73,7 +74,8 @@ import androidx.core.content.ContextCompat
 import com.rainalarm.app.LocationUiState
 import com.rainalarm.app.data.PlaceCollection
 import com.rainalarm.app.data.PlaceCollectionRules
-import com.rainalarm.app.data.OpenMeteoGeocoder
+import com.rainalarm.app.data.LiveLocationSavePolicy
+import com.rainalarm.app.data.PlaceGeocoder
 import com.rainalarm.app.data.PlaceSearchResult
 import com.rainalarm.app.data.SavedPlace
 import com.rainalarm.app.data.CURRENT_LOCATION_ID
@@ -139,7 +141,7 @@ fun PlacesScreen(
         }
     }
     var message by remember { mutableStateOf<String?>(null) }
-    val geocoder = remember { OpenMeteoGeocoder() }
+    val geocoder = remember { PlaceGeocoder() }
     var searchQuery by remember { mutableStateOf("") }
     var submittedQuery by remember { mutableStateOf<String?>(null) }
     var searchRequest by remember { mutableIntStateOf(0) }
@@ -277,7 +279,8 @@ fun PlacesScreen(
                         }) { Text("Add & select") }
                     }
                 }
-                Text("Search: Open-Meteo / GeoNames", color = PlacesSecondary, fontSize = 10.sp)
+                Text("Towns: Open-Meteo · UK postcodes: postcodes.io",
+                    color = PlacesSecondary, fontSize = 10.sp)
             }
         }
         Spacer(Modifier.height(16.dp))
@@ -415,6 +418,17 @@ fun PlacesScreen(
             Text("Selected: live current location · not saved", color = PlacesAccent,
                 fontSize = 12.sp, modifier = Modifier.padding(top = 5.dp))
         }
+        val liveSnapshot = if (collection.selectedId == CURRENT_LOCATION_ID) {
+            LiveLocationSavePolicy.snapshot((locationState as? LocationUiState.Active)?.place)
+        } else null
+        if (liveSnapshot != null) {
+            OutlinedButton(
+                onClick = { saveAndSelect(liveSnapshot) },
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp).height(48.dp),
+            ) {
+                Text("Save current location")
+            }
+        }
         val locationError = (locationState as? LocationUiState.Unavailable)?.message
         if (locationError != null) Text(locationError, color = PlacesDanger, fontSize = 12.sp)
 
@@ -425,7 +439,7 @@ fun PlacesScreen(
         Spacer(Modifier.height(20.dp))
         Text("Privacy", fontWeight = FontWeight.Bold)
         Text(
-            "No accounts, ads, analytics, billing, or background location. Saved-place alerts use stored coordinates; live current coordinates stay in memory only.",
+            "No accounts, ads, analytics, billing, or background location. Saved-place alerts use stored coordinates; live current coordinates stay in memory unless you explicitly save the current fix.",
             color = PlacesSecondary,
         )
         }

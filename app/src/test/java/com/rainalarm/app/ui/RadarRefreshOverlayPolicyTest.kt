@@ -26,6 +26,17 @@ class RadarRefreshOverlayPolicyTest {
         assertTrue(failure.accessibilityLabel.contains("Refresh radar and map layer"))
     }
 
+    @Test fun initialLoadHasCompactUnknownAndKnownProgressLabels() {
+        val unknown = RadarRefreshOverlayPolicy.initialLoading(0, 0)
+        assertEquals("Loading radar…", unknown.label)
+        assertEquals("Loading radar", unknown.accessibilityLabel)
+        val known = RadarRefreshOverlayPolicy.initialLoading(3, 49)
+        assertEquals("Loading radar 3/49", known.label)
+        assertEquals("Loading radar", known.accessibilityLabel)
+        assertEquals("Loading radar 49/49",
+            RadarRefreshOverlayPolicy.initialLoading(80, 49).label)
+    }
+
     @Test fun feedbackIsOverlayInsideMapNotAConditionalColumnRow() {
         val screen = source()
         assertTrue(screen.contains("refreshOverlay?.let { status ->"))
@@ -36,5 +47,10 @@ class RadarRefreshOverlayPolicyTest {
         assertTrue(screen.contains(".semantics { contentDescription = status.accessibilityLabel }"))
         assertTrue(!screen.contains("if (session != null && (refreshing || error != null))"))
         assertTrue(screen.contains("session != null && place != null && RadarLiveSessionPolicy.canReuse"))
+        assertTrue(screen.contains("else -> RadarLoadingShell(mapStyle, progress)"))
+        assertTrue(screen.contains("Color(RadarMapAppearance.loadingBackgroundArgb(mapStyle))"))
+        assertTrue(screen.contains("Modifier.align(Alignment.BottomEnd).padding(8.dp)"))
+        assertTrue(screen.contains("Reserve the player controls/ticks footprint"))
+        assertTrue(!screen.contains("else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center)"))
     }
 }

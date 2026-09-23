@@ -7,6 +7,12 @@ precipitation footprints, intensities and timestamps can materially disagree.
 Rain Alarm normalizes presentation thresholds and colours but does not dilate,
 move or otherwise force either provider's echoes to match the other.
 
+Provider selection is displayed immediately, then persisted after a 400 ms
+quiet period. The selected-place Now analysis observes only that settled value;
+rapid changes therefore cancel the pending choice and start at most one new
+radar analysis after the user stops tapping. This coalescing does not delay app
+startup, place changes, manual refresh, or the Radar screen's own refresh.
+
 ## MeteoGroup regional
 
 - Manifest pattern: `https://cdn.meteogroup.de/images/mapengine/rain2.0/rad_{area}/images.xml`
@@ -129,6 +135,31 @@ mesh into WGS84; the map projects those vertices at camera updates. An isolated
 bounds fallback exists for projection failures, though all five production
 configurations pass the native-projection mesh tests.
 
+## Place search
+
+- Ordinary town/place queries continue to use Open-Meteo's GeoNames-backed
+  geocoding endpoint. A query which matches a complete UK postcode shape
+  (case-insensitive, with or without its internal space) instead uses the exact
+  `https://api.postcodes.io/postcodes/{postcode}` lookup. A valid unknown
+  postcode returns no match; connectivity, server and malformed-response errors
+  remain visible failures rather than being presented as an empty result.
+- postcodes.io is a free/open API and requires no authentication. The saved name
+  is its canonical formatted postcode; available parish, admin district, admin
+  county and country values form the display detail without inventing a postal
+  town. Some territories legitimately have no WGS84 coordinate and therefore
+  cannot become a map place.
+- Great Britain postcode data is available under OS OpenData terms. The provider
+  notice includes Ordnance Survey data © Crown copyright and database right,
+  Royal Mail copyright and database right, and National Statistics data © Crown
+  copyright and database right. Northern Ireland data has separate ONSPD/LPS
+  terms; consult the current provider notice before redistribution.
+
+References:
+
+- https://postcodes.io/docs/overview/
+- https://postcodes.io/docs/postcode/lookup/
+- https://postcodes.io/docs/licences/
+
 ## Open-Meteo
 
 - Endpoint: `https://api.open-meteo.com/v1/forecast`
@@ -141,7 +172,9 @@ configurations pass the native-projection mesh tests.
   support Now indicators and the Fog night gate; they do not alter radar
   prediction or alerts. A separate request only while Wind is enabled carries
   25 distinct coordinates spanning the settled **visible map viewport** with
-  a small margin. Arrows are georeferenced and point downwind; one compact
+  offscreen 17% margin rows/columns. The visible nine use exact quarter,
+  midpoint and three-quarter positions on each axis. Arrows are georeferenced
+  and point downwind; one compact
   status beneath the connected layer segments reports selected-place speed
   and meteorological *from* direction when the layer is available. Map
   arrows do not repeat numeric speed labels. Provider and licence details are
@@ -392,7 +425,10 @@ References:
 
 ## Operational posture
 
-Radar imagery, area lookup, Open-Meteo and RainViewer use HTTPS. The legacy
+Radar imagery, area lookup, Open-Meteo, postcodes.io and RainViewer use HTTPS. Complete
+UK postcode queries go to postcodes.io while other place-search text goes to
+Open-Meteo. Live device coordinates remain process-memory-only unless the user
+explicitly saves the current fix as an ordinary saved place. The legacy
 area chart host's HTTPS certificate fails hostname verification, so only
 `android.weatherpro.weatherservice.meteogroup.de` has a narrow Android
 cleartext exception; its AREA_ID request uses HTTP without disabling TLS

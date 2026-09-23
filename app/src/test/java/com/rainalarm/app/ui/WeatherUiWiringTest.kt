@@ -77,6 +77,37 @@ class WeatherUiWiringTest {
         assertFalse(settings.contains("badge = \"DEFAULT\""))
     }
 
+    @Test fun `provider taps settle before expensive Now reload and cancellation stays non-error`() {
+        val main = source("../MainActivity.kt")
+        val forecast = source("../data/RadarForecastRepository.kt")
+        val map = source("RadarImageMap.kt")
+        assertTrue(main.contains("private val pendingRadarProvider = MutableStateFlow<RadarProviderKind?>(null)"))
+        assertTrue(main.contains("delay(RadarProviderSwitchPolicy.settleMillis)"))
+        assertTrue(main.contains("providerPersistenceJob?.cancel()"))
+        assertTrue(main.contains("forecastLoadJob?.cancel()"))
+        assertTrue(main.contains("combine(selectedPlace, settledRadarProvider, showLikelySnow"))
+        assertTrue(main.contains("persisted.takeIf { pending == null }"))
+        assertTrue(main.contains("catch (cancelled: CancellationException) {\n                throw cancelled"))
+        assertTrue(main.contains("if (generation != forecastLoadGeneration || pendingRadarProvider.value != null ||"))
+        assertTrue(main.contains("pendingRadarProvider.value != null"))
+        assertTrue(main.contains("if (!changesPersisted) forecastRefreshVersion.value++"))
+        assertFalse(main.contains("runCatching { radarSettings.setProvider(provider) }"))
+        assertTrue(forecast.contains("finally {\n            session?.release()"))
+        assertTrue(map.contains("releaseSession = session::release"))
+    }
+
+    @Test fun `places routes postcode search and exposes only a resolved live snapshot save`() {
+        val places = source("PlacesScreen.kt")
+        val settings = source("SettingsScreen.kt")
+        assertTrue(places.contains("val geocoder = remember { PlaceGeocoder() }"))
+        assertTrue(places.contains("Towns: Open-Meteo · UK postcodes: postcodes.io"))
+        assertTrue(places.contains("val liveSnapshot = if (collection.selectedId == CURRENT_LOCATION_ID)"))
+        assertTrue(places.contains("LiveLocationSavePolicy.snapshot((locationState as? LocationUiState.Active)?.place)"))
+        assertTrue(places.contains("onClick = { saveAndSelect(liveSnapshot) }"))
+        assertTrue(places.contains("Text(\"Save current location\")"))
+        assertTrue(settings.contains("UK postcode lookup: postcodes.io"))
+    }
+
     @Test fun `radar refresh reloads session and layer without replacing camera memory`() {
         val radar = source("RadarScreen.kt")
         assertTrue(radar.contains("onRefresh = { reload++; layerRefresh++; refreshPointWeather() }"))

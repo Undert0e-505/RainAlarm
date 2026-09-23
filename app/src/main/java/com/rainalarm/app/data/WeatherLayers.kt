@@ -82,17 +82,32 @@ data class WindViewport(val south: Double, val west: Double, val north: Double, 
     }
 
     fun coordinates(): List<Pair<Double, Double>> {
-        val latMargin = latitudeSpan * 0.17
-        val lonMargin = longitudeSpan * 0.17
-        return (0..4).flatMap { row -> (0..4).map { column ->
-            (south - latMargin + (latitudeSpan + 2 * latMargin) * row / 4.0).coerceIn(-85.0, 85.0) to
-                wrapLongitude(west - lonMargin + (longitudeSpan + 2 * lonMargin) * column / 4.0)
-        } }
+        return WindGridSamplingPolicy.viewportFractions.flatMap { latitudeFraction ->
+            WindGridSamplingPolicy.viewportFractions.map { longitudeFraction ->
+                (south + latitudeSpan * latitudeFraction).coerceIn(-85.0, 85.0) to
+                    wrapLongitude(west + longitudeSpan * longitudeFraction)
+            }
+        }
     }
 
     companion object {
         fun wrapLongitude(value: Double): Double = ((value + 180.0) % 360.0 + 360.0) % 360.0 - 180.0
     }
+}
+
+/**
+ * Five samples per axis keep one offscreen coverage row/column on every side while the visible
+ * arrows settle at the quarter, midpoint, and three-quarter positions of the current viewport.
+ */
+object WindGridSamplingPolicy {
+    private const val OFFSCREEN_MARGIN_FRACTION = 0.17
+    val viewportFractions: List<Double> = listOf(
+        -OFFSCREEN_MARGIN_FRACTION,
+        0.25,
+        0.5,
+        0.75,
+        1.17,
+    )
 }
 
 data class WindGrid(

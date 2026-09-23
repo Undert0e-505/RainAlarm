@@ -6,6 +6,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 
 class PlaceAndGeocoderTest {
@@ -166,6 +167,20 @@ class PlaceAndGeocoderTest {
     }
 
     @Test
+    fun `active live fix becomes an ordinary saved snapshot only by explicit conversion`() {
+        val live = SavedPlace("Danbury", 51.720457, 0.561948, isCurrentLocation = true)
+        val snapshot = requireNotNull(LiveLocationSavePolicy.snapshot(live))
+        assertEquals(live.name, snapshot.name)
+        assertEquals(live.latitude, snapshot.latitude, 0.0)
+        assertEquals(live.longitude, snapshot.longitude, 0.0)
+        assertFalse(snapshot.isCurrentLocation)
+        assertFalse(snapshot.id == CURRENT_LOCATION_ID)
+        assertEquals(stablePlaceId(live.latitude, live.longitude), snapshot.id)
+        assertEquals(null, LiveLocationSavePolicy.snapshot(DEFAULT_PLACE))
+        assertEquals(null, LiveLocationSavePolicy.snapshot(null))
+    }
+
+    @Test
     fun newPinPromotesOnceButDragOrderSurvivesNormalizationAndSelection() {
         val plain = SavedPlace("Plain", 50.0, 0.0)
         val pinned = SavedPlace("Pinned", 55.0, 0.0)
@@ -253,6 +268,97 @@ class PlaceAndGeocoderTest {
         assertEquals("England, United Kingdom", results.first().detail)
         assertTrue(GeocodingMapper.parse("{}").isEmpty())
         assertThrows(Exception::class.java) { GeocodingMapper.parse("{broken") }
+    }
+
+    @Test
+    fun `full UK postcode policy normalizes standard variants and builds an HTTPS path`() {
+        val variants = mapOf(
+            "m1 1ae" to "M1 1AE",
+            "M601NW" to "M60 1NW",
+            "cr2 6xh" to "CR2 6XH",
+            "DN551PT" to "DN55 1PT",
+            "w1a 1hq" to "W1A 1HQ",
+            "EC1A1BB" to "EC1A 1BB",
+            "gir0aa" to "GIR 0AA",
+        )
+        variants.forEach { (input, expected) -> assertEquals(expected, UkPostcodePolicy.normalize(input)) }
+        assertEquals(null, UkPostcodePolicy.normalize("London"))
+        assertEquals(null, UkPostcodePolicy.normalize("CM3"))
+        assertEquals(null, UkPostcodePolicy.normalize("CM3 4CI"))
+        assertEquals("https://api.postcodes.io/postcodes/CM3%204DS",
+            buildPostcodeLookupUrl(" cm34ds "))
+        assertThrows(IllegalArgumentException::class.java) {
+            buildPostcodeLookupUrl("CM3 4DS", "http://example.invalid/postcodes")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            buildPostcodeLookupUrl("not a postcode")
+        }
+    }
+
+    @Test
+    fun `postcode mapper keeps canonical postcode coordinates and distinct locality detail`() {
+        val result = PostcodesIoMapper.parse(
+            """
+            {"status":200,"result":{"postcode":"CM3 4DS","latitude":51.720457,
+              "longitude":0.561948,"parish":"Danbury","admin_district":"Chelmsford",
+              "admin_county":"Essex","country":"England"}}
+            """.trimIndent(),
+        ).single()
+        assertEquals("CM3 4DS", result.name)
+        assertEquals("Danbury, Chelmsford, Essex, England", result.detail)
+        assertEquals(51.720457, result.latitude, 0.0000001)
+        assertEquals(0.561948, result.longitude, 0.0000001)
+        assertTrue(PostcodesIoMapper.parse(
+            """{"status":200,"result":{"postcode":"CM3 4DS","latitude":null,"longitude":0.5}}""",
+        ).isEmpty())
+        assertTrue(PostcodesIoMapper.parse(
+            """{"status":200,"result":{"postcode":"CM3 4DS","latitude":99.0,"longitude":0.5}}""",
+        ).isEmpty())
+        assertTrue(PostcodesIoMapper.parse(
+            """{"status":200,"result":{"postcode":"invalid","latitude":51.0,"longitude":0.5}}""",
+        ).isEmpty())
+        assertTrue(PostcodesIoMapper.parse("""{"status":404,"result":null}""").isEmpty())
+        assertThrows(Exception::class.java) { PostcodesIoMapper.parse("{broken") }
+    }
+
+    @Test
+    fun `postcode transport distinguishes unknown postcode from service failure`() = runBlocking {
+        val notFound = PostcodesIoGeocoder(httpClient = GeocodingHttpClient { _, connect, read ->
+            assertEquals(8_000, connect)
+            assertEquals(10_000, read)
+            GeocodingHttpResponse(404, "")
+        })
+        assertTrue(notFound.search("CM3 4ZZ", "en").isEmpty())
+        val unavailable = PostcodesIoGeocoder(httpClient = GeocodingHttpClient { _, _, _ ->
+            GeocodingHttpResponse(503, "service unavailable")
+        })
+        val failure = runCatching { unavailable.search("CM3 4DS", "en") }.exceptionOrNull()
+        assertTrue(failure?.message?.contains("503") == true)
+    }
+
+    @Test
+    fun `place geocoder routes only complete postcode shapes away from Open Meteo`() = runBlocking {
+        val townQueries = mutableListOf<String>()
+        val postcodeQueries = mutableListOf<String>()
+        val town = object : GeocodingEndpoint {
+            override suspend fun search(query: String, language: String): List<PlaceSearchResult> {
+                townQueries += query
+                return listOf(PlaceSearchResult("London", "England", 51.5, -0.1))
+            }
+        }
+        val postcode = object : GeocodingEndpoint {
+            override suspend fun search(query: String, language: String): List<PlaceSearchResult> {
+                postcodeQueries += query
+                return listOf(PlaceSearchResult("CM3 4DS", "Danbury", 51.72, 0.56))
+            }
+        }
+        val geocoder = PlaceGeocoder(town, postcode)
+        assertEquals("London", geocoder.search("London", "en").single().name)
+        assertEquals("CM3 4DS", geocoder.search("cm34ds", "en").single().name)
+        assertEquals(listOf("London"), townQueries)
+        assertEquals(listOf("cm34ds"), postcodeQueries)
+        assertTrue(buildGeocodingUrl("London", "en")
+            .startsWith("https://geocoding-api.open-meteo.com/v1/search?"))
     }
 
     @Test

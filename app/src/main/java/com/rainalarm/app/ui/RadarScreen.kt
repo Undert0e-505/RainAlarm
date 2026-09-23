@@ -71,6 +71,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.stateDescription
@@ -682,18 +683,7 @@ fun LiveRadarScreen(
                     }) { Text("Try again") }
                 }
             }
-            else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator(color = Accent)
-                    if (progress.second > 0) {
-                        Text(
-                            "Loading radar ${progress.first}/${progress.second}",
-                            color = Secondary,
-                            modifier = Modifier.padding(top = 12.dp),
-                        )
-                    }
-                }
-            }
+            else -> RadarLoadingShell(mapStyle, progress)
         }
     }
     }
@@ -727,6 +717,49 @@ fun LiveRadarScreen(
             },
         )
     }
+}
+
+@Composable
+private fun ColumnScope.RadarLoadingShell(
+    mapStyle: RadarMapStyle,
+    progress: Pair<Int, Int>,
+) {
+    val shape = RoundedCornerShape(22.dp)
+    val status = RadarRefreshOverlayPolicy.initialLoading(progress.first, progress.second)
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = Color(RadarMapAppearance.loadingBackgroundArgb(mapStyle)),
+        ),
+        shape = shape,
+        modifier = Modifier.fillMaxWidth().weight(1f)
+            .border(1.dp, LocalRainAlarmPalette.current.border, shape),
+    ) {
+        Box(Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp)
+                    .background(LocalRainAlarmPalette.current.mapLabelSurface, RoundedCornerShape(4.dp))
+                    .padding(horizontal = 6.dp, vertical = 4.dp)
+                    .clearAndSetSemantics { contentDescription = status.accessibilityLabel },
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(12.dp),
+                    color = LocalRainAlarmPalette.current.mapLabelText,
+                    strokeWidth = 1.5.dp,
+                )
+                Text(
+                    status.label,
+                    color = LocalRainAlarmPalette.current.mapLabelText,
+                    fontSize = 11.sp,
+                    lineHeight = 13.sp,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+    // Reserve the player controls/ticks footprint so the map card does not jump when ready.
+    Spacer(Modifier.fillMaxWidth().height(69.dp))
 }
 
 @Composable

@@ -38,12 +38,27 @@ class WeatherLayersTest {
         val coords = viewport.coordinates()
         assertEquals(25, coords.size)
         assertEquals(25, coords.toSet().size)
+        listOf(-0.17, 0.25, 0.5, 0.75, 1.17).forEachIndexed { index, expected ->
+            assertEquals(expected, WindGridSamplingPolicy.viewportFractions[index], 0.0000001)
+        }
+        val visible = coords.filter { (lat, lon) ->
+            lat in viewport.south..viewport.north && lon in viewport.west..viewport.east
+        }
+        assertEquals(9, visible.size)
+        assertEquals(51.3, coords[6].first, 0.0000001)
+        assertEquals(51.5, coords[11].first, 0.0000001)
+        assertEquals(51.7, coords[16].first, 0.0000001)
+        assertEquals(-3.5, coords[6].second, 0.0000001)
+        assertEquals(-3.2, coords[7].second, 0.0000001)
+        assertEquals(-2.9, coords[8].second, 0.0000001)
         assertEquals(51.5, coords[12].first, 0.00001)
         assertEquals(-3.2, coords[12].second, 0.00001)
-        assertTrue(coords.first().first < viewport.south)
-        assertTrue(coords.last().first > viewport.north)
-        assertTrue(coords.first().second < viewport.west)
-        assertTrue(coords.last().second > viewport.east)
+        assertTrue(coords.take(5).all { it.first < viewport.south })
+        assertTrue(coords.takeLast(5).all { it.first > viewport.north })
+        assertTrue(coords.filterIndexed { index, _ -> index % 5 == 0 }
+            .all { it.second < viewport.west })
+        assertTrue(coords.filterIndexed { index, _ -> index % 5 == 4 }
+            .all { it.second > viewport.east })
         val body = "[" + coords.joinToString(",") { item(it.first, it.second) } + "]"
         val parsed = OpenMeteoCurrentCodec.parse(body, 25, now)
         assertEquals(25, parsed.size)
@@ -60,7 +75,12 @@ class WeatherLayersTest {
         val crossing = WindViewport(10.0, 170.0, 20.0, -170.0)
         assertEquals(20.0, crossing.longitudeSpan, 0.0001)
         assertEquals(25, crossing.coordinates().size)
+        assertEquals(listOf(175.0, -180.0, -175.0),
+            listOf(crossing.coordinates()[6].second, crossing.coordinates()[12].second,
+                crossing.coordinates()[18].second))
         assertTrue(crossing.coordinates().all { it.first in -85.0..85.0 && it.second in -180.0..180.0 })
+        val polar = WindViewport(84.0, -10.0, 89.0, 10.0)
+        assertTrue(polar.coordinates().all { it.first in -85.0..85.0 && it.second in -180.0..180.0 })
     }
 
     @Test fun `high zoom wind grid retains nine interior visible arrows despite snapped model cells`() {

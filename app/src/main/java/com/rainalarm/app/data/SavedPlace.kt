@@ -55,6 +55,20 @@ val CURRENT_LOCATION_SELECTION = SavedPlace(
     isCurrentLocation = true, id = CURRENT_LOCATION_ID,
 )
 
+/** Converts an active in-memory fix into an ordinary persistable place without leaking its token. */
+object LiveLocationSavePolicy {
+    fun snapshot(active: SavedPlace?): SavedPlace? {
+        if (active == null || !active.isCurrentLocation || active.id != CURRENT_LOCATION_ID) return null
+        return runCatching {
+            SavedPlace(
+                name = active.name.trim(),
+                latitude = active.latitude,
+                longitude = active.longitude,
+            )
+        }.getOrNull()
+    }
+}
+
 @Serializable
 data class PlaceCollection(
     val version: Int = PLACE_STORE_VERSION,

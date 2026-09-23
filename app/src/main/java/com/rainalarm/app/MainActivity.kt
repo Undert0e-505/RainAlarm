@@ -139,6 +139,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
@@ -165,6 +166,31 @@ private val Border: Color @Composable get() = LocalRainAlarmPalette.current.bord
 private val Danger: Color @Composable get() = LocalRainAlarmPalette.current.danger
 private const val CURRENT_LOCATION_TAG = "RainCurrentLocation"
 private const val POST_NOTIFICATIONS_PERMISSION = "android.permission.POST_NOTIFICATIONS"
+
+/**
+ * Provider taps update Settings immediately, but expensive selected-place radar analysis waits
+ * for a short quiet period. This keeps a quick regional/open/regional correction deterministic
+ * without launching and cancelling several bitmap-heavy sessions.
+ */
+object RadarProviderSwitchPolicy {
+    const val settleMillis = 400L
+
+    fun effective(
+        persisted: RadarProviderKind,
+        pending: RadarProviderKind?,
+    ): RadarProviderKind = pending ?: persisted
+
+    fun accepts(
+        requested: RadarProviderKind,
+        persisted: RadarProviderKind,
+        pending: RadarProviderKind?,
+    ): Boolean = requested != effective(persisted, pending)
+
+    fun shouldPersist(
+        requested: RadarProviderKind,
+        persisted: RadarProviderKind,
+    ): Boolean = requested != persisted
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -234,7 +260,10 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     private val _refreshStatus = MutableStateFlow<NowRefreshStatus>(NowRefreshStatus.Idle)
     val refreshStatus: StateFlow<NowRefreshStatus> = _refreshStatus.asStateFlow()
     private var pendingPlaceSelectionId: String? = null
-    private var pendingProviderSelection: RadarProviderKind? = null
+    private val pendingRadarProvider = MutableStateFlow<RadarProviderKind?>(null)
+    private var providerPersistenceJob: Job? = null
+    private var forecastLoadJob: Job? = null
+    private var forecastLoadGeneration = 0L
     val placesState = places.collection.stateIn(
         viewModelScope,
         SharingStarted.Eagerly,
@@ -260,11 +289,27 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         SharingStarted.Eagerly,
         alertPreferences.snapshot(),
     )
-    val radarProvider = radarSettings.provider.stateIn(
+    private val persistedRadarProvider = radarSettings.provider.stateIn(
         viewModelScope,
         SharingStarted.Eagerly,
         RadarProviderKind.METEOGROUP_REGIONAL,
     )
+    /** Immediate last-tap feedback for Settings, independently of debounced persistence. */
+    val radarProvider = combine(persistedRadarProvider, pendingRadarProvider) { persisted, pending ->
+        RadarProviderSwitchPolicy.effective(persisted, pending)
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, RadarProviderKind.METEOGROUP_REGIONAL)
+    /**
+     * Provider-driven Now analysis changes only after the final choice has settled and persisted.
+     * While a choice is pending, retain the previous value so intermediate DataStore emissions
+     * cannot start a stale bitmap-heavy load.
+     */
+    private val settledRadarProvider = combine(
+        persistedRadarProvider,
+        pendingRadarProvider,
+    ) { persisted, pending -> persisted.takeIf { pending == null } }
+        .filterNotNull()
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, RadarProviderKind.METEOGROUP_REGIONAL)
     val showLikelySnow = radarSettings.showLikelySnow.stateIn(
         viewModelScope, SharingStarted.Eagerly, false,
     )
@@ -414,17 +459,23 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         }
         viewModelScope.launch {
             var observedKey: String? = null
-            combine(selectedPlace, radarProvider, showLikelySnow, forecastRefreshVersion) {
+            combine(selectedPlace, settledRadarProvider, showLikelySnow, forecastRefreshVersion) {
                     place, provider, snow, refreshVersion ->
                 ForecastLoadRequest(place, provider, snow, refreshVersion)
             }.distinctUntilChanged { previous, next ->
                 previous.key == next.key && previous.refreshVersion == next.refreshVersion
             }.collectLatest { request ->
+                val generation = ++forecastLoadGeneration
+                val loadJob = currentCoroutineContext()[Job]
+                forecastLoadJob = loadJob
                 val selectionChanged = request.key != observedKey
                 observedKey = request.key
                 if (pendingPlaceSelectionId == request.place?.id) pendingPlaceSelectionId = null
-                if (pendingProviderSelection == request.provider) pendingProviderSelection = null
-                loadForecast(request, selectionChanged)
+                try {
+                    loadForecast(request, selectionChanged, generation)
+                } finally {
+                    if (forecastLoadJob === loadJob) forecastLoadJob = null
+                }
             }
         }
         viewModelScope.launch {
@@ -483,7 +534,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
             "${forecastSelectionKey(it)}|${radarProvider.value.name}|" +
                 (radarProvider.value == RadarProviderKind.OPEN_RAINVIEWER && showLikelySnow.value)
         }
-        val selectionPending = pendingPlaceSelectionId != null || pendingProviderSelection != null
+        val selectionPending = pendingPlaceSelectionId != null || pendingRadarProvider.value != null
         if (key == null) {
             if (CurrentLocationSelectionPolicy.needsFixRetry(placesState.value.selectedId, false) &&
                 _foreground.value && locationClient.hasForegroundPermission() &&
@@ -512,7 +563,11 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
             _currentWeather.value = null }
     }
 
-    private suspend fun loadForecast(request: ForecastLoadRequest, selectionChanged: Boolean) {
+    private suspend fun loadForecast(
+        request: ForecastLoadRequest,
+        selectionChanged: Boolean,
+        generation: Long,
+    ) {
         val place = request.place
         val key = request.key
         if (place == null) {
@@ -537,6 +592,9 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
             } catch (failure: Exception) {
                 ForecastUiState.Error(failure.message ?: "Forecast failed")
             }
+            currentCoroutineContext().ensureActive()
+            if (generation != forecastLoadGeneration || pendingRadarProvider.value != null ||
+                request.provider != persistedRadarProvider.value) return
             if (result is ForecastUiState.Ready) {
                 _state.value = result
                 displayedForecastKey = key
@@ -558,7 +616,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
                 _refreshStatus.value = NowRefreshStatus.Failed(message)
             }
         } finally {
-            activeForecastKey = null
+            if (generation == forecastLoadGeneration) activeForecastKey = null
         }
     }
 
@@ -746,15 +804,44 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     fun disableAlerts() = alertScheduler.disable()
 
     fun setRadarProvider(provider: RadarProviderKind) {
-        if (provider == radarProvider.value) return
-        pendingProviderSelection = provider
-        viewModelScope.launch {
-            runCatching { radarSettings.setProvider(provider) }
-                .onSuccess { _settingsMessage.value = null }
-                .onFailure {
-                    if (pendingProviderSelection == provider) pendingProviderSelection = null
+        val persisted = persistedRadarProvider.value
+        if (!RadarProviderSwitchPolicy.accepts(provider, persisted, pendingRadarProvider.value)) return
+        pendingRadarProvider.value = provider
+        // The visible forecast belongs to the old provider as soon as a different radio choice is
+        // made. Cancel promptly so its session finally/recycle paths run rather than letting it
+        // finish during the quiet period, and prevent an obsolete completion from publishing.
+        forecastLoadGeneration++
+        forecastLoadJob?.cancel()
+        activeForecastKey = null
+        displayedForecastKey = null
+        _state.value = ForecastUiState.Loading
+        _settingsMessage.value = null
+        providerPersistenceJob?.cancel()
+        providerPersistenceJob = viewModelScope.launch {
+            delay(RadarProviderSwitchPolicy.settleMillis)
+            try {
+                val changesPersisted = RadarProviderSwitchPolicy.shouldPersist(
+                    provider, persistedRadarProvider.value,
+                )
+                if (changesPersisted) {
+                    radarSettings.setProvider(provider)
+                    persistedRadarProvider.first { it == provider }
+                }
+                if (pendingRadarProvider.value == provider) {
+                    pendingRadarProvider.value = null
+                    // Returning to the already-persisted choice produces no provider-flow event;
+                    // explicitly replace the load canceled by the first tap in the burst.
+                    if (!changesPersisted) forecastRefreshVersion.value++
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (pendingRadarProvider.value == provider) {
+                    pendingRadarProvider.value = null
+                    forecastRefreshVersion.value++
                     _settingsMessage.value = "Couldn't save the radar provider. Please try again."
                 }
+            }
         }
     }
 
