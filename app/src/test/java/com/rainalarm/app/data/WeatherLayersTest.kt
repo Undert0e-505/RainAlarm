@@ -4,6 +4,7 @@ import java.io.File
 import java.time.Instant
 import java.time.ZoneId
 import java.time.ZonedDateTime
+import javax.xml.parsers.ParserConfigurationException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -123,16 +124,21 @@ class EumetLayersTest {
     private val place = SavedPlace("Cardiff", 51.4816, -3.1791)
     private fun xml(lightningTime: String = "2026-09-17T02:45:00.000Z",
         fogTime: String = "2026-09-17T02:30:00.000Z") = """
-        <WMS_Capabilities><Capability><Layer>
+        <?xml version="1.0" encoding="UTF-8"?>
+        <WMS_Capabilities version="1.3.0" xmlns="http://www.opengis.net/wms"><Capability><Layer>
           <Layer><Name>mtg_fd:li_afa</Name><EX_GeographicBoundingBox>
           <westBoundLongitude>-70</westBoundLongitude><eastBoundLongitude>70</eastBoundLongitude>
           <southBoundLatitude>-70</southBoundLatitude><northBoundLatitude>70</northBoundLatitude>
-          </EX_GeographicBoundingBox><Dimension name="time">2025-01-01T00:00:00.000Z/$lightningTime/PT5M</Dimension></Layer>
+          </EX_GeographicBoundingBox><Dimension name="time" default="$lightningTime" units="ISO8601" nearestValue="1">
+          2025-05-30T15:00:00.000Z/$lightningTime/PT5M</Dimension></Layer>
           <Layer><Name>mtg_fd:rgb_fog</Name><EX_GeographicBoundingBox>
-          <westBoundLongitude>-70</westBoundLongitude><eastBoundLongitude>70</eastBoundLongitude>
-          <southBoundLatitude>-70</southBoundLatitude><northBoundLatitude>70</northBoundLatitude>
-          </EX_GeographicBoundingBox><Dimension name="time">2025-01-01T00:00:00.000Z/$fogTime/PT10M</Dimension></Layer>
-        </Layer></Capability></WMS_Capabilities>""".toByteArray()
+          <westBoundLongitude>-81.27779388427734</westBoundLongitude>
+          <eastBoundLongitude>81.28072357177734</eastBoundLongitude>
+          <southBoundLatitude>-77.35063934326172</southBoundLatitude>
+          <northBoundLatitude>77.35639190673828</northBoundLatitude>
+          </EX_GeographicBoundingBox><Dimension name="time" default="$fogTime" units="ISO8601" nearestValue="1">
+          2025-06-06T18:40:00.000Z/$fogTime/PT10M</Dimension></Layer>
+        </Layer></Capability></WMS_Capabilities>""".trimIndent().toByteArray()
 
     @Test fun `capabilities select exact layer valid time and coverage`() {
         val flashes = EumetCapabilities.parse(xml(), RadarMapLayer.LIGHTNING)
@@ -146,6 +152,29 @@ class EumetLayersTest {
         assertFalse(fog.freshAt(now + 1_801))
     }
 
+    @Test fun `unsupported Android factory features do not abort mandatory XML safeguards`() {
+        var attempted = 0
+        EumetXmlSecurity.applyOptionalFeatures { _, _ ->
+            attempted++
+            throw ParserConfigurationException("unsupported on Android")
+        }
+        assertTrue(attempted >= 3)
+        assertEquals("<root/>", EumetXmlSecurity.validatedUtf8("<root/>".toByteArray()))
+    }
+
+    @Test fun `capabilities reject document types entities and malformed UTF8 before DOM parsing`() {
+        val externalEntity = """<?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE WMS_Capabilities [<!ENTITY secret SYSTEM "file:///data/data/com.rainalarm.app/files/private">]>
+            <WMS_Capabilities><Capability><Layer><Name>&secret;</Name></Layer></Capability></WMS_Capabilities>
+        """.trimIndent().toByteArray()
+        assertThrows(IllegalArgumentException::class.java) {
+            EumetCapabilities.parse(externalEntity, RadarMapLayer.LIGHTNING)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            EumetXmlSecurity.validatedUtf8(byteArrayOf(0x3c, 0xC3.toByte(), 0x28, 0x3e))
+        }
+    }
+
     @Test fun `pinned WMS tile and probe URLs remain HTTPS and spatial`() {
         val metadata = EumetCapabilities.parse(xml(), RadarMapLayer.LIGHTNING)
         val tile = metadata.tileUrl()
@@ -156,7 +185,7 @@ class EumetLayersTest {
         val renderer = listOf(File("src/main/java/com/rainalarm/app/ui/RadarImageMap.kt"),
             File("app/src/main/java/com/rainalarm/app/ui/RadarImageMap.kt")).first(File::isFile).readText()
         assertTrue(renderer.contains("TileSet(\"2.2.0\", satellite.tileUrl())"))
-        assertTrue(renderer.contains("RasterSource(SATELLITE_SOURCE_ID, tiles, 256)"))
+        assertTrue(renderer.contains("RasterSource(sourceId, tiles, 256)"))
         val probe = metadata.probeUrl(place)
         assertFalse(probe.contains("{bbox-epsg-3857}"))
         assertTrue(probe.contains("&width=64&height=64"))
@@ -166,6 +195,27 @@ class EumetLayersTest {
         assertEquals(RadarMapLayer.OFF, RadarMapLayer.decode(null))
         assertEquals(RadarMapLayer.OFF, RadarMapLayer.decode("unknown"))
         RadarMapLayer.entries.forEach { assertEquals(it, RadarMapLayer.decode(it.name)) }
+        assertEquals(emptySet<RadarMapLayer>(), RadarMapLayerPreference.decode(null))
+        assertEquals(emptySet<RadarMapLayer>(), RadarMapLayerPreference.decode(""))
+        assertEquals(emptySet<RadarMapLayer>(), RadarMapLayerPreference.decode("OFF"))
+        assertEquals(emptySet<RadarMapLayer>(), RadarMapLayerPreference.decode("corrupt"))
+        assertEquals(emptySet<RadarMapLayer>(), RadarMapLayerPreference.decode("WIND,corrupt"))
+        RadarMapLayer.overlays.forEach { layer ->
+            assertEquals(setOf(layer), RadarMapLayerPreference.decode(layer.name))
+        }
+        for (mask in 0 until (1 shl RadarMapLayer.overlays.size)) {
+            val layers = RadarMapLayer.overlays.filterIndexed { index, _ -> mask and (1 shl index) != 0 }.toSet()
+            val encoded = RadarMapLayerPreference.encode(layers)
+            assertEquals(RadarMapLayer.overlays.filter(layers::contains).joinToString(",") { it.name }, encoded)
+            assertEquals(layers, RadarMapLayerPreference.decode(encoded))
+        }
+        var toggled = emptySet<RadarMapLayer>()
+        RadarMapLayer.overlays.forEach { layer ->
+            toggled = RadarMapLayerPreference.toggled(toggled, layer, true)
+        }
+        assertEquals(RadarMapLayer.overlays.toSet(), toggled)
+        assertEquals(setOf(RadarMapLayer.WIND, RadarMapLayer.FOG),
+            RadarMapLayerPreference.toggled(toggled, RadarMapLayer.LIGHTNING, false))
         assertEquals(NowWeatherMetric.entries.toSet(),
             NowWeatherMetricPreference.decode(null))
         assertEquals(NowWeatherMetric.entries.toSet(), NowWeatherMetricPreference.decode("old-value"))

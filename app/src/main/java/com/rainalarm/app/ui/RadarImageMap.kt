@@ -158,24 +158,64 @@ private fun applyMapLabelContrast(style: Style, mapStyle: RadarMapStyle) {
     }
 }
 private const val RADAR_OPACITY = 0.90
-private const val SATELLITE_SOURCE_ID = "rain-alarm-satellite-source"
-private const val SATELLITE_LAYER_ID = "rain-alarm-satellite-layer"
+internal object SatelliteLayerRenderPolicy {
+    /** Fog is added first so Lightning remains legible above it. */
+    val renderOrder: List<RadarMapLayer> = listOf(RadarMapLayer.FOG, RadarMapLayer.LIGHTNING)
 
-private fun applySatelliteLayer(style: Style, satellite: EumetLayerMetadata?) {
-    if (style.getLayer(SATELLITE_LAYER_ID) != null) style.removeLayer(SATELLITE_LAYER_ID)
-    if (style.getSource(SATELLITE_SOURCE_ID) != null) style.removeSource(SATELLITE_SOURCE_ID)
-    if (satellite == null) return
-    val tiles = TileSet("2.2.0", satellite.tileUrl()).apply {
-        setMinZoom(0f)
-        setMaxZoom(8f) // Cap remote tile load; overscale thereafter.
-        setBounds(satellite.west.toFloat(), satellite.south.toFloat(),
-            satellite.east.toFloat(), satellite.north.toFloat())
-        attribution = "© EUMETSAT (CC BY 4.0)"
+    fun sourceId(choice: RadarMapLayer): String = when (choice) {
+        RadarMapLayer.FOG -> "rain-alarm-satellite-fog-source"
+        RadarMapLayer.LIGHTNING -> "rain-alarm-satellite-lightning-source"
+        else -> error("Not a satellite layer")
     }
-    style.addSource(RasterSource(SATELLITE_SOURCE_ID, tiles, 256))
-    style.addLayer(RasterLayer(SATELLITE_LAYER_ID, SATELLITE_SOURCE_ID)
-        .withProperties(PropertyFactory.rasterOpacity(
-            if (satellite.choice == RadarMapLayer.FOG) 0.38f else 0.7f)))
+
+    fun layerId(choice: RadarMapLayer): String = when (choice) {
+        RadarMapLayer.FOG -> "rain-alarm-satellite-fog-layer"
+        RadarMapLayer.LIGHTNING -> "rain-alarm-satellite-lightning-layer"
+        else -> error("Not a satellite layer")
+    }
+
+    fun choiceForSource(candidate: String): RadarMapLayer? = renderOrder
+        .firstOrNull { candidate == sourceId(it) }
+
+    fun ordered(metadata: Collection<EumetLayerMetadata>): List<EumetLayerMetadata> = renderOrder
+        .mapNotNull { choice -> metadata.firstOrNull { it.choice == choice } }
+}
+
+private fun applySatelliteLayers(
+    style: Style,
+    satellites: Collection<EumetLayerMetadata>,
+    onLayerError: (RadarMapLayer, String) -> Unit,
+) {
+    SatelliteLayerRenderPolicy.renderOrder.asReversed().forEach { choice ->
+        val layerId = SatelliteLayerRenderPolicy.layerId(choice)
+        if (style.getLayer(layerId) != null) style.removeLayer(layerId)
+    }
+    SatelliteLayerRenderPolicy.renderOrder.forEach { choice ->
+        val sourceId = SatelliteLayerRenderPolicy.sourceId(choice)
+        if (style.getSource(sourceId) != null) style.removeSource(sourceId)
+    }
+    SatelliteLayerRenderPolicy.ordered(satellites).forEach { satellite ->
+        val sourceId = SatelliteLayerRenderPolicy.sourceId(satellite.choice)
+        val layerId = SatelliteLayerRenderPolicy.layerId(satellite.choice)
+        try {
+            val tiles = TileSet("2.2.0", satellite.tileUrl()).apply {
+                setMinZoom(0f)
+                setMaxZoom(8f) // Cap remote tile load; overscale thereafter.
+                setBounds(satellite.west.toFloat(), satellite.south.toFloat(),
+                    satellite.east.toFloat(), satellite.north.toFloat())
+                attribution = "© EUMETSAT (CC BY 4.0)"
+            }
+            style.addSource(RasterSource(sourceId, tiles, 256))
+            style.addLayer(RasterLayer(layerId, sourceId)
+                .withProperties(PropertyFactory.rasterOpacity(
+                    if (satellite.choice == RadarMapLayer.FOG) 0.38f else 0.7f)))
+        } catch (failure: Exception) {
+            Log.e("RainRadarLayers", "${satellite.choice.label} raster update failed", failure)
+            if (style.getLayer(layerId) != null) style.removeLayer(layerId)
+            if (style.getSource(sourceId) != null) style.removeSource(sourceId)
+            onLayerError(satellite.choice, "${satellite.choice.label} layer unavailable")
+        }
+    }
 }
 
 /** Twenty-five distinct requested map positions; the model may reuse a coarse weather cell. */
@@ -666,8 +706,8 @@ fun RadarImageMap(
     cameraMemory: RadarCameraMemory,
     windGrid: WindGrid? = null,
     windArrowScale: Float = 1f,
-    satelliteLayer: EumetLayerMetadata? = null,
-    onLayerError: (String) -> Unit = {},
+    satelliteLayers: List<EumetLayerMetadata> = emptyList(),
+    onLayerError: (RadarMapLayer, String) -> Unit = { _, _ -> },
     onMapStyleError: (String?) -> Unit = {},
     onWindViewportChanged: (WindViewport) -> Unit = {},
 ) {
@@ -688,7 +728,7 @@ fun RadarImageMap(
             cameraMemory,
             windGrid,
             windArrowScale,
-            satelliteLayer,
+            satelliteLayers,
             onLayerError,
             onMapStyleError,
             onWindViewportChanged,
@@ -713,8 +753,8 @@ private fun RadarImageMapInstance(
     cameraMemory: RadarCameraMemory,
     windGrid: WindGrid?,
     windArrowScale: Float,
-    satelliteLayer: EumetLayerMetadata?,
-    onLayerError: (String) -> Unit,
+    satelliteLayers: List<EumetLayerMetadata>,
+    onLayerError: (RadarMapLayer, String) -> Unit,
     onMapStyleError: (String?) -> Unit,
     onWindViewportChanged: (WindViewport) -> Unit,
 ) {
@@ -745,7 +785,7 @@ private fun RadarImageMapInstance(
     val currentLayerError by rememberUpdatedState(onLayerError)
     val currentMapStyleError by rememberUpdatedState(onMapStyleError)
     val currentWindViewportCallback by rememberUpdatedState(onWindViewportChanged)
-    val latestSatellite by rememberUpdatedState(satelliteLayer)
+    val latestSatellites by rememberUpdatedState(satelliteLayers)
     val latestMapPlace by rememberUpdatedState(mapPlace)
     val latestMarkerPlace by rememberUpdatedState(markerPlace)
     val currentManualGesture by rememberUpdatedState(onManualCameraGesture)
@@ -815,9 +855,13 @@ private fun RadarImageMapInstance(
 
     DisposableEffect(mapView) {
         val listener = MapView.OnTileActionListener { operation, _, _, _, _, _, sourceId ->
-            if (operation == TileOperation.Error && sourceId == SATELLITE_SOURCE_ID) {
-                Log.e("RainRadarLayers", "Satellite WMS tile failed")
-                mapView.post { if (!teardown.isClosed) currentLayerError("Satellite tiles unavailable") }
+            val satelliteChoice = SatelliteLayerRenderPolicy.choiceForSource(sourceId)
+            if (operation == TileOperation.Error && satelliteChoice != null) {
+                // Capabilities plus the selected-place probe are the availability gate. EUMETView
+                // occasionally fails one of MapLibre's concurrent viewport requests, so an
+                // isolated tile error must not tear down an otherwise verified layer.
+                Log.w("RainRadarLayers",
+                    "${satelliteChoice.label} WMS tile failed; retaining verified layer")
             }
         }
         mapView.addOnTileActionListener(listener)
@@ -988,11 +1032,7 @@ private fun RadarImageMapInstance(
                     }
                 }
                 if (active && !teardown.isClosed && mapRevealGate.styleLoaded(styleGeneration)) {
-                    try { applySatelliteLayer(it, latestSatellite) }
-                    catch (failure: Exception) {
-                        Log.e("RainRadarLayers", "Satellite raster style failed", failure)
-                        currentLayerError("Satellite layer unavailable")
-                    }
+                    applySatelliteLayers(it, latestSatellites, currentLayerError)
                     overlay.onCameraMoved()
                     staticFallback?.onCameraMoved()
                     mapView.post { if (!teardown.isClosed) cameraIdleListener?.onCameraIdle() }
@@ -1013,16 +1053,14 @@ private fun RadarImageMapInstance(
         }
     }
 
-    DisposableEffect(map, satelliteLayer) {
+    DisposableEffect(map, satelliteLayers) {
         val ready = map
         if (ready == null || teardown.isClosed) return@DisposableEffect onDispose { }
         var active = true
         ready.getStyle { style ->
-            if (active && !teardown.isClosed) try { applySatelliteLayer(style, satelliteLayer) }
-            catch (failure: Exception) {
-                Log.e("RainRadarLayers", "Satellite raster update failed", failure)
-                currentLayerError("Satellite layer unavailable")
-            }
+            if (active && !teardown.isClosed) applySatelliteLayers(
+                style, satelliteLayers, currentLayerError,
+            )
         }
         onDispose { active = false }
     }

@@ -1,13 +1,19 @@
 package com.rainalarm.app.data
 
 import java.io.ByteArrayOutputStream
-import java.io.ByteArrayInputStream
+import java.io.StringReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
+import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.util.Locale
+import javax.xml.XMLConstants
 import javax.xml.parsers.DocumentBuilderFactory
+import javax.xml.parsers.ParserConfigurationException
 import kotlin.math.ln
 import kotlin.math.tan
 import kotlin.math.floor
@@ -16,6 +22,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.w3c.dom.Element
+import org.xml.sax.InputSource
+import org.xml.sax.SAXException
 
 data class EumetLayerMetadata(
     val choice: RadarMapLayer,
@@ -56,6 +64,45 @@ data class EumetLayerMetadata(
     }
 }
 
+internal object EumetXmlSecurity {
+    private val forbiddenDeclaration = Regex("<!\\s*(DOCTYPE|ENTITY)\\b", RegexOption.IGNORE_CASE)
+    private val optionalFeatures = listOf(
+        "http://apache.org/xml/features/disallow-doctype-decl" to true,
+        "http://xml.org/sax/features/external-general-entities" to false,
+        "http://xml.org/sax/features/external-parameter-entities" to false,
+        "http://apache.org/xml/features/nonvalidating/load-external-dtd" to false,
+        XMLConstants.FEATURE_SECURE_PROCESSING to true,
+    )
+
+    /** Android's DOM factory supports fewer hardening feature URIs than the JVM Xerces factory. */
+    fun applyOptionalFeatures(setFeature: (String, Boolean) -> Unit) {
+        optionalFeatures.forEach { (name, value) ->
+            try {
+                setFeature(name, value)
+            } catch (_: ParserConfigurationException) {
+                // The bounded UTF-8 input and declaration rejection below remain mandatory.
+            }
+        }
+    }
+
+    fun validatedUtf8(body: ByteArray): String {
+        val text = try {
+            StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(body))
+                .toString()
+                .removePrefix("\uFEFF")
+        } catch (failure: CharacterCodingException) {
+            throw IllegalArgumentException("Satellite capabilities are not valid UTF-8", failure)
+        }
+        require(!forbiddenDeclaration.containsMatchIn(text)) {
+            "Satellite capabilities must not contain document type or entity declarations"
+        }
+        return text
+    }
+}
+
 object EumetCapabilities {
     fun parse(body: ByteArray, choice: RadarMapLayer): EumetLayerMetadata {
         require(body.size <= 1024 * 1024)
@@ -64,13 +111,14 @@ object EumetCapabilities {
             RadarMapLayer.FOG -> "mtg_fd:rgb_fog"
             else -> error("Not a satellite layer")
         }
-        val factory = DocumentBuilderFactory.newInstance().apply {
-            setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
-            setFeature("http://xml.org/sax/features/external-general-entities", false)
-            setFeature("http://xml.org/sax/features/external-parameter-entities", false)
-            isExpandEntityReferences = false
+        val xml = EumetXmlSecurity.validatedUtf8(body)
+        val factory = DocumentBuilderFactory.newInstance()
+        EumetXmlSecurity.applyOptionalFeatures(factory::setFeature)
+        factory.isExpandEntityReferences = false
+        val builder = factory.newDocumentBuilder().apply {
+            setEntityResolver { _, _ -> throw SAXException("External XML resources are disabled") }
         }
-        val document = factory.newDocumentBuilder().parse(ByteArrayInputStream(body))
+        val document = builder.parse(InputSource(StringReader(xml)))
         val layers = document.getElementsByTagName("Layer")
         val layer = (0 until layers.length).mapNotNull { layers.item(it) as? Element }.firstOrNull { element ->
             element.directChild("Name")?.textContent?.trim() == wanted

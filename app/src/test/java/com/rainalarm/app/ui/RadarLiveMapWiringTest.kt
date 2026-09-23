@@ -14,12 +14,13 @@ class RadarLiveMapWiringTest {
         val screen = source("RadarScreen.kt")
         val topRow = screen.substringAfter(
             "Row(Modifier.align(Alignment.TopEnd).padding(4.dp), verticalAlignment = Alignment.CenterVertically)",
-        ).substringBefore("RadarLayerStatus(mapLayer")
+        ).substringBefore("RadarLayerSegments(enabledMapLayers")
         assertTrue(topRow.contains("if (selectedPlaceId == CURRENT_LOCATION_ID) {"))
         assertTrue(topRow.contains("IconButton(onClick = { onFollowLiveChange(!followLive) }"))
         assertTrue(screen.contains("Stop following live location"))
         assertTrue(screen.contains("Follow live location"))
         assertTrue(screen.contains("enabled = hasFreshLiveFix"))
+        assertTrue(!topRow.contains("RadarLayerSegments"))
     }
 
     @Test fun liveMarkerUsesLightweightProjectionWithoutReplanningRasterMesh() {

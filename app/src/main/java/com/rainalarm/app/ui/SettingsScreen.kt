@@ -91,7 +91,7 @@ fun SettingsScreen(
     selectCompassAppearance: (NowCardAppearance) -> Unit,
     graphAppearance: NowCardAppearance,
     selectGraphAppearance: (NowCardAppearance) -> Unit,
-    mapLayer: RadarMapLayer,
+    enabledMapLayers: Set<RadarMapLayer>,
     windArrowScale: Float,
     selectWindArrowScale: (Float) -> Unit,
     savedPlaces: PlaceCollection,
@@ -235,7 +235,7 @@ fun SettingsScreen(
                 }
             }
         }
-        if (mapLayer == RadarMapLayer.WIND) {
+        if (RadarMapLayer.WIND in enabledMapLayers) {
             Spacer(Modifier.height(14.dp))
             Card(colors = CardDefaults.cardColors(containerColor = SettingsSurface),
                 shape = RoundedCornerShape(22.dp), modifier = Modifier.fillMaxWidth()) {

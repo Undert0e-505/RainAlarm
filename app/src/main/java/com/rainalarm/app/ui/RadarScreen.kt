@@ -4,9 +4,14 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.util.Log
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
@@ -24,6 +29,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
@@ -32,7 +38,9 @@ import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.Air
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.CloudQueue
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -40,8 +48,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -58,6 +64,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -65,6 +72,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -112,15 +120,82 @@ private val Danger: Color @Composable get() = LocalRainAlarmPalette.current.dang
 internal object RadarTopControlsPolicy {
     const val timeTopDp = 12
     const val controlSizeDp = 48
+    const val segmentSizeDp = controlSizeDp
+    const val segmentDividerDp = 1
+    const val segmentGroupWidthDp = controlSizeDp * 3
     const val controlsEndDp = 4
-    const val statusTopDp = 54
+    const val segmentGapDp = 4
+    const val segmentTopDp = controlsEndDp + controlSizeDp + segmentGapDp
+    const val statusGapDp = 4
+    const val statusTopDp = segmentTopDp + segmentSizeDp + statusGapDp
+    const val statusEndDp = controlsEndDp
     fun timeLabelSp(mapWidthDp: Int): Int = if (mapWidthDp < 340) 18 else 20
     fun timeLabelMaxWidthDp(mapWidthDp: Int, showFollow: Boolean): Int {
-        val controlCount = if (showFollow) 4 else 3
+        val controlCount = if (showFollow) 3 else 2
         return (mapWidthDp - 12 - controlsEndDp - controlCount * controlSizeDp - 8)
             .coerceAtLeast(72)
     }
-    fun statusMaxWidthDp(mapWidthDp: Int): Int = (mapWidthDp - 24).coerceIn(100, 220)
+    fun statusMaxWidthDp(mapWidthDp: Int): Int =
+        (mapWidthDp - statusEndDp - 12).coerceIn(96, 220)
+}
+
+internal data class SatelliteFeedbackState(
+    val enabled: Boolean = false,
+    val visible: Boolean = false,
+    val holdingTerminal: Boolean = false,
+    val generation: Int = 0,
+)
+
+internal object SatelliteFeedbackPolicy {
+    const val terminalHoldMillis = 1_000L
+    const val fadeMillis = 180
+
+    /** One activation owns one feedback lifetime; later refresh/freshness changes cannot reopen it. */
+    fun onInput(
+        previous: SatelliteFeedbackState,
+        enabled: Boolean,
+        terminal: Boolean,
+    ): SatelliteFeedbackState {
+        if (!enabled) return if (!previous.enabled && !previous.visible) previous else
+            SatelliteFeedbackState(generation = previous.generation + 1)
+        var next = if (!previous.enabled) previous.copy(
+            enabled = true,
+            visible = true,
+            holdingTerminal = false,
+            generation = previous.generation + 1,
+        ) else previous
+        if (!next.visible) return next
+        next = when {
+            terminal && !next.holdingTerminal -> next.copy(
+                holdingTerminal = true,
+                generation = next.generation + 1,
+            )
+            !terminal && next.holdingTerminal -> next.copy(
+                holdingTerminal = false,
+                generation = next.generation + 1,
+            )
+            else -> next
+        }
+        return next
+    }
+
+    fun afterTerminalElapsed(
+        state: SatelliteFeedbackState,
+        generation: Int,
+        elapsedMillis: Long,
+    ): SatelliteFeedbackState = if (
+        state.enabled && state.visible && state.holdingTerminal &&
+        state.generation == generation && elapsedMillis >= terminalHoldMillis
+    ) state.copy(visible = false, holdingTerminal = false) else state
+}
+
+internal object RadarLayerGatePolicy {
+    fun unavailableReason(layer: RadarMapLayer, hasPlace: Boolean, daylight: Boolean?): String? = when {
+        !hasPlace -> "Select a place for this layer"
+        layer == RadarMapLayer.FOG && daylight == true -> "Night only · fog / low cloud"
+        layer == RadarMapLayer.FOG && daylight == null -> "Daylight status unavailable"
+        else -> null
+    }
 }
 
 @Composable
@@ -150,11 +225,13 @@ private fun RadarLayerStatus(
         RadarMapLayer.LIGHTNING -> when (ancillaryStatus) {
             AncillaryStatus.Loading, AncillaryStatus.Off -> "Lightning loading"
             is AncillaryStatus.Satellite -> "Lightning available"
+            is AncillaryStatus.Unavailable -> ancillaryStatus.message
             else -> "Lightning unavailable"
         }.let { it to it }
         RadarMapLayer.FOG -> when (ancillaryStatus) {
             AncillaryStatus.Loading, AncillaryStatus.Off -> "Fog loading"
             is AncillaryStatus.Satellite -> "Fog available"
+            is AncillaryStatus.Unavailable -> ancillaryStatus.message
             else -> "Fog unavailable"
         }
         .let { it to it }
@@ -170,6 +247,118 @@ private fun RadarLayerStatus(
             .padding(horizontal = 5.dp, vertical = 2.dp)
             .semantics { contentDescription = accessibilityStatus },
     )
+}
+
+@Composable
+private fun RadarLayerStatuses(
+    enabledMapLayers: Set<RadarMapLayer>,
+    statuses: Map<RadarMapLayer, AncillaryStatus>,
+    weather: CurrentWeather?,
+    mapWidthDp: Int,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier, horizontalAlignment = Alignment.End) {
+        if (RadarMapLayer.WIND in enabledMapLayers) {
+            RadarLayerStatus(RadarMapLayer.WIND,
+                statuses[RadarMapLayer.WIND] ?: AncillaryStatus.Off, weather, mapWidthDp)
+        }
+        SatelliteActivationStatus(RadarMapLayer.LIGHTNING,
+            RadarMapLayer.LIGHTNING in enabledMapLayers,
+            statuses[RadarMapLayer.LIGHTNING] ?: AncillaryStatus.Off,
+            weather, mapWidthDp)
+        SatelliteActivationStatus(RadarMapLayer.FOG,
+            RadarMapLayer.FOG in enabledMapLayers,
+            statuses[RadarMapLayer.FOG] ?: AncillaryStatus.Off,
+            weather, mapWidthDp)
+    }
+}
+
+@Composable
+private fun SatelliteActivationStatus(
+    layer: RadarMapLayer,
+    enabled: Boolean,
+    status: AncillaryStatus,
+    weather: CurrentWeather?,
+    mapWidthDp: Int,
+) {
+    var feedback by remember(layer) { mutableStateOf(SatelliteFeedbackState()) }
+    val terminal = status !is AncillaryStatus.Off && status !is AncillaryStatus.Loading
+    LaunchedEffect(enabled, terminal) {
+        feedback = SatelliteFeedbackPolicy.onInput(feedback, enabled, terminal)
+    }
+    LaunchedEffect(feedback.generation, feedback.holdingTerminal) {
+        if (!feedback.holdingTerminal) return@LaunchedEffect
+        val generation = feedback.generation
+        delay(SatelliteFeedbackPolicy.terminalHoldMillis)
+        feedback = SatelliteFeedbackPolicy.afterTerminalElapsed(
+            feedback, generation, SatelliteFeedbackPolicy.terminalHoldMillis,
+        )
+    }
+    // Disabling removes the message immediately and also cancels its keyed coroutine.
+    if (enabled) AnimatedVisibility(
+        visible = feedback.visible,
+        enter = fadeIn(tween(90)),
+        exit = fadeOut(tween(SatelliteFeedbackPolicy.fadeMillis)),
+    ) {
+        RadarLayerStatus(layer, status, weather, mapWidthDp, Modifier.padding(top = 2.dp))
+    }
+}
+
+@Composable
+private fun RadarLayerSegments(
+    enabledMapLayers: Set<RadarMapLayer>,
+    darkMap: Boolean,
+    setMapLayerEnabled: (RadarMapLayer, Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val outerShape = RoundedCornerShape(8.dp)
+    val inactiveTint = if (darkMap) Color.White else Color.Black
+    Box(
+        modifier
+            .size(RadarTopControlsPolicy.segmentGroupWidthDp.dp,
+                RadarTopControlsPolicy.segmentSizeDp.dp)
+            .clip(outerShape)
+            .border(1.dp, inactiveTint.copy(alpha = 0.45f), outerShape),
+    ) {
+        Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
+            RadarMapLayer.overlays.forEach { layer ->
+                val active = layer in enabledMapLayers
+                val icon = when (layer) {
+                    RadarMapLayer.WIND -> Icons.Default.Air
+                    RadarMapLayer.LIGHTNING -> Icons.Default.Bolt
+                    RadarMapLayer.FOG -> Icons.Default.CloudQueue
+                    RadarMapLayer.OFF -> error("Off is not a map overlay segment")
+                }
+                Box(
+                    Modifier.size(RadarTopControlsPolicy.segmentSizeDp.dp)
+                        .background(if (active) Accent.copy(alpha = 0.18f) else Color.Transparent)
+                        .toggleable(
+                            value = active,
+                            role = Role.Switch,
+                            onValueChange = { setMapLayerEnabled(layer, it) },
+                        )
+                        .semantics {
+                            contentDescription = "${layer.label} map layer"
+                            stateDescription = if (active) "Enabled" else "Disabled"
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(icon, contentDescription = null,
+                        tint = if (active) Accent else inactiveTint,
+                        modifier = Modifier.size(24.dp))
+                }
+            }
+        }
+        Canvas(Modifier.fillMaxSize()) {
+            val dividerWidth = RadarTopControlsPolicy.segmentDividerDp.dp.toPx()
+            val dividerInset = 6.dp.toPx()
+            for (join in 1 until RadarMapLayer.overlays.size) {
+                val x = RadarTopControlsPolicy.segmentSizeDp.dp.toPx() * join
+                drawLine(inactiveTint.copy(alpha = 0.3f),
+                    Offset(x, dividerInset), Offset(x, size.height - dividerInset), dividerWidth)
+            }
+        }
+    }
 }
 
 private sealed interface AncillaryStatus {
@@ -196,9 +385,9 @@ fun LiveRadarScreen(
     recenterToSelectedPlace: () -> Unit,
     cameraMemory: RadarCameraMemory,
     selectPlace: (String) -> Unit,
-    mapLayer: RadarMapLayer,
+    enabledMapLayers: Set<RadarMapLayer>,
     windArrowScale: Float,
-    selectMapLayer: (RadarMapLayer) -> Unit,
+    setMapLayerEnabled: (RadarMapLayer, Boolean) -> Unit,
     currentWeather: CurrentWeather?,
     refreshPointWeather: () -> Unit,
     selectedPlaceId: String,
@@ -214,13 +403,16 @@ fun LiveRadarScreen(
     var progress by remember { mutableStateOf(0 to 0) }
     var reload by remember { mutableIntStateOf(0) }
     var layerRefresh by remember { mutableIntStateOf(0) }
-    var previousLayerRefresh by remember { mutableIntStateOf(0) }
+    var previousLightningRefresh by remember { mutableIntStateOf(0) }
+    var previousFogRefresh by remember { mutableIntStateOf(0) }
     var previousWindRefresh by remember { mutableIntStateOf(0) }
-    var ancillaryStatus by remember { mutableStateOf<AncillaryStatus>(AncillaryStatus.Off) }
+    var windStatus by remember { mutableStateOf<AncillaryStatus>(AncillaryStatus.Off) }
+    var lightningStatus by remember { mutableStateOf<AncillaryStatus>(AncillaryStatus.Off) }
+    var fogStatus by remember { mutableStateOf<AncillaryStatus>(AncillaryStatus.Off) }
     var windViewport by remember { mutableStateOf<WindViewport?>(null) }
     var layerNow by remember { mutableStateOf(Instant.now().epochSecond) }
-    LaunchedEffect(mapLayer) {
-        if (mapLayer != RadarMapLayer.OFF) while (true) {
+    LaunchedEffect(enabledMapLayers.isNotEmpty()) {
+        if (enabledMapLayers.isNotEmpty()) while (true) {
             delay(60_000)
             layerNow = Instant.now().epochSecond
         }
@@ -303,47 +495,74 @@ fun LiveRadarScreen(
     val regionLatitude = place?.latitude?.times(10)?.toInt()
     val regionLongitude = place?.longitude?.times(10)?.toInt()
     val daylight = currentWeather?.takeIf { it.daylightFreshAt(layerNow) }?.isDay
-    LaunchedEffect(mapLayer, place?.id, regionLatitude, regionLongitude, layerRefresh, daylight) {
-        if (mapLayer == RadarMapLayer.WIND) return@LaunchedEffect
+    val lightningEnabled = RadarMapLayer.LIGHTNING in enabledMapLayers
+    LaunchedEffect(lightningEnabled, place?.id, regionLatitude, regionLongitude, layerRefresh) {
+        if (!lightningEnabled) {
+            lightningStatus = AncillaryStatus.Off
+            return@LaunchedEffect
+        }
         val selected = place
-        val force = layerRefresh != previousLayerRefresh
-        previousLayerRefresh = layerRefresh
-        ancillaryStatus = when {
-            mapLayer == RadarMapLayer.OFF -> AncillaryStatus.Off
-            selected == null -> AncillaryStatus.Unavailable("Select a place for this layer")
-            mapLayer == RadarMapLayer.FOG && daylight == true ->
-                AncillaryStatus.Unavailable("Night only · fog / low cloud")
-            mapLayer == RadarMapLayer.FOG && daylight == null ->
-                AncillaryStatus.Unavailable("Daylight status unavailable")
-            else -> {
-                ancillaryStatus = AncillaryStatus.Loading
-                try {
-                    when (mapLayer) {
-                        RadarMapLayer.WIND -> AncillaryStatus.Off // handled by viewport-specific effect
-                        RadarMapLayer.LIGHTNING, RadarMapLayer.FOG ->
-                            AncillaryStatus.Satellite(EumetViewRepository.metadata(mapLayer, selected, force))
-                        RadarMapLayer.OFF -> AncillaryStatus.Off
-                    }
-                } catch (cancelled: CancellationException) { throw cancelled }
-                catch (failure: Exception) {
-                    Log.w("RainRadarLayers", "${mapLayer.name} layer unavailable", failure)
-                    AncillaryStatus.Unavailable("${mapLayer.label} unavailable")
-                }
-            }
+        val reason = RadarLayerGatePolicy.unavailableReason(
+            RadarMapLayer.LIGHTNING, selected != null, daylight,
+        )
+        if (reason != null) {
+            lightningStatus = AncillaryStatus.Unavailable(reason)
+            return@LaunchedEffect
+        }
+        val force = layerRefresh != previousLightningRefresh
+        previousLightningRefresh = layerRefresh
+        lightningStatus = AncillaryStatus.Loading
+        lightningStatus = try {
+            AncillaryStatus.Satellite(EumetViewRepository.metadata(
+                RadarMapLayer.LIGHTNING, requireNotNull(selected), force,
+            ))
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (failure: Exception) {
+            Log.w("RainRadarLayers", "LIGHTNING layer unavailable", failure)
+            AncillaryStatus.Unavailable("Lightning unavailable")
         }
     }
+    val fogEnabled = RadarMapLayer.FOG in enabledMapLayers
+    LaunchedEffect(fogEnabled, place?.id, regionLatitude, regionLongitude, layerRefresh, daylight) {
+        if (!fogEnabled) {
+            fogStatus = AncillaryStatus.Off
+            return@LaunchedEffect
+        }
+        val selected = place
+        val reason = RadarLayerGatePolicy.unavailableReason(RadarMapLayer.FOG, selected != null, daylight)
+        if (reason != null) {
+            fogStatus = AncillaryStatus.Unavailable(reason)
+            return@LaunchedEffect
+        }
+        val force = layerRefresh != previousFogRefresh
+        previousFogRefresh = layerRefresh
+        fogStatus = AncillaryStatus.Loading
+        fogStatus = try {
+            AncillaryStatus.Satellite(EumetViewRepository.metadata(
+                RadarMapLayer.FOG, requireNotNull(selected), force,
+            ))
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (failure: Exception) {
+            Log.w("RainRadarLayers", "FOG layer unavailable", failure)
+            AncillaryStatus.Unavailable("Fog unavailable")
+        }
+    }
+    val windEnabled = RadarMapLayer.WIND in enabledMapLayers
     val viewportKey = windViewport?.requestKey()
-    LaunchedEffect(mapLayer, viewportKey, layerRefresh) {
-        if (mapLayer != RadarMapLayer.WIND) return@LaunchedEffect
+    LaunchedEffect(windEnabled, viewportKey, layerRefresh) {
+        if (!windEnabled) {
+            windStatus = AncillaryStatus.Off
+            return@LaunchedEffect
+        }
         val viewport = windViewport
         if (viewport == null) {
-            ancillaryStatus = AncillaryStatus.Unavailable("Wind viewport unavailable")
+            windStatus = AncillaryStatus.Unavailable("Wind viewport unavailable")
             return@LaunchedEffect
         }
         val force = layerRefresh != previousWindRefresh
         previousWindRefresh = layerRefresh
-        ancillaryStatus = AncillaryStatus.Loading
-        ancillaryStatus = try {
+        windStatus = AncillaryStatus.Loading
+        windStatus = try {
             AncillaryStatus.Wind(WeatherLayerRepository.wind(viewport, force = force))
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) {
@@ -351,17 +570,31 @@ fun LiveRadarScreen(
             AncillaryStatus.Unavailable("Wind model unavailable")
         }
     }
-    val visibleAncillary = when (val active = ancillaryStatus) {
-        is AncillaryStatus.Wind -> if (active.grid.viewportKey == viewportKey && active.grid.points.all { it.freshAt(layerNow) }) active
-            else AncillaryStatus.Unavailable("Wind model stale · refresh")
+    val visibleWindStatus = when (val active = windStatus) {
+        is AncillaryStatus.Wind -> if (active.grid.viewportKey == viewportKey &&
+            active.grid.points.all { it.freshAt(layerNow) }) active
+        else AncillaryStatus.Unavailable("Wind model stale · refresh")
+        else -> active
+    }
+    val visibleLightningStatus = when (val active = lightningStatus) {
+        is AncillaryStatus.Satellite -> if (active.metadata.freshAt(layerNow)) active
+            else AncillaryStatus.Unavailable("Satellite image delayed · refresh")
+        else -> active
+    }
+    val visibleFogStatus = when (val active = fogStatus) {
         is AncillaryStatus.Satellite -> when {
             !active.metadata.freshAt(layerNow) -> AncillaryStatus.Unavailable("Satellite image delayed · refresh")
-            mapLayer == RadarMapLayer.FOG && daylight != false ->
-                AncillaryStatus.Unavailable(if (daylight == true) "Night only · fog / low cloud" else "Daylight status unavailable")
+            daylight != false -> AncillaryStatus.Unavailable(if (daylight == true)
+                "Night only · fog / low cloud" else "Daylight status unavailable")
             else -> active
         }
         else -> active
     }
+    val visibleAncillary = mapOf(
+        RadarMapLayer.WIND to visibleWindStatus,
+        RadarMapLayer.LIGHTNING to visibleLightningStatus,
+        RadarMapLayer.FOG to visibleFogStatus,
+    )
     BoxWithConstraints(Modifier.fillMaxSize()) {
     val screenWidthDp = maxWidth.value.toInt()
     val screenHeightDp = maxHeight.value.toInt()
@@ -416,14 +649,20 @@ fun LiveRadarScreen(
                 currentRecenterTick = currentRecenterTick,
                 onCurrentLocation = { requestCurrentLocation(true) },
                 cameraMemory = cameraMemory,
-                mapLayer = mapLayer,
+                enabledMapLayers = enabledMapLayers,
                 windArrowScale = windArrowScale,
-                selectMapLayer = selectMapLayer,
-                ancillaryStatus = visibleAncillary,
+                setMapLayerEnabled = setMapLayerEnabled,
+                ancillaryStatuses = visibleAncillary,
                 currentWeather = currentWeather,
                 onWindViewportChanged = { windViewport = it },
                 onRefresh = { reload++; layerRefresh++; refreshPointWeather() },
-                onLayerError = { ancillaryStatus = AncillaryStatus.Unavailable(it) },
+                onLayerError = { layer, message ->
+                    when (layer) {
+                        RadarMapLayer.LIGHTNING -> lightningStatus = AncillaryStatus.Unavailable(message)
+                        RadarMapLayer.FOG -> fogStatus = AncillaryStatus.Unavailable(message)
+                        else -> Unit
+                    }
+                },
                 refreshing = refreshing,
                 refreshProgress = progress,
                 refreshError = error,
@@ -508,14 +747,14 @@ private fun ColumnScope.RadarPlayer(
     currentRecenterTick: Int,
     onCurrentLocation: () -> Unit,
     cameraMemory: RadarCameraMemory,
-    mapLayer: RadarMapLayer,
+    enabledMapLayers: Set<RadarMapLayer>,
     windArrowScale: Float,
-    selectMapLayer: (RadarMapLayer) -> Unit,
-    ancillaryStatus: AncillaryStatus,
+    setMapLayerEnabled: (RadarMapLayer, Boolean) -> Unit,
+    ancillaryStatuses: Map<RadarMapLayer, AncillaryStatus>,
     currentWeather: CurrentWeather?,
     onWindViewportChanged: (WindViewport) -> Unit,
     onRefresh: () -> Unit,
-    onLayerError: (String) -> Unit,
+    onLayerError: (RadarMapLayer, String) -> Unit,
     refreshing: Boolean,
     refreshProgress: Pair<Int, Int>,
     refreshError: String?,
@@ -573,7 +812,6 @@ private fun ColumnScope.RadarPlayer(
     }
     var rendererStatus by remember(session) { mutableStateOf<RadarRendererStatus>(RadarRendererStatus.Loading) }
     var mapStyleError by remember(session) { mutableStateOf<String?>(null) }
-    var layerMenuExpanded by remember { mutableStateOf(false) }
     val safeCursor = cursor.takeIf { it.isFinite() }?.coerceIn(0f, endOffset) ?: initialCursor
     val bracket = if (providerForecast) {
         RadarTimeline.bracket(times, forecastFlags, times.first() + safeCursor.toDouble())
@@ -615,9 +853,12 @@ private fun ColumnScope.RadarPlayer(
                 isPlaying = playing,
                 onRendererStatus = { rendererStatus = it },
                 mapStyle = mapStyle,
-                windGrid = (ancillaryStatus as? AncillaryStatus.Wind)?.grid,
+                windGrid = (ancillaryStatuses[RadarMapLayer.WIND] as? AncillaryStatus.Wind)?.grid,
                 windArrowScale = windArrowScale,
-                satelliteLayer = (ancillaryStatus as? AncillaryStatus.Satellite)?.metadata,
+                satelliteLayers = listOfNotNull(
+                    (ancillaryStatuses[RadarMapLayer.FOG] as? AncillaryStatus.Satellite)?.metadata,
+                    (ancillaryStatuses[RadarMapLayer.LIGHTNING] as? AncillaryStatus.Satellite)?.metadata,
+                ),
                 onLayerError = onLayerError,
                 onMapStyleError = { mapStyleError = it },
                 onWindViewportChanged = onWindViewportChanged,
@@ -686,19 +927,6 @@ private fun ColumnScope.RadarPlayer(
                                 else if (darkMap) Color.White else Color.Black)
                     }
                 }
-                Box {
-                    IconButton(onClick = { layerMenuExpanded = true }) {
-                        Icon(Icons.Default.Layers, contentDescription = "Map layers, ${mapLayer.label}",
-                            tint = if (darkMap) Color.White else Color.Black)
-                    }
-                    DropdownMenu(expanded = layerMenuExpanded, onDismissRequest = { layerMenuExpanded = false }) {
-                        RadarMapLayer.entries.forEach { choice ->
-                            DropdownMenuItem(text = { Text(choice.label) }, onClick = {
-                                layerMenuExpanded = false; selectMapLayer(choice)
-                            }, leadingIcon = { if (choice == mapLayer) Text("✓") })
-                        }
-                    }
-                }
                 IconButton(onClick = onRefresh) {
                     Icon(Icons.Default.Refresh, contentDescription = "Refresh radar and map layer",
                         tint = if (darkMap) Color.White else Color.Black)
@@ -711,10 +939,15 @@ private fun ColumnScope.RadarPlayer(
                         tint = if (darkMap) Color.White else Color.Black)
                 }
             }
-            RadarLayerStatus(mapLayer, ancillaryStatus, currentWeather, mapWidthDp,
+            RadarLayerSegments(enabledMapLayers, darkMap, setMapLayerEnabled,
+                Modifier.align(Alignment.TopEnd).padding(
+                    top = RadarTopControlsPolicy.segmentTopDp.dp,
+                    end = RadarTopControlsPolicy.controlsEndDp.dp,
+                ))
+            RadarLayerStatuses(enabledMapLayers, ancillaryStatuses, currentWeather, mapWidthDp,
                 Modifier.align(Alignment.TopEnd).padding(
                     top = RadarTopControlsPolicy.statusTopDp.dp,
-                    end = RadarTopControlsPolicy.controlsEndDp.dp))
+                    end = RadarTopControlsPolicy.statusEndDp.dp))
             refreshOverlay?.let { status ->
                 Text(status.label,
                     color = LocalRainAlarmPalette.current.mapLabelText,

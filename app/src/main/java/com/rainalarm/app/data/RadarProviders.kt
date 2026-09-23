@@ -62,7 +62,31 @@ enum class RadarMapLayer(val label: String) {
     OFF("Off"), WIND("Wind"), LIGHTNING("Lightning"), FOG("Fog");
 
     companion object {
+        val overlays: List<RadarMapLayer> = listOf(WIND, LIGHTNING, FOG)
         fun decode(raw: String?): RadarMapLayer = entries.firstOrNull { it.name == raw } ?: OFF
+    }
+}
+
+object RadarMapLayerPreference {
+    fun decode(raw: String?): Set<RadarMapLayer> {
+        if (raw.isNullOrBlank() || raw == RadarMapLayer.OFF.name) return emptySet()
+        val names = raw.split(',').map(String::trim)
+        if (names.any { it.isEmpty() || it == RadarMapLayer.OFF.name }) return emptySet()
+        val parsed = names.map { name ->
+            RadarMapLayer.overlays.firstOrNull { it.name == name } ?: return emptySet()
+        }.toSet()
+        return RadarMapLayer.overlays.filter(parsed::contains).toSet()
+    }
+
+    fun encode(layers: Set<RadarMapLayer>): String = RadarMapLayer.overlays
+        .filter(layers::contains)
+        .joinToString(",") { it.name }
+
+    fun toggled(layers: Set<RadarMapLayer>, layer: RadarMapLayer, enabled: Boolean): Set<RadarMapLayer> {
+        require(layer in RadarMapLayer.overlays)
+        val current = layers.filterTo(mutableSetOf()) { it in RadarMapLayer.overlays }
+        if (enabled) current.add(layer) else current.remove(layer)
+        return RadarMapLayer.overlays.filter(current::contains).toSet()
     }
 }
 
@@ -162,9 +186,9 @@ class RadarSettingsRepository(private val context: Context) {
         .catch { failure -> if (failure is IOException) emit(emptyPreferences()) else throw failure }
         .map { NowCardAppearance.decode(it[graphAppearanceKey]) }
 
-    val mapLayer: Flow<RadarMapLayer> = context.radarSettingsDataStore.data
+    val mapLayers: Flow<Set<RadarMapLayer>> = context.radarSettingsDataStore.data
         .catch { failure -> if (failure is IOException) emit(emptyPreferences()) else throw failure }
-        .map { RadarMapLayer.decode(it[mapLayerKey]) }
+        .map { RadarMapLayerPreference.decode(it[mapLayerKey]) }
 
     val windArrowScale: Flow<Float> = context.radarSettingsDataStore.data
         .catch { failure -> if (failure is IOException) emit(emptyPreferences()) else throw failure }
@@ -206,8 +230,13 @@ class RadarSettingsRepository(private val context: Context) {
         context.radarSettingsDataStore.edit { it[graphAppearanceKey] = mode.name }
     }
 
-    suspend fun setMapLayer(layer: RadarMapLayer) {
-        context.radarSettingsDataStore.edit { it[mapLayerKey] = layer.name }
+    suspend fun setMapLayerEnabled(layer: RadarMapLayer, enabled: Boolean) {
+        context.radarSettingsDataStore.edit { preferences ->
+            val updated = RadarMapLayerPreference.toggled(
+                RadarMapLayerPreference.decode(preferences[mapLayerKey]), layer, enabled,
+            )
+            preferences[mapLayerKey] = RadarMapLayerPreference.encode(updated)
+        }
     }
 
     suspend fun setWindArrowScale(scale: Float) {

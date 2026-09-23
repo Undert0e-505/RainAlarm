@@ -283,8 +283,8 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     val graphAppearance = radarSettings.graphAppearance.stateIn(
         viewModelScope, SharingStarted.Eagerly, com.rainalarm.app.data.NowCardAppearance.FOLLOW_APP,
     )
-    val mapLayer = radarSettings.mapLayer.stateIn(
-        viewModelScope, SharingStarted.Eagerly, RadarMapLayer.OFF,
+    val enabledMapLayers = radarSettings.mapLayers.stateIn(
+        viewModelScope, SharingStarted.Eagerly, emptySet(),
     )
     val windArrowScale = radarSettings.windArrowScale.stateIn(
         viewModelScope, SharingStarted.Eagerly, com.rainalarm.app.data.WindArrowSizePreference.DEFAULT,
@@ -798,8 +798,8 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch { radarSettings.setGraphAppearance(mode) }
     }
 
-    fun setMapLayer(layer: RadarMapLayer) {
-        viewModelScope.launch { radarSettings.setMapLayer(layer) }
+    fun setMapLayerEnabled(layer: RadarMapLayer, enabled: Boolean) {
+        viewModelScope.launch { radarSettings.setMapLayerEnabled(layer, enabled) }
     }
 
     fun setWindArrowScale(scale: Float) {
@@ -920,7 +920,7 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
     val mapAppearance by viewModel.mapAppearance.collectAsStateWithLifecycle()
     val compassAppearance by viewModel.compassAppearance.collectAsStateWithLifecycle()
     val graphAppearance by viewModel.graphAppearance.collectAsStateWithLifecycle()
-    val mapLayer by viewModel.mapLayer.collectAsStateWithLifecycle()
+    val enabledMapLayers by viewModel.enabledMapLayers.collectAsStateWithLifecycle()
     val windArrowScale by viewModel.windArrowScale.collectAsStateWithLifecycle()
     val visibleWeatherMetrics by viewModel.visibleWeatherMetrics.collectAsStateWithLifecycle()
     val selectedWeather by viewModel.currentWeather.collectAsStateWithLifecycle()
@@ -1018,9 +1018,9 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
                             recenterToSelectedPlace = viewModel::recenterToSelectedPlace,
                             cameraMemory = radarCameraMemory,
                             selectPlace = viewModel::selectPlace,
-                            mapLayer = mapLayer,
+                            enabledMapLayers = enabledMapLayers,
                             windArrowScale = windArrowScale,
-                            selectMapLayer = viewModel::setMapLayer,
+                            setMapLayerEnabled = viewModel::setMapLayerEnabled,
                             currentWeather = currentWeather,
                             refreshPointWeather = viewModel::refreshPointWeather,
                             selectedPlaceId = placesState.selectedId,
@@ -1056,7 +1056,7 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
                             selectCompassAppearance = viewModel::setCompassAppearance,
                             graphAppearance = graphAppearance,
                             selectGraphAppearance = viewModel::setGraphAppearance,
-                            mapLayer = mapLayer,
+                            enabledMapLayers = enabledMapLayers,
                             windArrowScale = windArrowScale,
                             selectWindArrowScale = viewModel::setWindArrowScale,
                             savedPlaces = placesState,

@@ -5,6 +5,8 @@ import com.rainalarm.app.data.PlaceCollectionRules
 import com.rainalarm.app.data.SavedPlace
 import com.rainalarm.app.data.AppearanceMode
 import com.rainalarm.app.data.NowCardAppearance
+import com.rainalarm.app.data.EumetLayerMetadata
+import com.rainalarm.app.data.RadarMapLayer
 import java.io.File
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
@@ -79,12 +81,16 @@ class WeatherUiWiringTest {
         val radar = source("RadarScreen.kt")
         assertTrue(radar.contains("onRefresh = { reload++; layerRefresh++; refreshPointWeather() }"))
         assertTrue(radar.contains("cameraMemory = cameraMemory"))
-        assertTrue(radar.contains("RadarMapLayer.entries.forEach"))
-        assertTrue(radar.contains("mapLayer == RadarMapLayer.OFF -> AncillaryStatus.Off"))
+        assertTrue(radar.contains("LaunchedEffect(lightningEnabled"))
+        assertTrue(radar.contains("LaunchedEffect(fogEnabled"))
+        assertTrue(radar.contains("LaunchedEffect(windEnabled"))
+        assertTrue(radar.contains("if (!lightningEnabled)"))
+        assertTrue(radar.contains("if (!fogEnabled)"))
+        assertTrue(radar.contains("if (!windEnabled)"))
         assertTrue(radar.contains("onWindViewportChanged = { windViewport = it }"))
         val map = source("RadarImageMap.kt")
         assertTrue(map.contains("TileSet(\"2.2.0\", satellite.tileUrl())"))
-        assertTrue(map.contains("sourceId == SATELLITE_SOURCE_ID"))
+        assertTrue(map.contains("SatelliteLayerRenderPolicy.choiceForSource(sourceId)"))
         assertTrue(map.contains("addOnCameraIdleListener"))
         val idleBody = map.substringAfter("val idle = MapLibreMap.OnCameraIdleListener {")
             .substringBefore("cameraIdleListener = idle")
@@ -213,19 +219,31 @@ class WeatherUiWiringTest {
         assertTrue(now.contains("contentAlignment = Alignment.Center"))
     }
 
-    @Test fun `wind controls keep forecast time in the same top row`() {
+    @Test fun `layer segments use a second row and restore forecast label width`() {
         assertEquals(12, RadarTopControlsPolicy.timeTopDp)
         assertEquals(18, RadarTopControlsPolicy.timeLabelSp(328))
         assertEquals(20, RadarTopControlsPolicy.timeLabelSp(400))
-        assertEquals(112, RadarTopControlsPolicy.timeLabelMaxWidthDp(328, true))
-        assertEquals(160, RadarTopControlsPolicy.timeLabelMaxWidthDp(328, false))
+        assertEquals(48, RadarTopControlsPolicy.segmentSizeDp)
+        assertEquals(144, RadarTopControlsPolicy.segmentGroupWidthDp)
+        assertEquals(RadarTopControlsPolicy.controlSizeDp * 3,
+            RadarTopControlsPolicy.segmentGroupWidthDp)
+        assertEquals(1, RadarTopControlsPolicy.segmentDividerDp)
+        assertEquals(160, RadarTopControlsPolicy.timeLabelMaxWidthDp(328, true))
+        assertEquals(208, RadarTopControlsPolicy.timeLabelMaxWidthDp(328, false))
+        assertEquals(56, RadarTopControlsPolicy.segmentTopDp)
+        assertEquals(108, RadarTopControlsPolicy.statusTopDp)
+        assertEquals(4, RadarTopControlsPolicy.statusEndDp)
         assertEquals(220, RadarTopControlsPolicy.statusMaxWidthDp(400))
         val radar = source("RadarScreen.kt")
         assertFalse(radar.contains("top = if (mapLayer == RadarMapLayer.WIND) 56.dp"))
         assertTrue(radar.contains("top = RadarTopControlsPolicy.timeTopDp.dp"))
         assertTrue(radar.contains(".widthIn(max = RadarTopControlsPolicy.timeLabelMaxWidthDp("))
-        assertTrue(radar.contains("RadarLayerStatus(mapLayer, ancillaryStatus, currentWeather, mapWidthDp"))
+        assertTrue(radar.contains("RadarLayerStatuses(enabledMapLayers, ancillaryStatuses, currentWeather, mapWidthDp"))
+        assertTrue(radar.contains("Modifier.align(Alignment.TopEnd).padding(\n" +
+            "                    top = RadarTopControlsPolicy.segmentTopDp.dp"))
+        assertTrue(radar.contains("end = RadarTopControlsPolicy.controlsEndDp.dp"))
         assertTrue(radar.contains("top = RadarTopControlsPolicy.statusTopDp.dp"))
+        assertTrue(radar.contains("end = RadarTopControlsPolicy.statusEndDp.dp"))
     }
 
     @Test fun `radar keeps only native attribution and puts provider credits in About data`() {
@@ -245,30 +263,141 @@ class WeatherUiWiringTest {
         assertTrue(settings.contains("© OpenStreetMap contributors"))
     }
 
-    @Test fun `follow and ancillary status use fixed map control positions`() {
+    @Test fun `top controls exclude second row segments and statuses remain right aligned`() {
         val radar = source("RadarScreen.kt")
         val controls = radar.substringAfter(
             "Row(Modifier.align(Alignment.TopEnd).padding(4.dp), verticalAlignment = Alignment.CenterVertically)",
-        ).substringBefore("RadarLayerStatus(mapLayer")
+        ).substringBefore("RadarLayerSegments(enabledMapLayers")
         val follow = controls.indexOf("Stop following live location")
-        val layers = controls.indexOf("Map layers, ${'$'}{mapLayer.label}")
         val refresh = controls.indexOf("Refresh radar and map layer")
         val centre = controls.indexOf("Use current device location")
         assertTrue(follow >= 0)
-        assertTrue(follow < layers)
-        assertTrue(layers < refresh)
+        assertTrue(follow < refresh)
         assertTrue(refresh < centre)
+        assertFalse(controls.contains("RadarLayerSegments"))
         assertTrue(controls.contains("tint = if (followLive) Accent.copy(alpha = 0.85f)"))
         assertTrue(controls.contains("else if (darkMap) Color.White else Color.Black"))
         assertFalse(controls.contains(".background(if (followLive)"))
+        val segments = radar.substringAfter("private fun RadarLayerSegments(")
+            .substringBefore("private sealed interface AncillaryStatus")
+        assertTrue(segments.contains("RadarMapLayer.overlays.forEach { layer ->"))
+        assertTrue(segments.contains("RadarMapLayer.WIND -> Icons.Default.Air"))
+        assertTrue(segments.contains("RadarMapLayer.LIGHTNING -> Icons.Default.Bolt"))
+        assertTrue(segments.contains("RadarMapLayer.FOG -> Icons.Default.CloudQueue"))
+        assertTrue(segments.contains(".background(if (active) Accent.copy(alpha = 0.18f) else Color.Transparent)"))
+        assertTrue(segments.contains("tint = if (active) Accent else inactiveTint"))
+        assertTrue(segments.contains("modifier = Modifier.size(24.dp)"))
+        assertTrue(segments.contains("Canvas(Modifier.fillMaxSize())"))
+        assertTrue(segments.contains("for (join in 1 until RadarMapLayer.overlays.size)"))
+        assertTrue(segments.contains("drawLine(inactiveTint.copy(alpha = 0.3f)"))
+        assertFalse(segments.contains("Spacer(Modifier.width(RadarTopControlsPolicy.segmentDividerDp.dp)"))
+        assertTrue(segments.contains("role = Role.Switch"))
+        assertFalse(radar.contains("DropdownMenu("))
+        assertFalse(radar.contains("Map layers, "))
         assertTrue(radar.contains("\"Lightning loading\""))
         assertTrue(radar.contains("\"Lightning available\""))
         assertTrue(radar.contains("\"Lightning unavailable\""))
         assertTrue(radar.contains("\"Fog loading\""))
         assertTrue(radar.contains("\"Fog available\""))
         assertTrue(radar.contains("\"Fog unavailable\""))
+        assertEquals(2, Regex("is AncillaryStatus\\.Unavailable -> ancillaryStatus\\.message")
+            .findAll(radar).count())
+        assertTrue(radar.contains("\"Night only · fog / low cloud\""))
+        assertTrue(radar.contains("\"Daylight status unavailable\""))
         assertFalse(radar.contains("Wind · Open-Meteo model"))
         assertFalse(radar.contains("m ago"))
+    }
+
+    @Test fun `satellite feedback waits for terminal result then fades once per activation`() {
+        var state = SatelliteFeedbackState()
+        state = SatelliteFeedbackPolicy.onInput(state, enabled = true, terminal = false)
+        assertTrue(state.enabled)
+        assertTrue(state.visible)
+        assertFalse(state.holdingTerminal)
+
+        val stillLoading = SatelliteFeedbackPolicy.onInput(state, enabled = true, terminal = false)
+        assertEquals(state, stillLoading)
+        val terminal = SatelliteFeedbackPolicy.onInput(stillLoading, enabled = true, terminal = true)
+        assertTrue(terminal.visible)
+        assertTrue(terminal.holdingTerminal)
+        assertEquals(1_000L, SatelliteFeedbackPolicy.terminalHoldMillis)
+        assertTrue(SatelliteFeedbackPolicy.afterTerminalElapsed(
+            terminal, terminal.generation, 999L).visible)
+        val faded = SatelliteFeedbackPolicy.afterTerminalElapsed(
+            terminal, terminal.generation, 1_000L)
+        assertFalse(faded.visible)
+
+        // Later loading/freshness changes during the same activation cannot reopen feedback.
+        val periodicLoading = SatelliteFeedbackPolicy.onInput(faded, enabled = true, terminal = false)
+        val periodicTerminal = SatelliteFeedbackPolicy.onInput(periodicLoading, enabled = true, terminal = true)
+        assertFalse(periodicLoading.visible)
+        assertFalse(periodicTerminal.visible)
+    }
+
+    @Test fun `satellite feedback timers are independent and disable cancels immediately`() {
+        var lightning = SatelliteFeedbackPolicy.onInput(
+            SatelliteFeedbackState(), enabled = true, terminal = false)
+        var fog = SatelliteFeedbackPolicy.onInput(
+            SatelliteFeedbackState(), enabled = true, terminal = false)
+        lightning = SatelliteFeedbackPolicy.onInput(lightning, enabled = true, terminal = true)
+        assertTrue(lightning.holdingTerminal)
+        assertTrue(fog.visible)
+        assertFalse(fog.holdingTerminal)
+        lightning = SatelliteFeedbackPolicy.afterTerminalElapsed(
+            lightning, lightning.generation, SatelliteFeedbackPolicy.terminalHoldMillis)
+        assertFalse(lightning.visible)
+        assertTrue(fog.visible)
+
+        val disabled = SatelliteFeedbackPolicy.onInput(fog, enabled = false, terminal = false)
+        assertFalse(disabled.enabled)
+        assertFalse(disabled.visible)
+        assertFalse(disabled.holdingTerminal)
+        val reenabled = SatelliteFeedbackPolicy.onInput(disabled, enabled = true, terminal = false)
+        assertTrue(reenabled.visible)
+
+        val radar = source("RadarScreen.kt")
+        val statuses = radar.substringAfter("private fun RadarLayerStatuses(")
+            .substringBefore("private fun SatelliteActivationStatus(")
+        assertTrue(statuses.contains("if (RadarMapLayer.WIND in enabledMapLayers)"))
+        assertTrue(statuses.contains("RadarLayerStatus(RadarMapLayer.WIND"))
+        assertTrue(statuses.contains("SatelliteActivationStatus(RadarMapLayer.LIGHTNING"))
+        assertTrue(statuses.contains("SatelliteActivationStatus(RadarMapLayer.FOG"))
+        assertTrue(radar.contains("delay(SatelliteFeedbackPolicy.terminalHoldMillis)"))
+        assertTrue(radar.contains("exit = fadeOut(tween(SatelliteFeedbackPolicy.fadeMillis))"))
+        assertTrue(radar.contains("if (enabled) AnimatedVisibility("))
+    }
+
+    @Test fun `isolated satellite tile errors retain the metadata verified source`() {
+        val map = source("RadarImageMap.kt")
+        val tileListener = map.substringAfter("val listener = MapView.OnTileActionListener")
+            .substringBefore("mapView.addOnTileActionListener(listener)")
+        assertTrue(tileListener.contains("operation == TileOperation.Error"))
+        assertTrue(tileListener.contains("WMS tile failed; retaining verified layer"))
+        assertFalse(tileListener.contains("currentLayerError"))
+    }
+
+    @Test fun `fog gate retains selection and concurrent satellite ordering is stable`() {
+        val selected = setOf(RadarMapLayer.WIND, RadarMapLayer.LIGHTNING, RadarMapLayer.FOG)
+        assertTrue(RadarMapLayer.FOG in selected)
+        assertEquals("Night only · fog / low cloud",
+            RadarLayerGatePolicy.unavailableReason(RadarMapLayer.FOG, hasPlace = true, daylight = true))
+        assertEquals("Daylight status unavailable",
+            RadarLayerGatePolicy.unavailableReason(RadarMapLayer.FOG, hasPlace = true, daylight = null))
+        assertNull(RadarLayerGatePolicy.unavailableReason(
+            RadarMapLayer.FOG, hasPlace = true, daylight = false))
+        assertNull(RadarLayerGatePolicy.unavailableReason(
+            RadarMapLayer.LIGHTNING, hasPlace = true, daylight = true))
+
+        val lightning = EumetLayerMetadata(RadarMapLayer.LIGHTNING, 2L, -20.0, 30.0, 20.0, 70.0)
+        val fog = EumetLayerMetadata(RadarMapLayer.FOG, 1L, -20.0, 30.0, 20.0, 70.0)
+        assertEquals(listOf(RadarMapLayer.FOG, RadarMapLayer.LIGHTNING),
+            SatelliteLayerRenderPolicy.renderOrder)
+        assertEquals(listOf(fog, lightning),
+            SatelliteLayerRenderPolicy.ordered(listOf(lightning, fog)))
+        assertTrue(SatelliteLayerRenderPolicy.sourceId(RadarMapLayer.FOG) !=
+            SatelliteLayerRenderPolicy.sourceId(RadarMapLayer.LIGHTNING))
+        assertTrue(SatelliteLayerRenderPolicy.layerId(RadarMapLayer.FOG) !=
+            SatelliteLayerRenderPolicy.layerId(RadarMapLayer.LIGHTNING))
     }
 
     @Test fun `wind field doubles arrow geometry without changing sampled point count`() {
@@ -284,7 +413,7 @@ class WeatherUiWiringTest {
         assertEquals(88f, WindArrowGeometry.length(2f), 0f)
         assertEquals(8f, WindArrowGeometry.headBack(0.5f), 0f)
         val settings = source("SettingsScreen.kt")
-        assertTrue(settings.contains("if (mapLayer == RadarMapLayer.WIND)"))
+        assertTrue(settings.contains("if (RadarMapLayer.WIND in enabledMapLayers)"))
         assertTrue(settings.contains("WindArrowPreview(previewScale)"))
         assertTrue(settings.contains("selectWindArrowScale(previewScale)"))
         assertTrue(map.contains("windView.update(windGrid, windArrowScale)"))

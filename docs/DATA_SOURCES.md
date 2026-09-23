@@ -139,11 +139,11 @@ configurations pass the native-projection mesh tests.
   place's **current local date**, including DST changes. Missing events show
   unavailable; a local-day change refreshes the point response. These facts
   support Now indicators and the Fog night gate; they do not alter radar
-  prediction or alerts. A separate request only while Wind is selected carries
+  prediction or alerts. A separate request only while Wind is enabled carries
   25 distinct coordinates spanning the settled **visible map viewport** with
   a small margin. Arrows are georeferenced and point downwind; one compact
-  status beneath the map's current-location control reports selected-place
-  speed and meteorological *from* direction when the layer is available. Map
+  status beneath the connected layer segments reports selected-place speed
+  and meteorological *from* direction when the layer is available. Map
   arrows do not repeat numeric speed labels. Provider and licence details are
   kept in Settings > About the data rather than repeated over the map.
 - The point request is place-aware, cached for 15 minutes and rejected when
@@ -174,12 +174,24 @@ References:
   confirmed surface-fog diagnosis. It is displayed only when a fresh selected-
   place Open-Meteo daylight indicator says night; daylight or unknown daylight
   status yields an explicit unavailable message.
+- Lightning and Fog are independent persistent toggles and may be rendered
+  together; Fog is added below Lightning so flash areas remain legible. Fog
+  remains selected while its day/night gate withholds it and becomes eligible
+  again when fresh selected-place status says night. Activation feedback stays
+  visible through loading, holds its terminal state for one second and then
+  fades independently; selected-place Wind remains visible while enabled.
+- Capabilities XML is bounded to 1 MiB and decoded as strict UTF-8. Parsing uses
+  Android-compatible DOM configuration while explicitly rejecting document-type
+  and entity declarations, disabling entity expansion and installing a resolver
+  that rejects every external resource. Optional parser hardening is applied
+  only when the platform factory supports it.
 - WMS imagery is pinned to one advertised valid time for all tiles, using a
   MapLibre `TileSet` raster source with EPSG:3857 BBOX substitution. Tiles are
   capped at source zoom 8 and overscaled afterward. A small image probe checks
-  content type and PNG signature before showing a new layer; map tile failures
-  also surface an error. Source loading is optional and independent of the
-  radar GLES overlay. Satellite layers are withheld if the advertised time is
+  content type and PNG signature before showing a new layer. An isolated tile
+  error is logged but does not tear down the metadata/probe-verified source;
+  explicit refresh retries it. Source loading is optional and independent of
+  the radar GLES overlay. Satellite layers are withheld if the advertised time is
   older than 30 minutes for flash areas or 60 minutes for fog, or if the
   selected place is outside the reported coverage bounds. Empty transparent
   flash imagery is **not** evidence that no lightning occurred.
