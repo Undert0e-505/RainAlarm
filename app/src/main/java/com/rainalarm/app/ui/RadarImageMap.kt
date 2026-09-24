@@ -2,6 +2,8 @@
 package com.rainalarm.app.ui
 
 import android.graphics.Canvas
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Paint
 import android.graphics.RectF
 import android.os.Bundle
@@ -32,6 +34,18 @@ import com.rainalarm.app.data.SavedPlace
 import com.rainalarm.app.data.WindGrid
 import com.rainalarm.app.data.WindViewport
 import com.rainalarm.app.data.EumetLayerMetadata
+import com.rainalarm.app.data.CurrentWeather
+import com.rainalarm.app.data.SatelliteCacheContext
+import com.rainalarm.app.data.SatelliteCacheIdentity
+import com.rainalarm.app.data.SatelliteCachedFrame
+import com.rainalarm.app.data.SatelliteFrameAssetPolicy
+import com.rainalarm.app.data.SatelliteFrameStoreProvider
+import com.rainalarm.app.data.SatelliteFrameWindowPolicy
+import com.rainalarm.app.data.SatelliteFrameSelectionPolicy
+import com.rainalarm.app.data.SatelliteHandoffPolicy
+import com.rainalarm.app.data.SatelliteRegionalImagePolicy
+import com.rainalarm.app.data.SatelliteRenderIdentity
+import com.rainalarm.app.data.SatelliteRegionPolicy
 import com.rainalarm.app.data.RadarMapLayer
 import com.rainalarm.app.data.RadarMapStyle
 import com.rainalarm.app.domain.GeoPoint
@@ -46,19 +60,31 @@ import com.rainalarm.app.domain.RadarCameraTarget
 import com.rainalarm.app.domain.RadarTimelineBracket
 import com.rainalarm.app.domain.RainAlarmPalette
 import org.maplibre.android.MapLibre
+import org.maplibre.android.offline.OfflineManager
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.geometry.LatLngQuad
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
-import org.maplibre.android.style.sources.TileSet
-import org.maplibre.android.style.sources.RasterSource
+import org.maplibre.android.style.sources.ImageSource
 import org.maplibre.android.style.layers.RasterLayer
 import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.maps.Style
-import org.maplibre.android.tile.TileOperation
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicBoolean
+import java.io.File
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.max
@@ -68,6 +94,33 @@ import kotlin.math.roundToInt
 private const val OPEN_FREE_MAP_DARK_STYLE = "https://tiles.openfreemap.org/styles/dark"
 private const val OPEN_FREE_MAP_LIGHT_STYLE = "https://tiles.openfreemap.org/styles/liberty"
 private const val OPEN_FREE_MAP_SLATE_STYLE = "https://tiles.openfreemap.org/styles/fiord"
+
+/**
+ * MapLibre exposes one supported ambient database shared by base-map and raster resources.
+ * Satellite frames use their own verified 128 MiB cache. MapLibre's ambient database is kept at
+ * a defensible 64 MiB for OpenFreeMap and ordinary map navigation resources.
+ */
+internal object SatelliteAmbientCache {
+    const val satelliteAllowanceBytes = 128L * 1024L * 1024L
+    const val baseMapAllowanceBytes = 64L * 1024L * 1024L
+    const val sharedBudgetBytes = baseMapAllowanceBytes
+    private val configured = AtomicBoolean(false)
+
+    fun configure(context: android.content.Context) {
+        if (!configured.compareAndSet(false, true)) return
+        MapLibre.getInstance(context.applicationContext)
+        OfflineManager.getInstance(context.applicationContext).setMaximumAmbientCacheSize(
+            sharedBudgetBytes,
+            object : OfflineManager.FileSourceCallback {
+                override fun onSuccess() = Unit
+                override fun onError(message: String) {
+                    configured.set(false)
+                    Log.w("RainRadarCache", "Could not configure ambient cache: $message")
+                }
+            },
+        )
+    }
+}
 
 internal object RadarMapAppearance {
     fun styleUrl(style: RadarMapStyle): String = when (style) {
@@ -159,62 +212,447 @@ private fun applyMapLabelContrast(style: Style, mapStyle: RadarMapStyle) {
 }
 private const val RADAR_OPACITY = 0.90
 internal object SatelliteLayerRenderPolicy {
-    /** Fog is added first so Lightning remains legible above it. */
+    /** Clouds are added first so Lightning remains legible above them. */
     val renderOrder: List<RadarMapLayer> = listOf(RadarMapLayer.FOG, RadarMapLayer.LIGHTNING)
 
-    fun sourceId(choice: RadarMapLayer): String = when (choice) {
-        RadarMapLayer.FOG -> "rain-alarm-satellite-fog-source"
-        RadarMapLayer.LIGHTNING -> "rain-alarm-satellite-lightning-source"
+    fun sourcePrefix(choice: RadarMapLayer): String = when (choice) {
+        RadarMapLayer.FOG -> "rain-alarm-satellite-clouds"
+        RadarMapLayer.LIGHTNING -> "rain-alarm-satellite-lightning"
         else -> error("Not a satellite layer")
     }
 
-    fun layerId(choice: RadarMapLayer): String = when (choice) {
-        RadarMapLayer.FOG -> "rain-alarm-satellite-fog-layer"
-        RadarMapLayer.LIGHTNING -> "rain-alarm-satellite-lightning-layer"
-        else -> error("Not a satellite layer")
-    }
+    fun sourceId(choice: RadarMapLayer, generation: Long = 0L): String =
+        "${sourcePrefix(choice)}-$generation-source"
 
-    fun choiceForSource(candidate: String): RadarMapLayer? = renderOrder
-        .firstOrNull { candidate == sourceId(it) }
+    fun layerId(choice: RadarMapLayer, generation: Long = 0L): String =
+        "${sourcePrefix(choice)}-$generation-layer"
+
+    fun opacity(choice: RadarMapLayer): Float = if (choice == RadarMapLayer.FOG) 0.38f else 0.7f
 
     fun ordered(metadata: Collection<EumetLayerMetadata>): List<EumetLayerMetadata> = renderOrder
         .mapNotNull { choice -> metadata.firstOrNull { it.choice == choice } }
 }
 
-private fun applySatelliteLayers(
-    style: Style,
-    satellites: Collection<EumetLayerMetadata>,
-    onLayerError: (RadarMapLayer, String) -> Unit,
-) {
-    SatelliteLayerRenderPolicy.renderOrder.asReversed().forEach { choice ->
-        val layerId = SatelliteLayerRenderPolicy.layerId(choice)
-        if (style.getLayer(layerId) != null) style.removeLayer(layerId)
-    }
-    SatelliteLayerRenderPolicy.renderOrder.forEach { choice ->
-        val sourceId = SatelliteLayerRenderPolicy.sourceId(choice)
-        if (style.getSource(sourceId) != null) style.removeSource(sourceId)
-    }
-    SatelliteLayerRenderPolicy.ordered(satellites).forEach { satellite ->
-        val sourceId = SatelliteLayerRenderPolicy.sourceId(satellite.choice)
-        val layerId = SatelliteLayerRenderPolicy.layerId(satellite.choice)
-        try {
-            val tiles = TileSet("2.2.0", satellite.tileUrl()).apply {
-                setMinZoom(0f)
-                setMaxZoom(8f) // Cap remote tile load; overscale thereafter.
-                setBounds(satellite.west.toFloat(), satellite.south.toFloat(),
-                    satellite.east.toFloat(), satellite.north.toFloat())
-                attribution = "© EUMETSAT (CC BY 4.0)"
-            }
-            style.addSource(RasterSource(sourceId, tiles, 256))
-            style.addLayer(RasterLayer(layerId, sourceId)
-                .withProperties(PropertyFactory.rasterOpacity(
-                    if (satellite.choice == RadarMapLayer.FOG) 0.38f else 0.7f)))
-        } catch (failure: Exception) {
-            Log.e("RainRadarLayers", "${satellite.choice.label} raster update failed", failure)
-            if (style.getLayer(layerId) != null) style.removeLayer(layerId)
-            if (style.getSource(sourceId) != null) style.removeSource(sourceId)
-            onLayerError(satellite.choice, "${satellite.choice.label} layer unavailable")
+internal enum class SatellitePendingAction { PROMOTE, DISCARD }
+
+/** Pure decision for a loaded pending source against the latest conflated cursor target. */
+internal object SatelliteProgressiveLoadPolicy {
+    fun whenReady(
+        active: EumetLayerMetadata?,
+        pending: EumetLayerMetadata,
+        desired: EumetLayerMetadata?,
+        isPlaying: Boolean,
+    ): SatellitePendingAction {
+        if (desired?.frameIdentity == pending.frameIdentity) return SatellitePendingAction.PROMOTE
+        if (!isPlaying || active == null || desired == null) return SatellitePendingAction.DISCARD
+        // Playback can display a useful intermediate only while moving forward within the
+        // target product. A loop wrap/backward seek or day/night product switch cannot promote
+        // a stale frame over the newly requested cursor position.
+        val forwardWindow = desired.validEpochSeconds > active.validEpochSeconds
+        val intermediate = pending.validEpochSeconds > active.validEpochSeconds &&
+            pending.validEpochSeconds <= desired.validEpochSeconds
+        return if (forwardWindow && intermediate && pending.product == desired.product) {
+            SatellitePendingAction.PROMOTE
+        } else {
+            SatellitePendingAction.DISCARD
         }
+    }
+}
+
+private data class SatelliteBufferSlot(
+    val metadata: EumetLayerMetadata,
+    val generation: Long,
+    val sourceId: String,
+    val layerId: String,
+    val cacheIdentity: String,
+    val renderIdentity: String,
+    val bitmap: Bitmap,
+    val addedAtRenderSequence: Long,
+)
+
+internal data class SatelliteOverlayRequest(
+    val desired: EumetLayerMetadata?,
+    val frames: List<SatelliteCachedFrame>,
+    val preparationGeneration: Int,
+)
+
+private data class SatellitePreparedPlan(
+    val planKey: String,
+    val cacheContext: SatelliteCacheContext,
+    val frames: List<SatelliteCachedFrame>,
+    val generation: Int,
+)
+
+internal object SatellitePreparedFramePolicy {
+    /** Select only from the complete verified set, holding the latest observation in forecast time. */
+    fun desired(
+        frames: List<SatelliteCachedFrame>,
+        requested: EumetLayerMetadata?,
+    ): EumetLayerMetadata? {
+        if (requested == null || frames.isEmpty()) return null
+        return frames.firstOrNull { it.metadata.frameIdentity == requested.frameIdentity }?.metadata
+            ?: frames.asSequence().map(SatelliteCachedFrame::metadata)
+                .filter { it.product == requested.product &&
+                    it.validEpochSeconds <= requested.validEpochSeconds }
+                .maxByOrNull(EumetLayerMetadata::validEpochSeconds)
+            ?: frames.asSequence().map(SatelliteCachedFrame::metadata)
+                .filter { it.validEpochSeconds <= requested.validEpochSeconds }
+                .maxByOrNull(EumetLayerMetadata::validEpochSeconds)
+    }
+}
+
+sealed interface SatellitePreparationStatus {
+    data class Preparing(val ready: Int, val total: Int) : SatellitePreparationStatus
+    data object Rendering : SatellitePreparationStatus
+    data object Ready : SatellitePreparationStatus
+    data class Failed(val message: String) : SatellitePreparationStatus
+}
+
+private data class SatelliteChoiceBuffer(
+    var nextGeneration: Long = 0L,
+    var desired: EumetLayerMetadata? = null,
+    var cacheContext: SatelliteCacheContext? = null,
+    var assets: Map<String, SatelliteCachedFrame> = emptyMap(),
+    var planKey: String? = null,
+    var requestPresent: Boolean = false,
+    var isPlaying: Boolean = false,
+    var active: SatelliteBufferSlot? = null,
+    var pending: SatelliteBufferSlot? = null,
+    var retiring: SatelliteBufferSlot? = null,
+    var revealedGeneration: Long? = null,
+    var revealedAtRenderSequence: Long? = null,
+    var decoding: EumetLayerMetadata? = null,
+    var decodeJob: Job? = null,
+)
+
+/**
+ * Verified compressed frames come from the app-owned cache. Only the desired frame is decoded off
+ * the UI thread. MapLibre mutation stays on Main, with active/pending/retiring overlap bounded.
+ */
+private class SatelliteLayerBuffers(
+    private val onLayerError: (RadarMapLayer, String) -> Unit,
+    private val onFrameInvalidated: (RadarMapLayer, SatelliteCachedFrame) -> Unit,
+    private val onFrameRendered: (RadarMapLayer) -> Unit,
+) {
+    private val choices = SatelliteLayerRenderPolicy.renderOrder.associateWith {
+        SatelliteChoiceBuffer()
+    }.toMutableMap()
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var currentStyle: Style? = null
+    private var renderSequence = 0L
+
+    fun onStyleLoaded(
+        style: Style,
+        requests: Map<RadarMapLayer, SatelliteOverlayRequest>,
+        enabled: Set<RadarMapLayer>,
+        isPlaying: Boolean,
+        cacheContext: SatelliteCacheContext?,
+    ) {
+        currentStyle = style
+        renderSequence = 0L
+        choices.values.forEach { state ->
+            state.decodeJob?.cancel()
+            allSlots(state).forEach { it.bitmap.recycle() }
+            state.nextGeneration = 0L
+            state.desired = null
+            state.cacheContext = null
+            state.assets = emptyMap()
+            state.planKey = null
+            state.requestPresent = false
+            state.isPlaying = false
+            state.active = null
+            state.pending = null
+            state.retiring = null
+            state.revealedGeneration = null
+            state.revealedAtRenderSequence = null
+            state.decoding = null
+            state.decodeJob = null
+        }
+        reconcile(style, requests, enabled, isPlaying, cacheContext)
+    }
+
+    fun reconcile(
+        style: Style,
+        requests: Map<RadarMapLayer, SatelliteOverlayRequest>,
+        enabled: Set<RadarMapLayer>,
+        isPlaying: Boolean,
+        cacheContext: SatelliteCacheContext?,
+    ) {
+        if (currentStyle !== style) {
+            onStyleLoaded(style, requests, enabled, isPlaying, cacheContext)
+            return
+        }
+        SatelliteLayerRenderPolicy.renderOrder.forEach { choice ->
+            reconcileChoice(style, choice, requests[choice], choice in enabled, isPlaying, cacheContext)
+        }
+    }
+
+    /** A Bitmap ImageSource needs one complete frame after add before reveal, then another to retire. */
+    fun onFullyRendered() {
+        val style = currentStyle ?: return
+        renderSequence++
+        SatelliteLayerRenderPolicy.renderOrder.forEach { choice ->
+            val state = choices.getValue(choice)
+            try {
+                if (SatelliteHandoffPolicy.mayRetire(
+                        state.revealedGeneration, state.active?.generation,
+                        state.revealedAtRenderSequence, renderSequence, fullyRendered = true,
+                    )) {
+                    state.retiring?.let { remove(style, it) }
+                    state.retiring = null
+                    onFrameRendered(choice)
+                    state.revealedGeneration = null
+                    state.revealedAtRenderSequence = null
+                }
+                val pending = state.pending?.takeIf {
+                    renderSequence > it.addedAtRenderSequence
+                }
+                if (pending != null && state.retiring == null) {
+                    val action = SatelliteProgressiveLoadPolicy.whenReady(
+                        state.active?.metadata, pending.metadata, state.desired, state.isPlaying,
+                    )
+                    when (action) {
+                        SatellitePendingAction.PROMOTE -> {
+                            val incoming = requireNotNull(style.getLayer(pending.layerId))
+                            incoming.setProperties(PropertyFactory.rasterOpacity(
+                                SatelliteLayerRenderPolicy.opacity(choice),
+                            ))
+                            val outgoing = state.active
+                            state.retiring = outgoing
+                            state.active = pending
+                            state.revealedGeneration = pending.generation
+                            state.revealedAtRenderSequence = renderSequence
+                        }
+                        SatellitePendingAction.DISCARD -> remove(style, pending)
+                    }
+                    state.pending = null
+                }
+                startLatestIfNeeded(style, choice, state)
+            } catch (failure: Exception) {
+                Log.e("RainRadarLayers", "${choice.label} raster swap failed", failure)
+                state.pending?.let { remove(style, it) }
+                state.pending = null
+                if (state.active == null) onLayerError(choice, "${choice.label} layer unavailable")
+                startLatestIfNeeded(style, choice, state)
+            }
+        }
+    }
+
+    private fun reconcileChoice(
+        style: Style,
+        choice: RadarMapLayer,
+        request: SatelliteOverlayRequest?,
+        enabled: Boolean,
+        isPlaying: Boolean,
+        cacheContext: SatelliteCacheContext?,
+    ) {
+        val state = choices.getValue(choice)
+        if (!enabled) {
+            clearChoice(style, choice, state)
+            return
+        }
+        state.isPlaying = isPlaying
+        if (cacheContext == null) {
+            state.requestPresent = false
+            return
+        }
+        if (state.cacheContext != null && state.cacheContext != cacheContext) {
+            clearChoice(style, choice, state)
+            state.isPlaying = isPlaying
+        }
+        state.cacheContext = cacheContext
+        if (request == null) {
+            state.requestPresent = false
+            return
+        }
+        state.requestPresent = true
+        state.desired = request.desired
+        val nextPlanKey = request.frames.joinToString(
+            prefix = "${request.preparationGeneration}|", separator = ";",
+        ) { it.request.diskKey }
+        if (state.planKey != nextPlanKey) {
+            state.decodeJob?.cancel()
+            state.decodeJob = null
+            state.decoding = null
+            state.pending?.let { remove(style, it) }
+            state.pending = null
+            state.planKey = nextPlanKey
+        }
+        state.assets = request.frames.associateBy { it.metadata.frameIdentity }
+        startLatestIfNeeded(style, choice, state)
+    }
+
+    private fun startLatestIfNeeded(
+        style: Style,
+        choice: RadarMapLayer,
+        state: SatelliteChoiceBuffer,
+    ) {
+        val metadata = state.desired
+        if (metadata == null) {
+            state.decodeJob?.cancel()
+            state.decodeJob = null
+            state.decoding = null
+            state.pending?.let { remove(style, it) }
+            state.pending = null
+            state.active?.let { remove(style, it) }
+            state.active = null
+            state.retiring?.let { remove(style, it) }
+            state.retiring = null
+            return
+        }
+        val context = state.cacheContext ?: return
+        val desiredRenderIdentity = SatelliteRenderIdentity.frame(metadata, context)
+        if (state.active?.renderIdentity == desiredRenderIdentity ||
+            state.pending?.renderIdentity == desiredRenderIdentity ||
+            state.decoding?.frameIdentity == metadata.frameIdentity) return
+        if (state.pending != null || state.retiring != null || state.revealedGeneration != null) return
+        val asset = state.assets[metadata.frameIdentity] ?: return
+        val generation = ++state.nextGeneration
+        val planKey = state.planKey
+        state.decoding = metadata
+        state.decodeJob = scope.launch {
+            val bitmap = try {
+                withContext(Dispatchers.IO) {
+                    val decoded = BitmapFactory.decodeFile(asset.file.absolutePath)
+                        ?: error("Satellite PNG could not be decoded")
+                    try {
+                        currentCoroutineContext().ensureActive()
+                        require(decoded.width == asset.request.width &&
+                            decoded.height == asset.request.height) {
+                            "Satellite bitmap dimensions changed"
+                        }
+                        decoded
+                    } catch (failure: Throwable) {
+                        if (!decoded.isRecycled) decoded.recycle()
+                        throw failure
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Throwable) {
+                Log.e("RainRadarLayers", "${choice.label} bitmap decode failed", failure)
+                state.assets = state.assets - metadata.frameIdentity
+                onFrameInvalidated(choice, asset)
+                onLayerError(choice, "${choice.label} frame could not be decoded · refresh")
+                null
+            }
+            state.decodeJob = null
+            state.decoding = null
+            if (bitmap == null) return@launch
+            try {
+                currentCoroutineContext().ensureActive()
+            } catch (cancelled: CancellationException) {
+                if (!bitmap.isRecycled) bitmap.recycle()
+                throw cancelled
+            }
+            val currentDesired = state.desired
+            val action = SatelliteProgressiveLoadPolicy.whenReady(
+                state.active?.metadata, metadata, currentDesired, state.isPlaying,
+            )
+            if (currentStyle !== style || state.planKey != planKey ||
+                action == SatellitePendingAction.DISCARD) {
+                bitmap.recycle()
+                startLatestIfNeeded(style, choice, state)
+                return@launch
+            }
+            val slot = add(
+                style, metadata, context, generation, PRELOAD_OPACITY, bitmap,
+            )
+            if (slot == null) {
+                if (!bitmap.isRecycled) bitmap.recycle()
+                onLayerError(choice, "${choice.label} layer unavailable · refresh")
+            } else state.pending = slot
+        }
+    }
+
+    private fun add(
+        style: Style,
+        metadata: EumetLayerMetadata,
+        context: SatelliteCacheContext,
+        generation: Long,
+        opacity: Float,
+        bitmap: Bitmap,
+    ): SatelliteBufferSlot? {
+        val sourceId = SatelliteLayerRenderPolicy.sourceId(metadata.choice, generation)
+        val layerId = SatelliteLayerRenderPolicy.layerId(metadata.choice, generation)
+        val slot = SatelliteBufferSlot(
+            metadata, generation, sourceId, layerId,
+            SatelliteCacheIdentity.frame(metadata, context),
+            SatelliteRenderIdentity.frame(metadata, context),
+            bitmap,
+            renderSequence,
+        )
+        try {
+            val request = SatelliteRegionalImagePolicy.request(metadata)
+            val bounds = request.bounds
+            val quad = LatLngQuad(
+                LatLng(bounds.north, bounds.west),
+                LatLng(bounds.north, bounds.east),
+                LatLng(bounds.south, bounds.east),
+                LatLng(bounds.south, bounds.west),
+            )
+            style.addSource(ImageSource(sourceId, quad, bitmap))
+            val layer = RasterLayer(layerId, sourceId).withProperties(
+                PropertyFactory.rasterOpacity(opacity),
+                PropertyFactory.rasterFadeDuration(0f),
+            )
+            if (metadata.choice == RadarMapLayer.FOG) {
+                val lightningLayer = choices[RadarMapLayer.LIGHTNING]?.let(::allSlots)
+                    ?.firstOrNull { style.getLayer(it.layerId) != null }?.layerId
+                if (lightningLayer != null) style.addLayerBelow(layer, lightningLayer)
+                else style.addLayer(layer)
+            } else style.addLayer(layer)
+            return slot
+        } catch (failure: Exception) {
+            Log.e("RainRadarLayers", "${metadata.choice.label} regional image failed", failure)
+            remove(style, slot)
+            return null
+        }
+    }
+
+    private fun remove(style: Style, slot: SatelliteBufferSlot) {
+        if (style.getLayer(slot.layerId) != null) style.removeLayer(slot.layerId)
+        if (style.getSource(slot.sourceId) != null) style.removeSource(slot.sourceId)
+        if (!slot.bitmap.isRecycled) slot.bitmap.recycle()
+    }
+
+    private fun allSlots(state: SatelliteChoiceBuffer): List<SatelliteBufferSlot> =
+        listOfNotNull(state.active, state.pending, state.retiring)
+
+    fun clear() {
+        val style = currentStyle
+        if (style != null) choices.forEach { (choice, state) -> clearChoice(style, choice, state) }
+        else choices.values.forEach { state ->
+            state.decodeJob?.cancel()
+            allSlots(state).forEach { if (!it.bitmap.isRecycled) it.bitmap.recycle() }
+        }
+        scope.cancel()
+        currentStyle = null
+    }
+
+    private fun clearChoice(
+        style: Style,
+        choice: RadarMapLayer,
+        state: SatelliteChoiceBuffer,
+    ) {
+        allSlots(state).distinctBy(SatelliteBufferSlot::sourceId).forEach { remove(style, it) }
+        state.decodeJob?.cancel()
+        state.decodeJob = null
+        state.decoding = null
+        state.active = null
+        state.pending = null
+        state.retiring = null
+        state.revealedGeneration = null
+        state.revealedAtRenderSequence = null
+        state.desired = null
+        state.cacheContext = null
+        state.assets = emptyMap()
+        state.planKey = null
+        state.requestPresent = false
+    }
+
+    companion object {
+        const val PRELOAD_OPACITY = 0.001f
     }
 }
 
@@ -706,7 +1144,13 @@ fun RadarImageMap(
     cameraMemory: RadarCameraMemory,
     windGrid: WindGrid? = null,
     windArrowScale: Float = 1f,
-    satelliteLayers: List<EumetLayerMetadata> = emptyList(),
+    satelliteCatalogs: List<EumetLayerMetadata> = emptyList(),
+    enabledSatelliteLayers: Set<RadarMapLayer> = emptySet(),
+    satelliteDisplayEpochSeconds: Long,
+    satelliteTimelineStartEpochSeconds: Long,
+    satelliteTimelineEndEpochSeconds: Long,
+    satelliteWeather: CurrentWeather? = null,
+    onSatellitePreparation: (RadarMapLayer, SatellitePreparationStatus?) -> Unit = { _, _ -> },
     onLayerError: (RadarMapLayer, String) -> Unit = { _, _ -> },
     onMapStyleError: (String?) -> Unit = {},
     onWindViewportChanged: (WindViewport) -> Unit = {},
@@ -728,7 +1172,13 @@ fun RadarImageMap(
             cameraMemory,
             windGrid,
             windArrowScale,
-            satelliteLayers,
+            satelliteCatalogs,
+            enabledSatelliteLayers,
+            satelliteDisplayEpochSeconds,
+            satelliteTimelineStartEpochSeconds,
+            satelliteTimelineEndEpochSeconds,
+            satelliteWeather,
+            onSatellitePreparation,
             onLayerError,
             onMapStyleError,
             onWindViewportChanged,
@@ -753,15 +1203,25 @@ private fun RadarImageMapInstance(
     cameraMemory: RadarCameraMemory,
     windGrid: WindGrid?,
     windArrowScale: Float,
-    satelliteLayers: List<EumetLayerMetadata>,
+    satelliteCatalogs: List<EumetLayerMetadata>,
+    enabledSatelliteLayers: Set<RadarMapLayer>,
+    satelliteDisplayEpochSeconds: Long,
+    satelliteTimelineStartEpochSeconds: Long,
+    satelliteTimelineEndEpochSeconds: Long,
+    satelliteWeather: CurrentWeather?,
+    onSatellitePreparation: (RadarMapLayer, SatellitePreparationStatus?) -> Unit,
     onLayerError: (RadarMapLayer, String) -> Unit,
     onMapStyleError: (String?) -> Unit,
     onWindViewportChanged: (WindViewport) -> Unit,
 ) {
     val context = LocalContext.current
+    val applicationContext = context.applicationContext
     val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val satelliteFrameStore = remember(applicationContext) {
+        SatelliteFrameStoreProvider.get(File(applicationContext.cacheDir, "satellite-frames"))
+    }
     val mapView = remember {
-        MapLibre.getInstance(context)
+        SatelliteAmbientCache.configure(context)
         // Texture mode keeps MapLibre in the normal View hierarchy so our transparent GLES
         // TextureView can reliably composite above it on every Android surface compositor.
         val options = MapLibreMapOptions.createFromAttributes(context, null)
@@ -783,9 +1243,142 @@ private fun RadarImageMapInstance(
     }
     val currentStatusCallback by rememberUpdatedState(onRendererStatus)
     val currentLayerError by rememberUpdatedState(onLayerError)
+    val currentSatellitePreparation by rememberUpdatedState(onSatellitePreparation)
     val currentMapStyleError by rememberUpdatedState(onMapStyleError)
     val currentWindViewportCallback by rememberUpdatedState(onWindViewportChanged)
-    val latestSatellites by rememberUpdatedState(satelliteLayers)
+    val satellitePlaceKey = "${mapPlace.id}:${(mapPlace.latitude * 10).toInt()}:" +
+        "${(mapPlace.longitude * 10).toInt()}"
+    val satelliteRegion = remember(satellitePlaceKey) { SatelliteRegionPolicy.select(mapPlace) }
+    val regionalCatalogs = remember(satelliteCatalogs, satelliteRegion) {
+        satelliteCatalogs.mapNotNull { SatelliteRegionPolicy.clip(it, satelliteRegion) }
+    }
+    // Satellite resources are fixed to the selected place-owned region. Camera pan/zoom never
+    // changes their URL, frame plan, or readiness identity.
+    val satelliteCacheContext = remember(satelliteRegion) { SatelliteCacheContext(satelliteRegion) }
+    val desiredCloudFrame = remember(
+        regionalCatalogs, satelliteDisplayEpochSeconds, satelliteWeather, satellitePlaceKey,
+    ) {
+        SatelliteFrameSelectionPolicy.clouds(
+            regionalCatalogs, satelliteWeather, mapPlace, satelliteDisplayEpochSeconds,
+        )
+    }
+    val desiredLightningFrame = remember(regionalCatalogs, satelliteDisplayEpochSeconds) {
+        SatelliteFrameSelectionPolicy.lightning(regionalCatalogs, satelliteDisplayEpochSeconds)
+    }
+    val satelliteWindow = remember(
+        regionalCatalogs, satelliteWeather, satellitePlaceKey,
+        satelliteTimelineStartEpochSeconds, satelliteTimelineEndEpochSeconds,
+    ) {
+        SatelliteFrameWindowPolicy.frames(
+            regionalCatalogs, satelliteWeather, mapPlace,
+            satelliteTimelineStartEpochSeconds, satelliteTimelineEndEpochSeconds,
+        )
+    }
+    var preparedSatellitePlans by remember {
+        mutableStateOf<Map<RadarMapLayer, SatellitePreparedPlan>>(emptyMap())
+    }
+    var satelliteRecoveryGeneration by remember {
+        mutableStateOf<Map<RadarMapLayer, Int>>(emptyMap())
+    }
+    SatelliteLayerRenderPolicy.renderOrder.forEach { choice ->
+        key(choice) {
+            val enabled = choice in enabledSatelliteLayers
+            val metadataFrames = satelliteWindow[choice].orEmpty()
+            val metadataPlanKey = remember(metadataFrames, satelliteCacheContext) {
+                if (metadataFrames.isEmpty()) null else
+                    com.rainalarm.app.data.SatelliteFullSetPolicy.planKey(
+                        metadataFrames, satelliteCacheContext,
+                    )
+            }
+            val recoveryGeneration = satelliteRecoveryGeneration[choice] ?: 0
+            LaunchedEffect(
+                enabled, satelliteCacheContext.identity, metadataPlanKey, recoveryGeneration,
+            ) {
+                if (!enabled) {
+                    preparedSatellitePlans = preparedSatellitePlans - choice
+                    currentSatellitePreparation(choice, null)
+                    return@LaunchedEffect
+                }
+                if (metadataFrames.isEmpty() || metadataPlanKey == null) {
+                    // Catalog loading/refresh is not a completed frame set. Keep an existing
+                    // same-region plan visible until a replacement can be verified.
+                    if (preparedSatellitePlans[choice]?.cacheContext != satelliteCacheContext) {
+                        preparedSatellitePlans = preparedSatellitePlans - choice
+                    }
+                    currentSatellitePreparation(choice, null)
+                    return@LaunchedEffect
+                }
+                val requests = try {
+                    metadataFrames.map {
+                        SatelliteFrameAssetPolicy.request(it, satelliteCacheContext)
+                    }.distinctBy { it.diskKey }
+                } catch (failure: Throwable) {
+                    if (failure is CancellationException) throw failure
+                    Log.e("RainRadarLayers", "${choice.label} regional plan is invalid", failure)
+                    currentSatellitePreparation(choice, SatellitePreparationStatus.Failed(
+                        "${choice.label} preparation failed · refresh",
+                    ))
+                    return@LaunchedEffect
+                }
+                currentSatellitePreparation(
+                    choice, SatellitePreparationStatus.Preparing(0, requests.size),
+                )
+                try {
+                    val frames = satelliteFrameStore.prepare(requests) { ready, total ->
+                        withContext(Dispatchers.Main.immediate) {
+                            currentSatellitePreparation(
+                                choice, SatellitePreparationStatus.Preparing(ready, total),
+                            )
+                        }
+                    }
+                    preparedSatellitePlans = preparedSatellitePlans + (
+                        choice to SatellitePreparedPlan(
+                            metadataPlanKey, satelliteCacheContext, frames, recoveryGeneration,
+                        )
+                    )
+                    currentSatellitePreparation(choice, SatellitePreparationStatus.Rendering)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Throwable) {
+                    Log.e("RainRadarLayers", "${choice.label} frame preparation failed", failure)
+                    currentSatellitePreparation(choice, SatellitePreparationStatus.Failed(
+                        "${choice.label} preparation failed · refresh",
+                    ))
+                    currentLayerError(choice, "${choice.label} imagery could not load · refresh")
+                }
+            }
+        }
+    }
+    val satelliteRequests = remember(
+        desiredCloudFrame, desiredLightningFrame, preparedSatellitePlans,
+        satelliteCacheContext,
+    ) {
+        buildMap {
+            preparedSatellitePlans[RadarMapLayer.FOG]
+                ?.takeIf { it.cacheContext == satelliteCacheContext }?.let { plan ->
+                    put(RadarMapLayer.FOG, SatelliteOverlayRequest(
+                        SatellitePreparedFramePolicy.desired(plan.frames, desiredCloudFrame),
+                        plan.frames,
+                        plan.generation,
+                    ))
+                }
+            preparedSatellitePlans[RadarMapLayer.LIGHTNING]
+                ?.takeIf { it.cacheContext == satelliteCacheContext }?.let { plan ->
+                    put(RadarMapLayer.LIGHTNING, SatelliteOverlayRequest(
+                        SatellitePreparedFramePolicy.desired(plan.frames, desiredLightningFrame),
+                        plan.frames,
+                        plan.generation,
+                    ))
+                }
+        }
+    }
+    val latestSatelliteRequests by rememberUpdatedState(satelliteRequests)
+    val latestEnabledSatelliteLayers by rememberUpdatedState(enabledSatelliteLayers)
+    val latestSatellitePlayback by rememberUpdatedState(isPlaying)
+    val latestSatelliteCacheContext by rememberUpdatedState(satelliteCacheContext)
+    val displayedWindGrid = remember(windGrid, satelliteDisplayEpochSeconds) {
+        windGrid?.displayedAt(satelliteDisplayEpochSeconds)
+    }
     val latestMapPlace by rememberUpdatedState(mapPlace)
     val latestMarkerPlace by rememberUpdatedState(markerPlace)
     val currentManualGesture by rememberUpdatedState(onManualCameraGesture)
@@ -817,6 +1410,23 @@ private fun RadarImageMapInstance(
     var lastBracket by remember(session) { mutableStateOf<RadarTimelineBracket?>(null) }
     var lastPlaying by remember(session) { mutableStateOf<Boolean?>(null) }
     var lastMarker by remember(session) { mutableStateOf<SavedPlace?>(null) }
+    val satelliteBuffers = remember(mapView) {
+        SatelliteLayerBuffers(
+            onLayerError = { layer, message ->
+                currentSatellitePreparation(layer, SatellitePreparationStatus.Failed(message))
+                currentLayerError(layer, message)
+            },
+            onFrameInvalidated = { layer, frame ->
+                satelliteFrameStore.invalidate(frame.request)
+                satelliteRecoveryGeneration = satelliteRecoveryGeneration + (
+                    layer to ((satelliteRecoveryGeneration[layer] ?: 0) + 1)
+                )
+            },
+            onFrameRendered = { layer ->
+                currentSatellitePreparation(layer, SatellitePreparationStatus.Ready)
+            },
+        )
+    }
     fun saveCamera(ready: MapLibreMap, place: SavedPlace) {
         val position = ready.cameraPosition
         val center = position.target ?: return
@@ -825,6 +1435,7 @@ private fun RadarImageMapInstance(
     val teardown = remember(session, mapView, overlay, staticFallback) {
         RadarResourceTeardown(
             stopOverlay = {
+                satelliteBuffers.clear()
                 overlay.dispose()
                 staticFallback?.dispose()
             },
@@ -853,21 +1464,6 @@ private fun RadarImageMapInstance(
         }
     }
 
-    DisposableEffect(mapView) {
-        val listener = MapView.OnTileActionListener { operation, _, _, _, _, _, sourceId ->
-            val satelliteChoice = SatelliteLayerRenderPolicy.choiceForSource(sourceId)
-            if (operation == TileOperation.Error && satelliteChoice != null) {
-                // Capabilities plus the selected-place probe are the availability gate. EUMETView
-                // occasionally fails one of MapLibre's concurrent viewport requests, so an
-                // isolated tile error must not tear down an otherwise verified layer.
-                Log.w("RainRadarLayers",
-                    "${satelliteChoice.label} WMS tile failed; retaining verified layer")
-            }
-        }
-        mapView.addOnTileActionListener(listener)
-        onDispose { mapView.removeOnTileActionListener(listener) }
-    }
-
     val startingListener = remember(mapView, teardown) {
         MapView.OnWillStartRenderingFrameListener {
             if (!teardown.isClosed) mapRevealGate.frameStarted()
@@ -875,6 +1471,7 @@ private fun RadarImageMapInstance(
     }
     val renderedListener = remember(mapView, teardown) {
         MapView.OnDidFinishRenderingFrameListener { fully, _, _ ->
+            if (fully && !teardown.isClosed) satelliteBuffers.onFullyRendered()
             val revealCurrentStyle = !teardown.isClosed && mapView.width > 0 && mapView.height > 0 &&
                 mapRevealGate.frameRendered(fully)
             if (revealCurrentStyle) mapView.post {
@@ -979,8 +1576,9 @@ private fun RadarImageMapInstance(
                     val idle = MapLibreMap.OnCameraIdleListener {
                         if (!teardown.isClosed && mapView.width > 0 && mapView.height > 0) {
                             // MapLibre can publish its final projection after the last move callback.
-                            // Re-project both overlay tiers and the selected marker at the settled
-                            // camera so a zoom-threshold switch cannot retain gesture-era vertices.
+                            // Re-project the radar, wind and selected marker at the settled camera.
+                            // Satellite ImageSources remain fixed to the selected region and do not
+                            // participate in viewport-driven reloads.
                             overlay.onCameraMoved()
                             staticFallback?.onCameraMoved()
                             windView.cameraMoved()
@@ -1009,7 +1607,7 @@ private fun RadarImageMapInstance(
                 staticFallback?.setPlace(markerPlace)
                 lastMarker = markerPlace
             }
-            windView.update(windGrid, windArrowScale)
+            windView.update(displayedWindGrid, windArrowScale)
         },
         modifier = modifier,
     )
@@ -1032,7 +1630,10 @@ private fun RadarImageMapInstance(
                     }
                 }
                 if (active && !teardown.isClosed && mapRevealGate.styleLoaded(styleGeneration)) {
-                    applySatelliteLayers(it, latestSatellites, currentLayerError)
+                    satelliteBuffers.onStyleLoaded(
+                        it, latestSatelliteRequests, latestEnabledSatelliteLayers,
+                        latestSatellitePlayback, latestSatelliteCacheContext,
+                    )
                     overlay.onCameraMoved()
                     staticFallback?.onCameraMoved()
                     mapView.post { if (!teardown.isClosed) cameraIdleListener?.onCameraIdle() }
@@ -1053,13 +1654,16 @@ private fun RadarImageMapInstance(
         }
     }
 
-    DisposableEffect(map, satelliteLayers) {
+    DisposableEffect(
+        map, satelliteRequests, enabledSatelliteLayers, isPlaying, satelliteCacheContext,
+    ) {
         val ready = map
         if (ready == null || teardown.isClosed) return@DisposableEffect onDispose { }
         var active = true
         ready.getStyle { style ->
-            if (active && !teardown.isClosed) applySatelliteLayers(
-                style, satelliteLayers, currentLayerError,
+            if (active && !teardown.isClosed) satelliteBuffers.reconcile(
+                style, satelliteRequests, enabledSatelliteLayers, isPlaying,
+                satelliteCacheContext,
             )
         }
         onDispose { active = false }

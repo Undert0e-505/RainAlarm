@@ -121,6 +121,7 @@ import com.rainalarm.app.domain.RadarCameraMemory
 import com.rainalarm.app.ui.LiveRadarScreen
 import com.rainalarm.app.ui.RadarChartTimeRequest
 import com.rainalarm.app.ui.RadarChartTimeLink
+import com.rainalarm.app.ui.SatelliteAmbientCache
 import com.rainalarm.app.ui.PlacesScreen
 import com.rainalarm.app.ui.SettingsScreen
 import com.rainalarm.app.ui.LocalRainAlarmPalette
@@ -195,6 +196,8 @@ object RadarProviderSwitchPolicy {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Configure MapLibre's supported on-disk cache before any style or tile source opens it.
+        SatelliteAmbientCache.configure(applicationContext)
         enableEdgeToEdge()
         setContent {
             val appViewModel: RainAlarmViewModel = androidx.lifecycle.viewmodel.compose.viewModel()

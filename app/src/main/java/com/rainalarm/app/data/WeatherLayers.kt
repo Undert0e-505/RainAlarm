@@ -6,6 +6,7 @@ import java.net.URL
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import kotlin.math.floor
 import kotlin.math.abs
@@ -115,11 +116,115 @@ data class WindGrid(
     val points: List<CurrentWeather>,
     val requestedPositions: List<Pair<Double, Double>>,
     val fetchedEpochSeconds: Long,
+    val timelineFrames: List<WindGridFrame> = listOf(
+        WindGridFrame(points.firstOrNull()?.validEpochSeconds ?: fetchedEpochSeconds, points),
+    ),
 ) {
-    init { require(points.size == requestedPositions.size) }
+    init {
+        require(points.size == requestedPositions.size)
+        require(timelineFrames.isNotEmpty())
+        require(timelineFrames.zipWithNext().all { (first, second) ->
+            second.validEpochSeconds > first.validEpochSeconds
+        })
+        require(timelineFrames.all { it.points.size == requestedPositions.size })
+    }
     // The model may report several requests at the same coarse cell centre. Keep those
     // source coordinates in each CurrentWeather, but draw at the distinct request sites.
     fun renderCoordinates(): List<Pair<Double, Double>> = requestedPositions
+
+    fun displayedAt(cursorEpochSeconds: Long): WindGrid {
+        val frame = WindTimelinePolicy.frameAtOrBefore(timelineFrames, cursorEpochSeconds)
+        return if (points === frame.points) this else copy(points = frame.points)
+    }
+}
+
+data class WindGridFrame(val validEpochSeconds: Long, val points: List<CurrentWeather>)
+
+data class WindTimelineWindow(val startEpochSeconds: Long, val endEpochSeconds: Long) {
+    init { require(startEpochSeconds <= endEpochSeconds && endEpochSeconds - startEpochSeconds <= 8 * 3_600L) }
+    val cacheKey: String get() = "$startEpochSeconds:$endEpochSeconds"
+}
+
+object WindTimelinePolicy {
+    const val cadenceSeconds = 15 * 60L
+    private const val maxWindowSeconds = 8 * 3_600L
+
+    fun requestWindow(startEpochSeconds: Long, endEpochSeconds: Long): WindTimelineWindow {
+        require(startEpochSeconds <= endEpochSeconds)
+        val start = Math.floorDiv(startEpochSeconds, cadenceSeconds) * cadenceSeconds
+        val endFloor = Math.floorDiv(endEpochSeconds, cadenceSeconds) * cadenceSeconds
+        val endCeiling = if (endFloor == endEpochSeconds) endFloor else endFloor + cadenceSeconds
+        // Radar windows are normally only a few hours. Keep a corrupt or unexpectedly long
+        // provider timeline from expanding the 25-coordinate model request without bound.
+        val end = endCeiling.coerceAtMost(start + maxWindowSeconds)
+        return WindTimelineWindow(start, end)
+    }
+
+    fun frameAtOrBefore(frames: List<WindGridFrame>, cursorEpochSeconds: Long): WindGridFrame {
+        require(frames.isNotEmpty())
+        return frames.lastOrNull { it.validEpochSeconds <= cursorEpochSeconds }
+            ?: frames.first()
+    }
+}
+
+object OpenMeteoWindTimelineCodec {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    fun url(coordinates: List<Pair<Double, Double>>, window: WindTimelineWindow): String {
+        require(coordinates.isNotEmpty() && coordinates.size <= 25)
+        require(coordinates.all { it.first in -85.0..85.0 && it.second in -180.0..180.0 })
+        val latitudes = coordinates.joinToString(",") { it.first.toString() }
+        val longitudes = coordinates.joinToString(",") { it.second.toString() }
+        fun timestamp(value: Long): String = Instant.ofEpochSecond(value).atOffset(ZoneOffset.UTC)
+            .format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm"))
+        return "https://api.open-meteo.com/v1/forecast?latitude=$latitudes&longitude=$longitudes" +
+            "&minutely_15=wind_speed_10m,wind_direction_10m" +
+            "&start_minutely_15=${timestamp(window.startEpochSeconds)}" +
+            "&end_minutely_15=${timestamp(window.endEpochSeconds)}" +
+            "&timezone=UTC&timeformat=unixtime"
+    }
+
+    fun parse(body: String, expected: Int, fetchedAt: Long): List<WindGridFrame> {
+        require(body.length <= 256 * 1024)
+        val root = json.parseToJsonElement(body)
+        val entries = if (expected == 1) listOf(root.jsonObject) else root.jsonArray.map { it.jsonObject }
+        require(entries.size == expected)
+        var sharedTimes: List<Long>? = null
+        val pointsByCoordinate = entries.map { entry ->
+            val units = entry.getValue("minutely_15_units").jsonObject
+            require(units["time"]?.jsonPrimitive?.content == "unixtime")
+            require(units["wind_speed_10m"]?.jsonPrimitive?.content == "km/h")
+            require(units["wind_direction_10m"]?.jsonPrimitive?.content == "°")
+            val values = entry.getValue("minutely_15").jsonObject
+            val times = values.getValue("time").jsonArray.map {
+                it.jsonPrimitive.content.toLong()
+            }
+            require(times.isNotEmpty() && times.size <= 33)
+            require(times.zipWithNext().all { (first, second) ->
+                second - first == WindTimelinePolicy.cadenceSeconds
+            })
+            if (sharedTimes == null) sharedTimes = times else require(sharedTimes == times)
+            val speeds = values.getValue("wind_speed_10m").jsonArray
+            val directions = values.getValue("wind_direction_10m").jsonArray
+            require(speeds.size == times.size && directions.size == times.size)
+            val latitude = entry.getValue("latitude").jsonPrimitive.content.toDouble()
+            val longitude = entry.getValue("longitude").jsonPrimitive.content.toDouble()
+            require(latitude.isFinite() && latitude in -85.0..85.0)
+            require(longitude.isFinite() && longitude in -180.0..180.0)
+            times.indices.map { index ->
+                val speed = speeds[index].jsonPrimitive.content.toDoubleOrNull()
+                    ?.takeIf { it.isFinite() && it in 0.0..400.0 }
+                val direction = directions[index].jsonPrimitive.content.toDoubleOrNull()
+                    ?.takeIf { it.isFinite() && it in 0.0..360.0 }
+                CurrentWeather(latitude, longitude, times[index], fetchedAt,
+                    null, null, null, null, null, speed, direction)
+            }
+        }
+        val times = requireNotNull(sharedTimes)
+        return times.indices.map { timeIndex ->
+            WindGridFrame(times[timeIndex], pointsByCoordinate.map { it[timeIndex] })
+        }
+    }
 }
 
 object OpenMeteoCurrentCodec {
@@ -212,20 +317,31 @@ object WeatherLayerRepository {
         value
     }
 
-    suspend fun wind(viewport: WindViewport, force: Boolean = false): WindGrid = windMutex.withLock {
+    suspend fun wind(
+        viewport: WindViewport,
+        window: WindTimelineWindow,
+        force: Boolean = false,
+    ): WindGrid = windMutex.withLock {
         val now = Instant.now().epochSecond
-        val key = viewport.requestKey()
+        val key = "${viewport.requestKey()}:${window.cacheKey}"
         windCache[key]?.let { grid ->
-            if (!force && now - grid.fetchedEpochSeconds in 0..900 && grid.points.all { it.freshAt(now) })
+            if (!force && now - grid.fetchedEpochSeconds in 0..900)
                 return@withLock grid
         }
         val coordinates = viewport.coordinates()
-        val grid = WindGrid(key, OpenMeteoCurrentCodec.parse(fetch(OpenMeteoCurrentCodec.url(coordinates), 256 * 1024), 25, now),
-            coordinates, now)
-        require(grid.points.all { it.freshAt(Instant.now().epochSecond) }) { "Wind model is stale" }
+        val frames = OpenMeteoWindTimelineCodec.parse(fetch(
+            OpenMeteoWindTimelineCodec.url(coordinates, window), 256 * 1024,
+        ), 25, now)
+        val displayed = WindTimelinePolicy.frameAtOrBefore(frames, now)
+        val grid = WindGrid(viewport.requestKey(), displayed.points, coordinates, now, frames)
         windCache[key] = grid
         while (windCache.size > 8) windCache.remove(windCache.keys.first())
         grid
+    }
+
+    suspend fun wind(viewport: WindViewport, force: Boolean = false): WindGrid {
+        val now = Instant.now().epochSecond
+        return wind(viewport, WindTimelinePolicy.requestWindow(now - 3 * 3_600L, now + 3_600L), force)
     }
 
     private suspend fun fetch(rawUrl: String, maxBytes: Int): String = withContext(Dispatchers.IO) {

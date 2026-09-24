@@ -19,6 +19,16 @@ class WeatherLayersTest {
         "current_units":{"temperature_2m":"°C","relative_humidity_2m":"%","pressure_msl":"hPa","uv_index":"","is_day":"","wind_speed_10m":"km/h","wind_direction_10m":"°"},
         "current":{"time":$valid,"temperature_2m":14.4,"relative_humidity_2m":75,"pressure_msl":1013.8,"uv_index":0.2,"is_day":0,"wind_speed_10m":13.7,"wind_direction_10m":230}}"""
 
+    private fun windTimelineItem(
+        lat: Double,
+        lon: Double,
+        times: List<Long>,
+        speeds: List<Double>,
+        directions: List<Double>,
+    ): String = """{"latitude":$lat,"longitude":$lon,
+        "minutely_15_units":{"time":"unixtime","wind_speed_10m":"km/h","wind_direction_10m":"°"},
+        "minutely_15":{"time":$times,"wind_speed_10m":$speeds,"wind_direction_10m":$directions}}"""
+
     @Test fun `point weather retains source time model units and compact metric values`() {
         val result = OpenMeteoCurrentCodec.parse(item(), 1, now).single()
         assertEquals(14.4, result.temperatureC!!, 0.01)
@@ -103,6 +113,60 @@ class WeatherLayersTest {
         assertEquals(coordinates, grid.renderCoordinates())
     }
 
+    @Test fun `bounded wind timeline is requested once and follows the radar cursor at provider cadence`() {
+        val start = Instant.parse("2026-09-17T01:03:00Z").epochSecond
+        val end = Instant.parse("2026-09-17T02:37:00Z").epochSecond
+        val window = WindTimelinePolicy.requestWindow(start, end)
+        assertEquals(Instant.parse("2026-09-17T01:00:00Z").epochSecond, window.startEpochSeconds)
+        assertEquals(Instant.parse("2026-09-17T02:45:00Z").epochSecond, window.endEpochSeconds)
+        val url = OpenMeteoWindTimelineCodec.url(listOf(51.48 to -3.18, 52.0 to -2.0), window)
+        assertTrue(url.startsWith("https://api.open-meteo.com/v1/forecast?"))
+        assertTrue(url.contains("minutely_15=wind_speed_10m,wind_direction_10m"))
+        assertTrue(url.contains("start_minutely_15=2026-09-17T01:00"))
+        assertTrue(url.contains("end_minutely_15=2026-09-17T02:45"))
+
+        val times = listOf(window.startEpochSeconds, window.startEpochSeconds + 900,
+            window.startEpochSeconds + 1_800)
+        val body = "[" + listOf(
+            windTimelineItem(51.48, -3.18, times, listOf(10.0, 11.0, 12.0),
+                listOf(180.0, 190.0, 200.0)),
+            windTimelineItem(52.0, -2.0, times, listOf(20.0, 21.0, 22.0),
+                listOf(270.0, 280.0, 290.0)),
+        ).joinToString(",") + "]"
+        val frames = OpenMeteoWindTimelineCodec.parse(body, 2, now)
+        assertEquals(times, frames.map(WindGridFrame::validEpochSeconds))
+        assertEquals(listOf(10.0, 20.0), frames[0].points.map { it.windSpeedKmh })
+        assertEquals(listOf(200.0, 290.0), frames[2].points.map { it.windFromDegrees })
+        assertEquals(frames.first(), WindTimelinePolicy.frameAtOrBefore(frames, times.first() - 1))
+        assertEquals(frames[1], WindTimelinePolicy.frameAtOrBefore(frames, times[1] + 899))
+        assertEquals(frames.last(), WindTimelinePolicy.frameAtOrBefore(frames, times.last() + 3_600))
+
+        val positions = listOf(51.48 to -3.18, 52.0 to -2.0)
+        val grid = WindGrid("viewport", frames.first().points, positions, now, frames)
+        assertEquals(listOf(10.0, 20.0), grid.displayedAt(times.first()).points.map { it.windSpeedKmh })
+        assertEquals(listOf(11.0, 21.0), grid.displayedAt(times[1] + 10).points.map { it.windSpeedKmh })
+        assertEquals(positions, grid.displayedAt(times.last()).renderCoordinates())
+    }
+
+    @Test fun `wind timeline bounds and malformed provider series fail safely`() {
+        val window = WindTimelinePolicy.requestWindow(1_000L, 100_000L)
+        assertTrue(window.endEpochSeconds - window.startEpochSeconds <= 8 * 3_600L)
+        assertThrows(IllegalArgumentException::class.java) {
+            WindTimelinePolicy.requestWindow(2_000L, 1_000L)
+        }
+        val times = listOf(1_800L, 2_700L, 3_700L)
+        val malformedCadence = windTimelineItem(51.48, -3.18, times,
+            listOf(10.0, 11.0, 12.0), listOf(180.0, 190.0, 200.0))
+        assertThrows(IllegalArgumentException::class.java) {
+            OpenMeteoWindTimelineCodec.parse(malformedCadence, 1, now)
+        }
+        val malformedCoordinates = windTimelineItem(95.0, -3.18,
+            listOf(1_800L, 2_700L), listOf(10.0, 11.0), listOf(180.0, 190.0))
+        assertThrows(IllegalArgumentException::class.java) {
+            OpenMeteoWindTimelineCodec.parse(malformedCoordinates, 1, now)
+        }
+    }
+
     @Test fun `selected place daily solar times use IANA zone and roll at local midnight`() {
         val zone = ZoneId.of("Europe/London")
         val sunrise = ZonedDateTime.of(2026, 9, 17, 6, 42, 0, 0, zone).toEpochSecond()
@@ -143,6 +207,7 @@ class EumetLayersTest {
     private val now = Instant.parse("2026-09-17T03:00:00Z").epochSecond
     private val place = SavedPlace("Cardiff", 51.4816, -3.1791)
     private fun xml(lightningTime: String = "2026-09-17T02:45:00.000Z",
+        cloudTypeTime: String = "2026-09-17T02:40:00.000Z",
         fogTime: String = "2026-09-17T02:30:00.000Z") = """
         <?xml version="1.0" encoding="UTF-8"?>
         <WMS_Capabilities version="1.3.0" xmlns="http://www.opengis.net/wms"><Capability><Layer>
@@ -151,6 +216,13 @@ class EumetLayersTest {
           <southBoundLatitude>-70</southBoundLatitude><northBoundLatitude>70</northBoundLatitude>
           </EX_GeographicBoundingBox><Dimension name="time" default="$lightningTime" units="ISO8601" nearestValue="1">
           2025-05-30T15:00:00.000Z/$lightningTime/PT5M</Dimension></Layer>
+          <Layer><Name>mtg_fd:rgb_cloudtype</Name><EX_GeographicBoundingBox>
+          <westBoundLongitude>-81.27779388427734</westBoundLongitude>
+          <eastBoundLongitude>81.28072357177734</eastBoundLongitude>
+          <southBoundLatitude>-77.35063934326172</southBoundLatitude>
+          <northBoundLatitude>77.35639190673828</northBoundLatitude>
+          </EX_GeographicBoundingBox><Dimension name="time" default="$cloudTypeTime" units="ISO8601" nearestValue="1">
+          2025-06-06T18:40:00.000Z/$cloudTypeTime/PT10M</Dimension></Layer>
           <Layer><Name>mtg_fd:rgb_fog</Name><EX_GeographicBoundingBox>
           <westBoundLongitude>-81.27779388427734</westBoundLongitude>
           <eastBoundLongitude>81.28072357177734</eastBoundLongitude>
@@ -161,15 +233,85 @@ class EumetLayersTest {
         </Layer></Capability></WMS_Capabilities>""".trimIndent().toByteArray()
 
     @Test fun `capabilities select exact layer valid time and coverage`() {
-        val flashes = EumetCapabilities.parse(xml(), RadarMapLayer.LIGHTNING)
-        val fog = EumetCapabilities.parse(xml(), RadarMapLayer.FOG)
+        val flashes = EumetCapabilities.parse(xml(), EumetProduct.LIGHTNING)
+        val cloudType = EumetCapabilities.parse(xml(), EumetProduct.CLOUD_TYPE)
+        val fog = EumetCapabilities.parse(xml(), EumetProduct.FOG_LOW_CLOUD)
         assertEquals(Instant.parse("2026-09-17T02:45:00Z").epochSecond, flashes.validEpochSeconds)
+        assertEquals(Instant.parse("2026-09-17T02:40:00Z").epochSecond, cloudType.validEpochSeconds)
+        assertEquals(EumetProduct.CLOUD_TYPE, cloudType.product)
+        assertEquals("mtg_fd:rgb_cloudtype", cloudType.layerName)
+        assertEquals(600L, cloudType.cadenceSeconds)
+        assertEquals(Instant.parse("2025-06-06T18:40:00Z").epochSecond,
+            cloudType.availableFromEpochSeconds)
+        assertEquals(cloudType.validEpochSeconds, cloudType.latestEpochSeconds)
+        assertEquals(EumetProduct.FOG_LOW_CLOUD, fog.product)
+        assertEquals("mtg_fd:rgb_fog", fog.layerName)
+        assertEquals(300L, flashes.cadenceSeconds)
         assertTrue(flashes.freshAt(now))
+        assertTrue(cloudType.freshAt(now))
         assertTrue(fog.freshAt(now))
         assertTrue(flashes.covers(place))
         assertFalse(flashes.covers(SavedPlace("Tokyo", 35.6, 139.7)))
         assertFalse(flashes.freshAt(now + 901))
         assertFalse(fog.freshAt(now + 1_801))
+    }
+
+    @Test fun `satellite cursor selection floors to advertised cadence and never uses a future observation`() {
+        val clouds = EumetLayerMetadata(
+            RadarMapLayer.FOG, 2_800L, -20.0, 30.0, 20.0, 70.0,
+            EumetProduct.CLOUD_TYPE, 1_000L, 2_800L, 600L,
+        )
+        assertEquals(null, clouds.frameAtOrBefore(999L))
+        assertEquals(1_000L, clouds.frameAtOrBefore(1_000L)?.validEpochSeconds)
+        assertEquals(1_000L, clouds.frameAtOrBefore(1_599L)?.validEpochSeconds)
+        assertEquals(1_600L, clouds.frameAtOrBefore(1_600L)?.validEpochSeconds)
+        assertEquals(2_200L, clouds.frameAtOrBefore(2_799L)?.validEpochSeconds)
+        assertEquals(2_800L, clouds.frameAtOrBefore(2_800L)?.validEpochSeconds)
+        assertEquals(2_800L, clouds.frameAtOrBefore(20_000L)?.validEpochSeconds)
+        assertTrue(requireNotNull(clouds.frameAtOrBefore(2_799L)).validEpochSeconds <= 2_799L)
+        assertEquals("CLOUD_TYPE:2200", clouds.frameAtOrBefore(2_799L)?.frameIdentity)
+
+        val lightning = EumetLayerMetadata(
+            RadarMapLayer.LIGHTNING, 1_900L, -20.0, 30.0, 20.0, 70.0,
+            EumetProduct.LIGHTNING, 1_000L, 1_900L, 300L,
+        )
+        assertEquals(1_300L, SatelliteFrameSelectionPolicy.lightning(
+            listOf(lightning), 1_599L)?.validEpochSeconds)
+        assertEquals(1_900L, SatelliteFrameSelectionPolicy.lightning(
+            listOf(lightning), 9_999L)?.validEpochSeconds)
+    }
+
+    @Test fun `cloud product follows daylight at the effective observation and holds latest in forecast`() {
+        val midnight = Instant.parse("2026-09-17T00:00:00Z").epochSecond
+        val noon = Instant.parse("2026-09-17T12:00:00Z").epochSecond
+        val end = Instant.parse("2026-09-17T18:00:00Z").epochSecond
+        fun metadata(product: EumetProduct) = EumetLayerMetadata(
+            RadarMapLayer.FOG, end, -20.0, 30.0, 20.0, 70.0,
+            product, midnight, end, 600L,
+        )
+        val catalog = listOf(metadata(EumetProduct.CLOUD_TYPE),
+            metadata(EumetProduct.FOG_LOW_CLOUD))
+        assertEquals(EumetProduct.FOG_LOW_CLOUD,
+            SatelliteFrameSelectionPolicy.clouds(catalog, null, place, midnight)?.product)
+        assertEquals(EumetProduct.CLOUD_TYPE,
+            SatelliteFrameSelectionPolicy.clouds(catalog, null, place, noon)?.product)
+        val forecast = SatelliteFrameSelectionPolicy.clouds(catalog, null, place, end + 86_400)
+        assertEquals(end, forecast?.validEpochSeconds)
+        assertEquals(EumetProduct.CLOUD_TYPE, forecast?.product)
+        assertEquals(null, SatelliteFrameSelectionPolicy.clouds(catalog, null, place, midnight - 1))
+    }
+
+    @Test fun `satellite time dimensions reject malformed cadence and unsafe ranges`() {
+        assertEquals(600L, EumetTimeDimensionCodec.parse(
+            "2026-09-17T00:00:00Z/2026-09-17T01:00:00Z/PT10M").cadenceSeconds)
+        listOf(
+            "2026-09-17T00:00:00Z/2026-09-17T01:00:00Z/PT0S",
+            "2026-09-17T01:00:00Z/2026-09-17T00:00:00Z/PT10M",
+            "2026-09-17T00:00:00Z/2026-09-17T01:00:00Z/not-a-duration",
+            "2026-09-17T00:00:00Z/2026-09-17T01:00:00Z/PT30.5S",
+        ).forEach { value ->
+            assertThrows(RuntimeException::class.java) { EumetTimeDimensionCodec.parse(value) }
+        }
     }
 
     @Test fun `unsupported Android factory features do not abort mandatory XML safeguards`() {
@@ -195,8 +337,8 @@ class EumetLayersTest {
         }
     }
 
-    @Test fun `pinned WMS tile and probe URLs remain HTTPS and spatial`() {
-        val metadata = EumetCapabilities.parse(xml(), RadarMapLayer.LIGHTNING)
+    @Test fun `pinned WMS frame and probe URLs remain HTTPS and spatial`() {
+        val metadata = EumetCapabilities.parse(xml(), EumetProduct.LIGHTNING)
         val tile = metadata.tileUrl()
         assertTrue(tile.startsWith("https://view.eumetsat.int/geoserver/wms?"))
         assertTrue(tile.contains("{bbox-epsg-3857}"))
@@ -204,11 +346,62 @@ class EumetLayersTest {
         assertTrue(tile.contains("time=2026-09-17T02%3A45%3A00Z"))
         val renderer = listOf(File("src/main/java/com/rainalarm/app/ui/RadarImageMap.kt"),
             File("app/src/main/java/com/rainalarm/app/ui/RadarImageMap.kt")).first(File::isFile).readText()
-        assertTrue(renderer.contains("TileSet(\"2.2.0\", satellite.tileUrl())"))
-        assertTrue(renderer.contains("RasterSource(sourceId, tiles, 256)"))
+        assertTrue(renderer.contains("SatelliteRegionalImagePolicy.request(metadata)"))
+        assertTrue(renderer.contains("ImageSource(sourceId, quad, bitmap)"))
+        assertTrue(renderer.contains("SatelliteFrameAssetPolicy.request(it, satelliteCacheContext)"))
+        assertFalse(renderer.contains("ImageSource(sourceId, quad, URI(request.url))"))
+        assertFalse(renderer.contains("RasterSource(sourceId"))
         val probe = metadata.probeUrl(place)
         assertFalse(probe.contains("{bbox-epsg-3857}"))
         assertTrue(probe.contains("&width=64&height=64"))
+
+        val cloudType = EumetCapabilities.parse(xml(), EumetProduct.CLOUD_TYPE)
+        val fog = EumetCapabilities.parse(xml(), EumetProduct.FOG_LOW_CLOUD)
+        assertTrue(cloudType.tileUrl().contains("layers=mtg_fd%3Argb_cloudtype"))
+        assertTrue(cloudType.tileUrl().contains("time=2026-09-17T02%3A40%3A00Z"))
+        assertTrue(fog.tileUrl().contains("layers=mtg_fd%3Argb_fog"))
+        assertTrue(fog.tileUrl().contains("time=2026-09-17T02%3A30%3A00Z"))
+        assertFalse(EumetCacheIdentity.metadata(EumetProduct.CLOUD_TYPE) ==
+            EumetCacheIdentity.metadata(EumetProduct.FOG_LOW_CLOUD))
+        assertFalse(EumetCacheIdentity.probe(EumetProduct.CLOUD_TYPE, cloudType.validEpochSeconds, place) ==
+            EumetCacheIdentity.probe(EumetProduct.FOG_LOW_CLOUD, cloudType.validEpochSeconds, place))
+    }
+
+    @Test fun `cloud product selection uses fresh daylight solar events then coordinate fallback`() {
+        fun weather(
+            valid: Long,
+            isDay: Boolean?,
+            sunrise: Long? = null,
+            sunset: Long? = null,
+        ) = CurrentWeather(
+            latitude = place.latitude, longitude = place.longitude,
+            validEpochSeconds = valid, fetchedEpochSeconds = valid,
+            temperatureC = null, pressureHpa = null, humidityPercent = null,
+            uvIndex = null, isDay = isDay, windSpeedKmh = null, windFromDegrees = null,
+            timeZone = "Europe/London", sunriseEpochSeconds = sunrise,
+            sunsetEpochSeconds = sunset,
+        )
+
+        val noon = Instant.parse("2026-09-17T12:00:00Z").epochSecond
+        val midnight = Instant.parse("2026-09-17T00:00:00Z").epochSecond
+        assertEquals(EumetProduct.CLOUD_TYPE,
+            CloudProductSelectionPolicy.preferred(weather(noon, true), place, noon))
+        assertEquals(EumetProduct.FOG_LOW_CLOUD,
+            CloudProductSelectionPolicy.preferred(weather(midnight, false), place, midnight))
+
+        val sunrise = Instant.parse("2026-09-17T05:30:00Z").epochSecond
+        val sunset = Instant.parse("2026-09-17T18:15:00Z").epochSecond
+        val staleDaylight = weather(noon - 3_600, false, sunrise, sunset)
+        assertEquals(EumetProduct.CLOUD_TYPE,
+            CloudProductSelectionPolicy.preferred(staleDaylight, place, noon))
+        assertEquals(EumetProduct.FOG_LOW_CLOUD,
+            CloudProductSelectionPolicy.preferred(null, place, midnight))
+        assertEquals(EumetProduct.CLOUD_TYPE,
+            CloudProductSelectionPolicy.preferred(null, place, noon))
+        assertEquals(listOf(EumetProduct.CLOUD_TYPE, EumetProduct.FOG_LOW_CLOUD),
+            CloudProductSelectionPolicy.loadOrder(EumetProduct.CLOUD_TYPE))
+        assertEquals(listOf(EumetProduct.FOG_LOW_CLOUD, EumetProduct.CLOUD_TYPE),
+            CloudProductSelectionPolicy.loadOrder(EumetProduct.FOG_LOW_CLOUD))
     }
 
     @Test fun `layer and indicator settings have safe persisted defaults`() {
@@ -223,6 +416,8 @@ class EumetLayersTest {
         RadarMapLayer.overlays.forEach { layer ->
             assertEquals(setOf(layer), RadarMapLayerPreference.decode(layer.name))
         }
+        assertEquals("Clouds", RadarMapLayer.FOG.label)
+        assertEquals(setOf(RadarMapLayer.FOG), RadarMapLayerPreference.decode("FOG"))
         for (mask in 0 until (1 shl RadarMapLayer.overlays.size)) {
             val layers = RadarMapLayer.overlays.filterIndexed { index, _ -> mask and (1 shl index) != 0 }.toSet()
             val encoded = RadarMapLayerPreference.encode(layers)

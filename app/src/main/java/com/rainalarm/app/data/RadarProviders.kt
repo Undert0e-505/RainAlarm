@@ -59,7 +59,9 @@ enum class RadarPlaybackSpeed(val multiplier: Float, val label: String) {
 }
 
 enum class RadarMapLayer(val label: String) {
-    OFF("Off"), WIND("Wind"), LIGHTNING("Lightning"), FOG("Fog");
+    // FOG is retained as the stable on-disk identifier; it now represents the integrated
+    // day/night Clouds control so existing enabled selections survive upgrades unchanged.
+    OFF("Off"), WIND("Wind"), LIGHTNING("Lightning"), FOG("Clouds");
 
     companion object {
         val overlays: List<RadarMapLayer> = listOf(WIND, LIGHTNING, FOG)

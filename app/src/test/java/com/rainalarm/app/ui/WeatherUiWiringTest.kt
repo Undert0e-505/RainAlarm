@@ -6,8 +6,12 @@ import com.rainalarm.app.data.SavedPlace
 import com.rainalarm.app.data.AppearanceMode
 import com.rainalarm.app.data.NowCardAppearance
 import com.rainalarm.app.data.EumetLayerMetadata
+import com.rainalarm.app.data.EumetProduct
 import com.rainalarm.app.data.RadarMapLayer
+import com.rainalarm.app.data.SatelliteCachedFrame
+import com.rainalarm.app.data.SatelliteFrameAssetRequest
 import java.io.File
+import java.time.Instant
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -19,6 +23,19 @@ class WeatherUiWiringTest {
         File("src/main/java/com/rainalarm/app/ui/$name"),
         File("app/src/main/java/com/rainalarm/app/ui/$name"),
     ).first(File::isFile).readText()
+
+    private fun cachedSatellite(product: EumetProduct, time: Long): SatelliteCachedFrame {
+        val metadata = EumetLayerMetadata(
+            product.conceptualLayer, time, -15.0, 47.2, 6.0, 63.3, product,
+        )
+        return SatelliteCachedFrame(
+            SatelliteFrameAssetRequest(
+                metadata.frameIdentity, "https://view.eumetsat.int/geoserver/wms",
+                2, 2, metadata,
+            ),
+            File("${metadata.frameIdentity}.png"),
+        )
+    }
 
     @Test fun `deleted place cannot be reinserted by pending UI drag order`() {
         val york = SavedPlace("York", 53.96, -1.08)
@@ -113,15 +130,17 @@ class WeatherUiWiringTest {
         assertTrue(radar.contains("onRefresh = { reload++; layerRefresh++; refreshPointWeather() }"))
         assertTrue(radar.contains("cameraMemory = cameraMemory"))
         assertTrue(radar.contains("LaunchedEffect(lightningEnabled"))
-        assertTrue(radar.contains("LaunchedEffect(fogEnabled"))
+        assertTrue(radar.contains("cloudsEnabled, place?.id"))
         assertTrue(radar.contains("LaunchedEffect(windEnabled"))
         assertTrue(radar.contains("if (!lightningEnabled)"))
-        assertTrue(radar.contains("if (!fogEnabled)"))
+        assertTrue(radar.contains("if (!cloudsEnabled)"))
         assertTrue(radar.contains("if (!windEnabled)"))
         assertTrue(radar.contains("onWindViewportChanged = { windViewport = it }"))
         val map = source("RadarImageMap.kt")
-        assertTrue(map.contains("TileSet(\"2.2.0\", satellite.tileUrl())"))
-        assertTrue(map.contains("SatelliteLayerRenderPolicy.choiceForSource(sourceId)"))
+        assertTrue(map.contains("ImageSource(sourceId, quad, bitmap)"))
+        assertFalse(map.contains("ImageSource(sourceId, quad, URI(request.url))"))
+        assertFalse(map.contains("TileSet(\"2.2.0\", metadata.tileUrl())"))
+        assertFalse(map.contains("SatelliteLayerRenderPolicy.choiceForSource(sourceId)"))
         assertTrue(map.contains("addOnCameraIdleListener"))
         val idleBody = map.substringAfter("val idle = MapLibreMap.OnCameraIdleListener {")
             .substringBefore("cameraIdleListener = idle")
@@ -269,7 +288,7 @@ class WeatherUiWiringTest {
         assertFalse(radar.contains("top = if (mapLayer == RadarMapLayer.WIND) 56.dp"))
         assertTrue(radar.contains("top = RadarTopControlsPolicy.timeTopDp.dp"))
         assertTrue(radar.contains(".widthIn(max = RadarTopControlsPolicy.timeLabelMaxWidthDp("))
-        assertTrue(radar.contains("RadarLayerStatuses(enabledMapLayers, ancillaryStatuses, currentWeather, mapWidthDp"))
+        assertTrue(radar.contains("enabledMapLayers, ancillaryStatuses, satellitePreparation,"))
         assertTrue(radar.contains("Modifier.align(Alignment.TopEnd).padding(\n" +
             "                    top = RadarTopControlsPolicy.segmentTopDp.dp"))
         assertTrue(radar.contains("end = RadarTopControlsPolicy.controlsEndDp.dp"))
@@ -325,16 +344,15 @@ class WeatherUiWiringTest {
         assertTrue(segments.contains("role = Role.Switch"))
         assertFalse(radar.contains("DropdownMenu("))
         assertFalse(radar.contains("Map layers, "))
-        assertTrue(radar.contains("\"Lightning loading\""))
-        assertTrue(radar.contains("\"Lightning available\""))
-        assertTrue(radar.contains("\"Lightning unavailable\""))
-        assertTrue(radar.contains("\"Fog loading\""))
-        assertTrue(radar.contains("\"Fog available\""))
-        assertTrue(radar.contains("\"Fog unavailable\""))
-        assertEquals(2, Regex("is AncillaryStatus\\.Unavailable -> ancillaryStatus\\.message")
+        assertTrue(radar.contains("\"${'$'}label loading\""))
+        assertTrue(radar.contains("\"${'$'}label available\""))
+        assertTrue(radar.contains("\"${'$'}label preparing\""))
+        assertTrue(radar.contains("\"${'$'}label unavailable\""))
+        assertEquals(1, Regex("ancillaryStatus is AncillaryStatus\\.Unavailable -> ancillaryStatus\\.message")
             .findAll(radar).count())
-        assertTrue(radar.contains("\"Night only · fog / low cloud\""))
-        assertTrue(radar.contains("\"Daylight status unavailable\""))
+        assertFalse(radar.contains("\"Night only · fog / low cloud\""))
+        assertFalse(radar.contains("\"Daylight status unavailable\""))
+        assertTrue(radar.contains("contentDescription = \"${'$'}{layer.label} map layer\""))
         assertFalse(radar.contains("Wind · Open-Meteo model"))
         assertFalse(radar.contains("m ago"))
     }
@@ -398,37 +416,269 @@ class WeatherUiWiringTest {
         assertTrue(radar.contains("if (enabled) AnimatedVisibility("))
     }
 
-    @Test fun `isolated satellite tile errors retain the metadata verified source`() {
-        val map = source("RadarImageMap.kt")
-        val tileListener = map.substringAfter("val listener = MapView.OnTileActionListener")
-            .substringBefore("mapView.addOnTileActionListener(listener)")
-        assertTrue(tileListener.contains("operation == TileOperation.Error"))
-        assertTrue(tileListener.contains("WMS tile failed; retaining verified layer"))
-        assertFalse(tileListener.contains("currentLayerError"))
+    @Test fun `full-set preparation labels are concise and layer specific`() {
+        assertEquals("Preparing Clouds 3/6", SatellitePreparationLabelPolicy.label(
+            RadarMapLayer.FOG, SatellitePreparationStatus.Preparing(3, 6),
+        ))
+        assertEquals("Preparing Lightning 8/12", SatellitePreparationLabelPolicy.label(
+            RadarMapLayer.LIGHTNING, SatellitePreparationStatus.Preparing(8, 12),
+        ))
+        assertEquals("Clouds preparation failed · refresh", SatellitePreparationLabelPolicy.label(
+            RadarMapLayer.FOG,
+            SatellitePreparationStatus.Failed("Clouds preparation failed · refresh"),
+        ))
+        assertEquals("Clouds ready", SatellitePreparationLabelPolicy.label(
+            RadarMapLayer.FOG, SatellitePreparationStatus.Ready,
+        ))
+        assertEquals("Rendering Clouds…", SatellitePreparationLabelPolicy.label(
+            RadarMapLayer.FOG, SatellitePreparationStatus.Rendering,
+        ))
     }
 
-    @Test fun `fog gate retains selection and concurrent satellite ordering is stable`() {
+    @Test fun `satellite status cannot claim available before verified files are ready`() {
+        val metadata = EumetLayerMetadata(
+            RadarMapLayer.FOG, 1_000L, -15.0, 47.2, 6.0, 63.3,
+            EumetProduct.FOG_LOW_CLOUD,
+        )
+        val availableMetadata = AncillaryStatus.Satellite(metadata)
+        assertEquals("Preparing Clouds 0/5", SatelliteStatusLabelPolicy.label(
+            RadarMapLayer.FOG, availableMetadata, SatellitePreparationStatus.Preparing(0, 5),
+        ))
+        assertEquals("Clouds preparing", SatelliteStatusLabelPolicy.label(
+            RadarMapLayer.FOG, availableMetadata, null,
+        ))
+        assertEquals("Clouds rendering", SatelliteStatusLabelPolicy.label(
+            RadarMapLayer.FOG, availableMetadata, SatellitePreparationStatus.Rendering,
+        ))
+        assertEquals("Clouds preparation failed · refresh", SatelliteStatusLabelPolicy.label(
+            RadarMapLayer.FOG, availableMetadata,
+            SatellitePreparationStatus.Failed("Clouds preparation failed · refresh"),
+        ))
+        assertEquals("Clouds available", SatelliteStatusLabelPolicy.label(
+            RadarMapLayer.FOG, availableMetadata, SatellitePreparationStatus.Ready,
+        ))
+    }
+
+    @Test fun `regional image failure retries without removing confirmed active source`() {
+        val map = source("RadarImageMap.kt")
+        val cache = listOf(
+            File("src/main/java/com/rainalarm/app/data/SatelliteFrameCache.kt"),
+            File("app/src/main/java/com/rainalarm/app/data/SatelliteFrameCache.kt"),
+        ).first(File::isFile).readText()
+        val buffers = map.substringAfter("private class SatelliteLayerBuffers(")
+            .substringBefore("/** Twenty-five distinct requested map positions")
+        assertFalse(map.contains("MapView.OnTileActionListener"))
+        assertTrue(buffers.contains("onFrameInvalidated(choice, asset)"))
+        assertTrue(map.contains("satelliteFrameStore.invalidate(frame.request)"))
+        assertTrue(map.contains("satelliteRecoveryGeneration = satelliteRecoveryGeneration +"))
+        assertTrue(cache.contains("const val maximumAttempts = 3"))
+        val decodeFailure = buffers.substringAfter("bitmap decode failed")
+            .substringBefore("private fun add(")
+        assertFalse(decodeFailure.contains("state.active = null"))
+    }
+
+    @Test fun `clouds have no daylight gate and concurrent satellite ordering is stable`() {
         val selected = setOf(RadarMapLayer.WIND, RadarMapLayer.LIGHTNING, RadarMapLayer.FOG)
         assertTrue(RadarMapLayer.FOG in selected)
-        assertEquals("Night only · fog / low cloud",
-            RadarLayerGatePolicy.unavailableReason(RadarMapLayer.FOG, hasPlace = true, daylight = true))
-        assertEquals("Daylight status unavailable",
-            RadarLayerGatePolicy.unavailableReason(RadarMapLayer.FOG, hasPlace = true, daylight = null))
-        assertNull(RadarLayerGatePolicy.unavailableReason(
-            RadarMapLayer.FOG, hasPlace = true, daylight = false))
-        assertNull(RadarLayerGatePolicy.unavailableReason(
-            RadarMapLayer.LIGHTNING, hasPlace = true, daylight = true))
+        assertNull(RadarLayerGatePolicy.unavailableReason(hasPlace = true))
+        assertEquals("Select a place for this layer",
+            RadarLayerGatePolicy.unavailableReason(hasPlace = false))
 
         val lightning = EumetLayerMetadata(RadarMapLayer.LIGHTNING, 2L, -20.0, 30.0, 20.0, 70.0)
-        val fog = EumetLayerMetadata(RadarMapLayer.FOG, 1L, -20.0, 30.0, 20.0, 70.0)
+        val clouds = EumetLayerMetadata(
+            RadarMapLayer.FOG, 1L, -20.0, 30.0, 20.0, 70.0, EumetProduct.CLOUD_TYPE,
+        )
         assertEquals(listOf(RadarMapLayer.FOG, RadarMapLayer.LIGHTNING),
             SatelliteLayerRenderPolicy.renderOrder)
-        assertEquals(listOf(fog, lightning),
-            SatelliteLayerRenderPolicy.ordered(listOf(lightning, fog)))
+        assertEquals(listOf(clouds, lightning),
+            SatelliteLayerRenderPolicy.ordered(listOf(lightning, clouds)))
         assertTrue(SatelliteLayerRenderPolicy.sourceId(RadarMapLayer.FOG) !=
             SatelliteLayerRenderPolicy.sourceId(RadarMapLayer.LIGHTNING))
         assertTrue(SatelliteLayerRenderPolicy.layerId(RadarMapLayer.FOG) !=
             SatelliteLayerRenderPolicy.layerId(RadarMapLayer.LIGHTNING))
+        assertTrue(SatelliteLayerRenderPolicy.sourceId(RadarMapLayer.FOG, 1L) !=
+            SatelliteLayerRenderPolicy.sourceId(RadarMapLayer.FOG, 2L))
+
+        val radar = source("RadarScreen.kt")
+        assertTrue(radar.contains("CloudProductSelectionPolicy.preferred(currentWeather, it, layerNow)"))
+        assertTrue(radar.contains("EumetViewRepository.cloudProducts("))
+        assertTrue(radar.contains("if (retained == null) cloudsStatus = AncillaryStatus.Loading"))
+        assertTrue(radar.contains("retained ?: AncillaryStatus.Unavailable(\"Clouds unavailable\")"))
+    }
+
+    @Test fun `slow satellite loads advance progressively at all playback speeds without stale scrubs`() {
+        fun cloud(time: Long, product: EumetProduct = EumetProduct.CLOUD_TYPE) =
+            EumetLayerMetadata(RadarMapLayer.FOG, time, -20.0, 30.0, 20.0, 70.0, product)
+        val active = cloud(600L)
+        val slowPending = cloud(1_200L)
+
+        // While the same slow pending request loads, 1x/2x/4x playback can move the conflated
+        // latest target several cadence frames ahead. The useful pending intermediate promotes.
+        listOf(1_800L, 2_400L, 3_600L).forEach { latestTarget ->
+            assertEquals(SatellitePendingAction.PROMOTE,
+                SatelliteProgressiveLoadPolicy.whenReady(
+                    active, slowPending, cloud(latestTarget), isPlaying = true))
+        }
+        assertEquals(SatellitePendingAction.PROMOTE,
+            SatelliteProgressiveLoadPolicy.whenReady(
+                active, slowPending, slowPending, isPlaying = false))
+        assertEquals(SatellitePendingAction.DISCARD,
+            SatelliteProgressiveLoadPolicy.whenReady(
+                active, slowPending, cloud(1_800L), isPlaying = false))
+        // Loop wrap, backward scrub and an intermediate beyond the latest target never snap back.
+        assertEquals(SatellitePendingAction.DISCARD,
+            SatelliteProgressiveLoadPolicy.whenReady(
+                cloud(3_600L), cloud(4_200L), cloud(600L), isPlaying = true))
+        assertEquals(SatellitePendingAction.DISCARD,
+            SatelliteProgressiveLoadPolicy.whenReady(
+                cloud(3_600L), cloud(4_200L), cloud(3_000L), isPlaying = false))
+        assertEquals(SatellitePendingAction.DISCARD,
+            SatelliteProgressiveLoadPolicy.whenReady(
+                active, cloud(2_400L), cloud(1_800L), isPlaying = true))
+        // A stale old day/night product cannot promote, but a forward intermediate already using
+        // the newly desired product can.
+        assertEquals(SatellitePendingAction.DISCARD,
+            SatelliteProgressiveLoadPolicy.whenReady(active,
+                cloud(1_200L, EumetProduct.FOG_LOW_CLOUD), cloud(1_800L), isPlaying = true))
+        assertEquals(SatellitePendingAction.PROMOTE,
+            SatelliteProgressiveLoadPolicy.whenReady(
+                cloud(600L, EumetProduct.FOG_LOW_CLOUD), cloud(1_200L), cloud(1_800L), true))
+    }
+
+    @Test fun `satellite overlays follow radar time with independent bounded disk-backed warming`() {
+
+        val radar = source("RadarScreen.kt")
+        val map = source("RadarImageMap.kt")
+        assertTrue(radar.contains("satelliteDisplayEpochSeconds = (times.first() + safeCursor.toDouble()).toLong()"))
+        assertTrue(map.contains("SatelliteFrameSelectionPolicy.clouds("))
+        assertTrue(map.contains("SatelliteFrameSelectionPolicy.lightning("))
+        assertFalse(map.contains("EumetViewRepository.verifyFrame"))
+        assertFalse(map.contains("LaunchedEffect(satellitePlaceKey, desiredCloudFrame?.frameIdentity)"))
+        assertTrue(map.contains("SatelliteFrameWindowPolicy.frames("))
+        assertTrue(map.contains("satelliteFrameStore.prepare(requests)"))
+        assertTrue(map.contains("SatellitePreparedFramePolicy.desired(plan.frames, desiredCloudFrame)"))
+        assertTrue(map.contains("SatellitePreparedFramePolicy.desired(plan.frames, desiredLightningFrame)"))
+        assertTrue(map.contains("satelliteBuffers.reconcile(\n                style, satelliteRequests, enabledSatelliteLayers, isPlaying"))
+        assertTrue(map.contains("state.desired = request.desired"))
+        assertTrue(map.contains("state.active?.renderIdentity == desiredRenderIdentity"))
+        assertTrue(map.contains("state.pending?.renderIdentity == desiredRenderIdentity"))
+        assertTrue(map.contains("startLatestIfNeeded(style, choice, state)"))
+        assertFalse(map.contains("startWarmersIfNeeded(style, choice, state)"))
+        assertFalse(map.contains("val warmers: LinkedHashMap<String, SatelliteBufferSlot>"))
+        assertTrue(map.contains("var retiring: SatelliteBufferSlot? = null"))
+        assertTrue(map.contains("SatelliteFrameStoreProvider.get(File(applicationContext.cacheDir, \"satellite-frames\"))"))
+        assertTrue(map.contains("ImageSource(sourceId, quad, bitmap)"))
+        assertFalse(map.contains("ImageSource(sourceId, quad, URI(request.url))"))
+        assertFalse(map.contains("RasterSource("))
+        assertFalse(map.contains("TileSet("))
+        assertFalse(map.contains("MapView.OnSourceChangedListener { sourceId ->"))
+        assertFalse(map.contains("satelliteBuffers.onSourceChanged(sourceId)"))
+        assertTrue(map.contains("withContext(Dispatchers.IO)"))
+        assertTrue(map.contains("private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)"))
+        assertTrue(map.contains("PropertyFactory.rasterOpacity(opacity)"))
+        assertTrue(map.contains("PropertyFactory.rasterFadeDuration(0f)"))
+        assertTrue(map.contains("PRELOAD_OPACITY = 0.001f"))
+        assertTrue(map.contains("state.retiring = outgoing"))
+        assertTrue(map.contains("state.revealedAtRenderSequence = renderSequence"))
+        assertTrue(map.contains("SatelliteHandoffPolicy.mayRetire("))
+        assertTrue(map.contains("listOfNotNull(state.active, state.pending, state.retiring)"))
+        assertTrue(map.contains("if (fully && !teardown.isClosed) satelliteBuffers.onFullyRendered()"))
+        assertTrue(map.contains("SatelliteProgressiveLoadPolicy.whenReady("))
+        assertTrue(map.contains("SatellitePreparationStatus.Preparing(0, requests.size)"))
+        assertTrue(map.contains("currentSatellitePreparation(choice, SatellitePreparationStatus.Rendering)"))
+        assertTrue(map.contains("onFrameRendered(choice)"))
+        assertTrue(map.contains("currentSatellitePreparation(layer, SatellitePreparationStatus.Ready)"))
+        assertFalse(map.contains("satelliteWindow.forEach { add(style"))
+        assertFalse(map.contains("applySatelliteLayers("))
+    }
+
+    @Test fun `prepared frame selection never chooses a future observation`() {
+        val frames = listOf(
+            cachedSatellite(EumetProduct.LIGHTNING, 1_000L),
+            cachedSatellite(EumetProduct.LIGHTNING, 1_300L),
+            cachedSatellite(EumetProduct.LIGHTNING, 1_600L),
+        )
+        fun requested(time: Long) = EumetLayerMetadata(
+            RadarMapLayer.LIGHTNING, time, -15.0, 47.2, 6.0, 63.3,
+            EumetProduct.LIGHTNING, availableFromEpochSeconds = 0L,
+            latestEpochSeconds = 3_000L, cadenceSeconds = 300L,
+        )
+        assertNull(SatellitePreparedFramePolicy.desired(frames, null))
+        assertNull(SatellitePreparedFramePolicy.desired(frames, requested(900L)))
+        assertEquals(1_300L,
+            SatellitePreparedFramePolicy.desired(frames, requested(1_450L))?.validEpochSeconds)
+        assertEquals(1_600L,
+            SatellitePreparedFramePolicy.desired(frames, requested(2_000L))?.validEpochSeconds)
+    }
+
+    @Test fun `satellite cache uses supported budget and region identity never follows camera`() {
+        val map = source("RadarImageMap.kt")
+        val activity = listOf(
+            File("src/main/java/com/rainalarm/app/MainActivity.kt"),
+            File("app/src/main/java/com/rainalarm/app/MainActivity.kt"),
+        ).first(File::isFile).readText()
+        assertTrue(map.contains("satelliteAllowanceBytes = 128L * 1024L * 1024L"))
+        assertTrue(map.contains("baseMapAllowanceBytes = 64L * 1024L * 1024L"))
+        assertTrue(map.contains("setMaximumAmbientCacheSize("))
+        assertTrue(activity.contains("SatelliteAmbientCache.configure(applicationContext)"))
+        assertTrue(map.contains("SatelliteRegionPolicy.select(mapPlace)"))
+        assertTrue(map.contains("SatelliteRegionPolicy.clip(it, satelliteRegion)"))
+        assertTrue(map.contains("SatelliteCacheContext(satelliteRegion)"))
+        assertFalse(map.contains("SatelliteTileCoverPolicy"))
+        assertFalse(map.contains("SatelliteRenderMode"))
+        assertFalse(map.contains("SatelliteViewport"))
+        val cameraMove = map.substringAfter("val listener = MapLibreMap.OnCameraMoveListener {")
+            .substringBefore("cameraListener = listener")
+        assertFalse(cameraMove.contains("satellite"))
+        assertTrue(map.contains("SatelliteRegionalImagePolicy.request(metadata)"))
+        assertTrue(map.contains("SatelliteFrameStoreProvider.get("))
+        assertEquals(0, Regex("val warmers: LinkedHashMap<String, SatelliteBufferSlot>").findAll(map).count())
+        assertEquals(1, Regex("var active: SatelliteBufferSlot\\? = null").findAll(map).count())
+        assertEquals(1, Regex("var pending: SatelliteBufferSlot\\? = null").findAll(map).count())
+        assertEquals(1, Regex("var retiring: SatelliteBufferSlot\\? = null").findAll(map).count())
+        assertTrue(map.contains("onSatellitePreparation: (RadarMapLayer, SatellitePreparationStatus?)"))
+        val cache = listOf(
+            File("src/main/java/com/rainalarm/app/data/SatelliteFrameCache.kt"),
+            File("app/src/main/java/com/rainalarm/app/data/SatelliteFrameCache.kt"),
+        ).first(File::isFile).readText()
+        assertTrue(cache.contains("maximumBytes: Long = 128L * 1024L * 1024L"))
+        assertTrue(cache.contains("private val downloadSlots = Semaphore(concurrency)"))
+        val radar = source("RadarScreen.kt")
+        assertTrue(radar.contains("Preparing ${'$'}{layer.label} ${'$'}{status.ready}/${'$'}{status.total}"))
+        assertTrue(radar.contains("Modifier.align(Alignment.BottomEnd)"))
+    }
+
+    @Test fun `wind model timeline is one bounded request and changes only at fifteen minute steps`() {
+        val radar = source("RadarScreen.kt")
+        val map = source("RadarImageMap.kt")
+        val data = listOf(
+            File("src/main/java/com/rainalarm/app/data/WeatherLayers.kt"),
+            File("app/src/main/java/com/rainalarm/app/data/WeatherLayers.kt"),
+        ).first(File::isFile).readText()
+        assertTrue(radar.contains("WindTimelinePolicy.requestWindow("))
+        assertTrue(radar.contains("WeatherLayerRepository.wind(\n                viewport, windTimelineWindow"))
+        assertTrue(map.contains("windGrid?.displayedAt(satelliteDisplayEpochSeconds)"))
+        assertTrue(map.contains("windView.update(displayedWindGrid, windArrowScale)"))
+        assertTrue(data.contains("minutely_15=wind_speed_10m,wind_direction_10m"))
+        assertTrue(data.contains("start_minutely_15="))
+        assertTrue(data.contains("end_minutely_15="))
+        assertTrue(data.contains("times.size <= 33"))
+        assertFalse(map.contains("windView.update(windGrid, windArrowScale)"))
+    }
+
+    @Test fun `verified clouds stay visible only for the same covered fresh place`() {
+        val now = Instant.parse("2026-09-17T03:00:00Z").epochSecond
+        val cardiff = SavedPlace("Cardiff", 51.48, -3.18)
+        val london = SavedPlace("London", 51.5, -0.12)
+        val clouds = EumetLayerMetadata(
+            RadarMapLayer.FOG, now - 600, -20.0, 30.0, 20.0, 70.0,
+            EumetProduct.CLOUD_TYPE,
+        )
+        val key = CloudsSwapPolicy.placeKey(cardiff)
+        assertTrue(CloudsSwapPolicy.canRetain(clouds, key, cardiff, now))
+        assertFalse(CloudsSwapPolicy.canRetain(clouds, key, london, now))
+        assertFalse(CloudsSwapPolicy.canRetain(clouds, null, cardiff, now))
+        assertFalse(CloudsSwapPolicy.canRetain(clouds, key, cardiff, now + 3_001))
     }
 
     @Test fun `wind field doubles arrow geometry without changing sampled point count`() {
@@ -447,7 +697,7 @@ class WeatherUiWiringTest {
         assertTrue(settings.contains("if (RadarMapLayer.WIND in enabledMapLayers)"))
         assertTrue(settings.contains("WindArrowPreview(previewScale)"))
         assertTrue(settings.contains("selectWindArrowScale(previewScale)"))
-        assertTrue(map.contains("windView.update(windGrid, windArrowScale)"))
+        assertTrue(map.contains("windView.update(displayedWindGrid, windArrowScale)"))
     }
 
     @Test fun `Now compass and graph appearance wrap ready and placeholder cards independently`() {

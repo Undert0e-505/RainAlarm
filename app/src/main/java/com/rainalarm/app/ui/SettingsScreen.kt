@@ -283,7 +283,7 @@ fun SettingsScreen(
             Column(Modifier.padding(20.dp)) {
                 Text("Independent rain nowcasting", fontWeight = FontWeight.SemiBold)
                 Text(
-                    "Regional radar: MeteoGroup/DTN. Open radar: RainViewer. Wind and selected-place model weather: Open-Meteo (CC BY 4.0). Town search: Open-Meteo/GeoNames. UK postcode lookup: postcodes.io using OS OpenData; contains Ordnance Survey, Crown, Royal Mail and National Statistics database rights. Satellite lightning and fog / low-cloud layers: © EUMETSAT (CC BY 4.0). Maps: © OpenStreetMap contributors via OpenFreeMap/OpenMapTiles.",
+                    "Regional radar: MeteoGroup/DTN. Open radar: RainViewer. Wind and selected-place model weather: Open-Meteo (CC BY 4.0). Town search: Open-Meteo/GeoNames. UK postcode lookup: postcodes.io using OS OpenData; contains Ordnance Survey, Crown, Royal Mail and National Statistics database rights. Satellite Lightning and daytime/nighttime Clouds imagery: © EUMETSAT (CC BY 4.0). Clouds show cloud structures or fog / low cloud, not confirmed surface fog. Maps: © OpenStreetMap contributors via OpenFreeMap/OpenMapTiles.",
                     color = SettingsSecondary,
                     fontSize = 13.sp,
                     lineHeight = 19.sp,

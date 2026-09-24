@@ -92,7 +92,9 @@ import com.rainalarm.app.data.RadarMapStyle
 import com.rainalarm.app.data.CurrentWeather
 import com.rainalarm.app.data.WindGrid
 import com.rainalarm.app.data.WindViewport
+import com.rainalarm.app.data.WindTimelinePolicy
 import com.rainalarm.app.data.EumetLayerMetadata
+import com.rainalarm.app.data.CloudProductSelectionPolicy
 import com.rainalarm.app.data.EumetViewRepository
 import com.rainalarm.app.data.WeatherLayerRepository
 import com.rainalarm.app.data.CurrentLocationSelectionPolicy
@@ -190,13 +192,57 @@ internal object SatelliteFeedbackPolicy {
     ) state.copy(visible = false, holdingTerminal = false) else state
 }
 
-internal object RadarLayerGatePolicy {
-    fun unavailableReason(layer: RadarMapLayer, hasPlace: Boolean, daylight: Boolean?): String? = when {
-        !hasPlace -> "Select a place for this layer"
-        layer == RadarMapLayer.FOG && daylight == true -> "Night only · fog / low cloud"
-        layer == RadarMapLayer.FOG && daylight == null -> "Daylight status unavailable"
-        else -> null
+internal object SatellitePreparationLabelPolicy {
+    fun label(layer: RadarMapLayer, status: SatellitePreparationStatus): String = when (status) {
+        is SatellitePreparationStatus.Preparing ->
+            "Preparing ${layer.label} ${status.ready}/${status.total}"
+        SatellitePreparationStatus.Rendering -> "Rendering ${layer.label}…"
+        SatellitePreparationStatus.Ready -> "${layer.label} ready"
+        is SatellitePreparationStatus.Failed -> status.message
     }
+}
+
+internal object SatelliteStatusLabelPolicy {
+    fun label(
+        layer: RadarMapLayer,
+        ancillaryStatus: AncillaryStatus,
+        preparation: SatellitePreparationStatus?,
+    ): String {
+        require(layer == RadarMapLayer.FOG || layer == RadarMapLayer.LIGHTNING)
+        val label = layer.label
+        return when {
+            preparation is SatellitePreparationStatus.Preparing ->
+                "Preparing $label ${preparation.ready}/${preparation.total}"
+            preparation == SatellitePreparationStatus.Rendering -> "$label rendering"
+            preparation is SatellitePreparationStatus.Failed -> preparation.message
+            ancillaryStatus is AncillaryStatus.Unavailable -> ancillaryStatus.message
+            ancillaryStatus == AncillaryStatus.Loading || ancillaryStatus == AncillaryStatus.Off ->
+                "$label loading"
+            ancillaryStatus is AncillaryStatus.Satellite &&
+                preparation == SatellitePreparationStatus.Ready -> "$label available"
+            ancillaryStatus is AncillaryStatus.Satellite -> "$label preparing"
+            else -> "$label unavailable"
+        }
+    }
+}
+
+internal object RadarLayerGatePolicy {
+    fun unavailableReason(hasPlace: Boolean): String? =
+        if (hasPlace) null else "Select a place for this layer"
+}
+
+/** Keeps verified cloud imagery visible while its day/night replacement is checked. */
+internal object CloudsSwapPolicy {
+    fun placeKey(place: SavedPlace): String =
+        "${place.id}:${place.latitude.toBits()}:${place.longitude.toBits()}"
+
+    fun canRetain(
+        metadata: EumetLayerMetadata,
+        verifiedPlaceKey: String?,
+        place: SavedPlace,
+        nowEpochSeconds: Long,
+    ): Boolean = verifiedPlaceKey == placeKey(place) && metadata.covers(place) &&
+        metadata.freshAt(nowEpochSeconds)
 }
 
 @Composable
@@ -205,6 +251,7 @@ private fun RadarLayerStatus(
     ancillaryStatus: AncillaryStatus,
     weather: CurrentWeather?,
     mapWidthDp: Int,
+    preparation: SatellitePreparationStatus? = null,
     modifier: Modifier = Modifier,
 ) {
     if (mapLayer == RadarMapLayer.OFF) return
@@ -223,19 +270,8 @@ private fun RadarLayerStatus(
                     "Selected-place wind from ${cardinalDirection(from)} at ${speed.toInt()} kilometres per hour"
             }
         }
-        RadarMapLayer.LIGHTNING -> when (ancillaryStatus) {
-            AncillaryStatus.Loading, AncillaryStatus.Off -> "Lightning loading"
-            is AncillaryStatus.Satellite -> "Lightning available"
-            is AncillaryStatus.Unavailable -> ancillaryStatus.message
-            else -> "Lightning unavailable"
-        }.let { it to it }
-        RadarMapLayer.FOG -> when (ancillaryStatus) {
-            AncillaryStatus.Loading, AncillaryStatus.Off -> "Fog loading"
-            is AncillaryStatus.Satellite -> "Fog available"
-            is AncillaryStatus.Unavailable -> ancillaryStatus.message
-            else -> "Fog unavailable"
-        }
-        .let { it to it }
+        RadarMapLayer.LIGHTNING, RadarMapLayer.FOG ->
+            SatelliteStatusLabelPolicy.label(mapLayer, ancillaryStatus, preparation).let { it to it }
     }
     Text(status,
         color = LocalRainAlarmPalette.current.mapLabelText,
@@ -254,6 +290,7 @@ private fun RadarLayerStatus(
 private fun RadarLayerStatuses(
     enabledMapLayers: Set<RadarMapLayer>,
     statuses: Map<RadarMapLayer, AncillaryStatus>,
+    preparation: Map<RadarMapLayer, SatellitePreparationStatus>,
     weather: CurrentWeather?,
     mapWidthDp: Int,
     modifier: Modifier = Modifier,
@@ -266,10 +303,12 @@ private fun RadarLayerStatuses(
         SatelliteActivationStatus(RadarMapLayer.LIGHTNING,
             RadarMapLayer.LIGHTNING in enabledMapLayers,
             statuses[RadarMapLayer.LIGHTNING] ?: AncillaryStatus.Off,
+            preparation[RadarMapLayer.LIGHTNING],
             weather, mapWidthDp)
         SatelliteActivationStatus(RadarMapLayer.FOG,
             RadarMapLayer.FOG in enabledMapLayers,
             statuses[RadarMapLayer.FOG] ?: AncillaryStatus.Off,
+            preparation[RadarMapLayer.FOG],
             weather, mapWidthDp)
     }
 }
@@ -279,11 +318,14 @@ private fun SatelliteActivationStatus(
     layer: RadarMapLayer,
     enabled: Boolean,
     status: AncillaryStatus,
+    preparation: SatellitePreparationStatus?,
     weather: CurrentWeather?,
     mapWidthDp: Int,
 ) {
     var feedback by remember(layer) { mutableStateOf(SatelliteFeedbackState()) }
-    val terminal = status !is AncillaryStatus.Off && status !is AncillaryStatus.Loading
+    val terminal = status is AncillaryStatus.Unavailable ||
+        preparation is SatellitePreparationStatus.Ready ||
+        preparation is SatellitePreparationStatus.Failed
     LaunchedEffect(enabled, terminal) {
         feedback = SatelliteFeedbackPolicy.onInput(feedback, enabled, terminal)
     }
@@ -301,7 +343,9 @@ private fun SatelliteActivationStatus(
         enter = fadeIn(tween(90)),
         exit = fadeOut(tween(SatelliteFeedbackPolicy.fadeMillis)),
     ) {
-        RadarLayerStatus(layer, status, weather, mapWidthDp, Modifier.padding(top = 2.dp))
+        RadarLayerStatus(
+            layer, status, weather, mapWidthDp, preparation, Modifier.padding(top = 2.dp),
+        )
     }
 }
 
@@ -362,11 +406,14 @@ private fun RadarLayerSegments(
     }
 }
 
-private sealed interface AncillaryStatus {
+internal sealed interface AncillaryStatus {
     data object Off : AncillaryStatus
     data object Loading : AncillaryStatus
     data class Wind(val grid: WindGrid) : AncillaryStatus
-    data class Satellite(val metadata: EumetLayerMetadata) : AncillaryStatus
+    data class Satellite(
+        val metadata: EumetLayerMetadata,
+        val catalog: List<EumetLayerMetadata> = listOf(metadata),
+    ) : AncillaryStatus
     data class Unavailable(val message: String) : AncillaryStatus
 }
 
@@ -405,11 +452,12 @@ fun LiveRadarScreen(
     var reload by remember { mutableIntStateOf(0) }
     var layerRefresh by remember { mutableIntStateOf(0) }
     var previousLightningRefresh by remember { mutableIntStateOf(0) }
-    var previousFogRefresh by remember { mutableIntStateOf(0) }
+    var previousCloudsRefresh by remember { mutableIntStateOf(0) }
     var previousWindRefresh by remember { mutableIntStateOf(0) }
     var windStatus by remember { mutableStateOf<AncillaryStatus>(AncillaryStatus.Off) }
     var lightningStatus by remember { mutableStateOf<AncillaryStatus>(AncillaryStatus.Off) }
-    var fogStatus by remember { mutableStateOf<AncillaryStatus>(AncillaryStatus.Off) }
+    var cloudsStatus by remember { mutableStateOf<AncillaryStatus>(AncillaryStatus.Off) }
+    var cloudsVerifiedPlaceKey by remember { mutableStateOf<String?>(null) }
     var windViewport by remember { mutableStateOf<WindViewport?>(null) }
     var layerNow by remember { mutableStateOf(Instant.now().epochSecond) }
     LaunchedEffect(enabledMapLayers.isNotEmpty()) {
@@ -495,7 +543,6 @@ fun LiveRadarScreen(
     }
     val regionLatitude = place?.latitude?.times(10)?.toInt()
     val regionLongitude = place?.longitude?.times(10)?.toInt()
-    val daylight = currentWeather?.takeIf { it.daylightFreshAt(layerNow) }?.isDay
     val lightningEnabled = RadarMapLayer.LIGHTNING in enabledMapLayers
     LaunchedEffect(lightningEnabled, place?.id, regionLatitude, regionLongitude, layerRefresh) {
         if (!lightningEnabled) {
@@ -503,9 +550,7 @@ fun LiveRadarScreen(
             return@LaunchedEffect
         }
         val selected = place
-        val reason = RadarLayerGatePolicy.unavailableReason(
-            RadarMapLayer.LIGHTNING, selected != null, daylight,
-        )
+        val reason = RadarLayerGatePolicy.unavailableReason(selected != null)
         if (reason != null) {
             lightningStatus = AncillaryStatus.Unavailable(reason)
             return@LaunchedEffect
@@ -523,34 +568,57 @@ fun LiveRadarScreen(
             AncillaryStatus.Unavailable("Lightning unavailable")
         }
     }
-    val fogEnabled = RadarMapLayer.FOG in enabledMapLayers
-    LaunchedEffect(fogEnabled, place?.id, regionLatitude, regionLongitude, layerRefresh, daylight) {
-        if (!fogEnabled) {
-            fogStatus = AncillaryStatus.Off
+    val cloudsEnabled = RadarMapLayer.FOG in enabledMapLayers
+    val preferredCloudProduct = place?.let {
+        CloudProductSelectionPolicy.preferred(currentWeather, it, layerNow)
+    }
+    LaunchedEffect(
+        cloudsEnabled, place?.id, regionLatitude, regionLongitude, layerRefresh,
+        preferredCloudProduct,
+    ) {
+        if (!cloudsEnabled) {
+            cloudsStatus = AncillaryStatus.Off
+            cloudsVerifiedPlaceKey = null
             return@LaunchedEffect
         }
         val selected = place
-        val reason = RadarLayerGatePolicy.unavailableReason(RadarMapLayer.FOG, selected != null, daylight)
+        val reason = RadarLayerGatePolicy.unavailableReason(selected != null)
         if (reason != null) {
-            fogStatus = AncillaryStatus.Unavailable(reason)
+            cloudsStatus = AncillaryStatus.Unavailable(reason)
+            cloudsVerifiedPlaceKey = null
             return@LaunchedEffect
         }
-        val force = layerRefresh != previousFogRefresh
-        previousFogRefresh = layerRefresh
-        fogStatus = AncillaryStatus.Loading
-        fogStatus = try {
-            AncillaryStatus.Satellite(EumetViewRepository.metadata(
-                RadarMapLayer.FOG, requireNotNull(selected), force,
-            ))
+        val resolvedPlace = requireNotNull(selected)
+        val retained = (cloudsStatus as? AncillaryStatus.Satellite)?.takeIf {
+            CloudsSwapPolicy.canRetain(
+                it.metadata, cloudsVerifiedPlaceKey, resolvedPlace, layerNow,
+            )
+        }
+        val force = layerRefresh != previousCloudsRefresh
+        previousCloudsRefresh = layerRefresh
+        if (retained == null) cloudsStatus = AncillaryStatus.Loading
+        cloudsStatus = try {
+            val products = EumetViewRepository.cloudProducts(
+                requireNotNull(preferredCloudProduct), resolvedPlace, force,
+            )
+            val primary = products.firstOrNull { it.product == preferredCloudProduct }
+                ?: products.first()
+            AncillaryStatus.Satellite(primary, products).also {
+                cloudsVerifiedPlaceKey = CloudsSwapPolicy.placeKey(resolvedPlace)
+            }
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) {
-            Log.w("RainRadarLayers", "FOG layer unavailable", failure)
-            AncillaryStatus.Unavailable("Fog unavailable")
+            Log.w("RainRadarLayers", "Clouds layer unavailable", failure)
+            retained ?: AncillaryStatus.Unavailable("Clouds unavailable")
         }
     }
     val windEnabled = RadarMapLayer.WIND in enabledMapLayers
     val viewportKey = windViewport?.requestKey()
-    LaunchedEffect(windEnabled, viewportKey, layerRefresh) {
+    val windTimelineWindow = WindTimelinePolicy.requestWindow(
+        session?.timelineFrames?.firstOrNull()?.time ?: layerNow - 3 * 3_600L,
+        session?.timelineFrames?.lastOrNull()?.time?.plus(3_600L) ?: layerNow + 3_600L,
+    )
+    LaunchedEffect(windEnabled, viewportKey, windTimelineWindow.cacheKey, layerRefresh) {
         if (!windEnabled) {
             windStatus = AncillaryStatus.Off
             return@LaunchedEffect
@@ -564,7 +632,9 @@ fun LiveRadarScreen(
         previousWindRefresh = layerRefresh
         windStatus = AncillaryStatus.Loading
         windStatus = try {
-            AncillaryStatus.Wind(WeatherLayerRepository.wind(viewport, force = force))
+            AncillaryStatus.Wind(WeatherLayerRepository.wind(
+                viewport, windTimelineWindow, force = force,
+            ))
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) {
             Log.w("RainRadarLayers", "Viewport wind unavailable", failure)
@@ -573,7 +643,7 @@ fun LiveRadarScreen(
     }
     val visibleWindStatus = when (val active = windStatus) {
         is AncillaryStatus.Wind -> if (active.grid.viewportKey == viewportKey &&
-            active.grid.points.all { it.freshAt(layerNow) }) active
+            layerNow - active.grid.fetchedEpochSeconds in 0L..900L) active
         else AncillaryStatus.Unavailable("Wind model stale · refresh")
         else -> active
     }
@@ -582,19 +652,15 @@ fun LiveRadarScreen(
             else AncillaryStatus.Unavailable("Satellite image delayed · refresh")
         else -> active
     }
-    val visibleFogStatus = when (val active = fogStatus) {
-        is AncillaryStatus.Satellite -> when {
-            !active.metadata.freshAt(layerNow) -> AncillaryStatus.Unavailable("Satellite image delayed · refresh")
-            daylight != false -> AncillaryStatus.Unavailable(if (daylight == true)
-                "Night only · fog / low cloud" else "Daylight status unavailable")
-            else -> active
-        }
+    val visibleCloudsStatus = when (val active = cloudsStatus) {
+        is AncillaryStatus.Satellite -> if (active.metadata.freshAt(layerNow)) active
+            else AncillaryStatus.Unavailable("Satellite image delayed · refresh")
         else -> active
     }
     val visibleAncillary = mapOf(
         RadarMapLayer.WIND to visibleWindStatus,
         RadarMapLayer.LIGHTNING to visibleLightningStatus,
-        RadarMapLayer.FOG to visibleFogStatus,
+        RadarMapLayer.FOG to visibleCloudsStatus,
     )
     BoxWithConstraints(Modifier.fillMaxSize()) {
     val screenWidthDp = maxWidth.value.toInt()
@@ -660,7 +726,7 @@ fun LiveRadarScreen(
                 onLayerError = { layer, message ->
                     when (layer) {
                         RadarMapLayer.LIGHTNING -> lightningStatus = AncillaryStatus.Unavailable(message)
-                        RadarMapLayer.FOG -> fogStatus = AncillaryStatus.Unavailable(message)
+                        RadarMapLayer.FOG -> cloudsStatus = AncillaryStatus.Unavailable(message)
                         else -> Unit
                     }
                 },
@@ -845,6 +911,9 @@ private fun ColumnScope.RadarPlayer(
     }
     var rendererStatus by remember(session) { mutableStateOf<RadarRendererStatus>(RadarRendererStatus.Loading) }
     var mapStyleError by remember(session) { mutableStateOf<String?>(null) }
+    var satellitePreparation by remember(session) {
+        mutableStateOf<Map<RadarMapLayer, SatellitePreparationStatus>>(emptyMap())
+    }
     val safeCursor = cursor.takeIf { it.isFinite() }?.coerceIn(0f, endOffset) ?: initialCursor
     val bracket = if (providerForecast) {
         RadarTimeline.bracket(times, forecastFlags, times.first() + safeCursor.toDouble())
@@ -888,10 +957,22 @@ private fun ColumnScope.RadarPlayer(
                 mapStyle = mapStyle,
                 windGrid = (ancillaryStatuses[RadarMapLayer.WIND] as? AncillaryStatus.Wind)?.grid,
                 windArrowScale = windArrowScale,
-                satelliteLayers = listOfNotNull(
-                    (ancillaryStatuses[RadarMapLayer.FOG] as? AncillaryStatus.Satellite)?.metadata,
-                    (ancillaryStatuses[RadarMapLayer.LIGHTNING] as? AncillaryStatus.Satellite)?.metadata,
-                ),
+                satelliteCatalogs = listOfNotNull(
+                    ancillaryStatuses[RadarMapLayer.FOG] as? AncillaryStatus.Satellite,
+                    ancillaryStatuses[RadarMapLayer.LIGHTNING] as? AncillaryStatus.Satellite,
+                ).flatMap(AncillaryStatus.Satellite::catalog),
+                enabledSatelliteLayers = enabledMapLayers.filterTo(mutableSetOf()) {
+                    it == RadarMapLayer.FOG || it == RadarMapLayer.LIGHTNING
+                },
+                satelliteDisplayEpochSeconds = (times.first() + safeCursor.toDouble()).toLong(),
+                satelliteTimelineStartEpochSeconds = times.first(),
+                satelliteTimelineEndEpochSeconds = times.first() + endOffset.toLong(),
+                satelliteWeather = currentWeather,
+                onSatellitePreparation = { layer, status ->
+                    satellitePreparation = satellitePreparation.toMutableMap().apply {
+                        if (status == null) remove(layer) else put(layer, status)
+                    }
+                },
                 onLayerError = onLayerError,
                 onMapStyleError = { mapStyleError = it },
                 onWindViewportChanged = onWindViewportChanged,
@@ -977,20 +1058,54 @@ private fun ColumnScope.RadarPlayer(
                     top = RadarTopControlsPolicy.segmentTopDp.dp,
                     end = RadarTopControlsPolicy.controlsEndDp.dp,
                 ))
-            RadarLayerStatuses(enabledMapLayers, ancillaryStatuses, currentWeather, mapWidthDp,
+            RadarLayerStatuses(
+                enabledMapLayers, ancillaryStatuses, satellitePreparation,
+                currentWeather, mapWidthDp,
                 Modifier.align(Alignment.TopEnd).padding(
                     top = RadarTopControlsPolicy.statusTopDp.dp,
                     end = RadarTopControlsPolicy.statusEndDp.dp))
-            refreshOverlay?.let { status ->
-                Text(status.label,
-                    color = LocalRainAlarmPalette.current.mapLabelText,
-                    fontSize = 11.sp, lineHeight = 13.sp,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = 32.dp)
-                        .widthIn(max = (mapWidthDp - 80).coerceIn(100, 208).dp)
-                        .background(LocalRainAlarmPalette.current.mapLabelSurface, RoundedCornerShape(4.dp))
-                        .padding(horizontal = 4.dp, vertical = 2.dp)
-                        .semantics { contentDescription = status.accessibilityLabel })
+            val preparationLabels = SatelliteLayerRenderPolicy.renderOrder.mapNotNull { layer ->
+                satellitePreparation[layer]?.takeIf {
+                    it !is SatellitePreparationStatus.Ready
+                }?.let { SatellitePreparationLabelPolicy.label(layer, it) }
+            }
+            if (preparationLabels.isNotEmpty() || refreshOverlay != null) {
+                Column(
+                    modifier = Modifier.align(Alignment.BottomEnd)
+                        .padding(end = 8.dp, bottom = 32.dp),
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    preparationLabels.forEach { label ->
+                        Text(
+                            label,
+                            color = LocalRainAlarmPalette.current.mapLabelText,
+                            fontSize = 11.sp,
+                            lineHeight = 13.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .widthIn(max = (mapWidthDp - 80).coerceIn(100, 208).dp)
+                                .background(
+                                    LocalRainAlarmPalette.current.mapLabelSurface,
+                                    RoundedCornerShape(4.dp),
+                                )
+                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                                .semantics { contentDescription = label },
+                        )
+                    }
+                    refreshOverlay?.let { status ->
+                        Text(status.label,
+                            color = LocalRainAlarmPalette.current.mapLabelText,
+                            fontSize = 11.sp, lineHeight = 13.sp,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .widthIn(max = (mapWidthDp - 80).coerceIn(100, 208).dp)
+                                .background(LocalRainAlarmPalette.current.mapLabelSurface, RoundedCornerShape(4.dp))
+                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                                .semantics { contentDescription = status.accessibilityLabel })
+                    }
+                }
             }
         }
     }

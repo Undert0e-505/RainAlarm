@@ -169,10 +169,17 @@ References:
   instants are formatted in the returned IANA timezone for the selected
   place's **current local date**, including DST changes. Missing events show
   unavailable; a local-day change refreshes the point response. These facts
-  support Now indicators and the Fog night gate; they do not alter radar
-  prediction or alerts. A separate request only while Wind is enabled carries
+  support Now indicators and help select the preferred daytime or nighttime
+  Clouds product; they do not alter radar prediction or alerts. Stale or
+  missing daylight data falls back to today's solar events or a deterministic
+  coordinate/time solar calculation rather than disabling Clouds. A separate
+  request only while Wind is enabled carries
   25 distinct coordinates spanning the settled **visible map viewport** with
-  offscreen 17% margin rows/columns. The visible nine use exact quarter,
+  offscreen 17% margin rows/columns plus an exact, bounded
+  `start_minutely_15` / `end_minutely_15` window covering the active radar
+  session. The response supplies 15-minute 10 m wind speed/direction frames;
+  the map selects the latest model step at or before the radar cursor, clamping
+  at the first/last returned step. The visible nine use exact quarter,
   midpoint and three-quarter positions on each axis. Arrows are georeferenced
   and point downwind; one compact
   status beneath the connected layer segments reports selected-place speed
@@ -181,14 +188,17 @@ References:
   kept in Settings > About the data rather than repeated over the map.
 - The point request is place-aware, cached for 15 minutes and rejected when
   its model valid time is older than 60 minutes. Day/night status expires after
-  30 minutes. Wind grids are cached by quantized viewport for 15 minutes,
+  30 minutes. Wind series are cached by quantized viewport and session window
+  for 15 minutes,
   with at most eight process-scoped grid entries. A request occurs only after
   a meaningful settled camera change or explicit refresh, never per gesture
-  frame or radar animation tick. Stale in-flight results are ignored on a
+  frame, radar animation frame or 15-minute cursor step. Stale in-flight results are ignored on a
   later viewport selection. No current-location coordinates are persisted.
-- `current` is based on 15-minute weather-model output, **not** a measured
-  station observation. Outside supported 15-minute model regions, values may
-  reflect interpolated coarser steps. The existing Open-Meteo precipitation
+- `current` and the wind series are weather-model output, **not** measured
+  station observations. Fifteen-minute wind is native for supported regional
+  models (currently Central Europe and North America) and interpolated from
+  hourly model values elsewhere; the UI does not claim finer underlying model
+  precision. The existing Open-Meteo precipitation
   fallback remains separate. Public API use is subject to Open-Meteo's
   noncommercial and attribution terms; review them before distribution.
 
@@ -202,36 +212,114 @@ References:
 - Public WMS: `https://view.eumetsat.int/geoserver/wms`.
 - **Lightning** uses `mtg_fd:li_afa`: accumulated satellite optical **flash
   areas**, not individual lightning locations or verified cloud-to-ground
-  strikes. The 5-minute product's latest time is parsed from GetCapabilities.
-- **Fog** uses `mtg_fd:rgb_fog`: nighttime fog **or low cloud** RGB, not a
-  confirmed surface-fog diagnosis. It is displayed only when a fresh selected-
-  place Open-Meteo daylight indicator says night; daylight or unknown daylight
-  status yields an explicit unavailable message.
-- Lightning and Fog are independent persistent toggles and may be rendered
-  together; Fog is added below Lightning so flash areas remain legible. Fog
-  remains selected while its day/night gate withholds it and becomes eligible
-  again when fresh selected-place status says night. Activation feedback stays
+  strikes. Its advertised start, latest time and 5-minute cadence are parsed
+  from GetCapabilities.
+- **Clouds** is one persistent control with two exact WMS products. Daylight
+  prefers MTG Cloud Type RGB (`mtg_fd:rgb_cloudtype`); night prefers MTG Fog /
+  Low Clouds RGB (`mtg_fd:rgb_fog`). A fresh selected-place Open-Meteo `is_day`
+  value is preferred, then today's valid sunrise/sunset, then a deterministic
+  coordinate/time solar calculation, so unknown daylight never disables the
+  layer. If the preferred product cannot be verified, the other product is
+  tried. The imagery shows cloud structures or fog **or low cloud** and is not
+  a confirmed surface-fog diagnosis.
+- Lightning and Clouds are independent persistent toggles and may be rendered
+  together; Clouds is added below Lightning so flash areas remain legible. A
+  previously verified, fresh Clouds product remains rendered while a day/night
+  replacement is checked, then swaps in place. Activation feedback stays
   visible through loading, holds its terminal state for one second and then
   fades independently; selected-place Wind remains visible while enabled.
+- The radar cursor's absolute epoch selects the most recent advertised
+  satellite observation at or before it: Lightning advances on its 5-minute
+  WMS cadence and Clouds on their 10-minute cadence. Cursor positions after the
+  latest satellite time hold the latest observation; the app does not
+  extrapolate clouds or claim an EUMETSAT forecast. Cursor positions before the
+  advertised product range show no future observation. Cloud day/night product
+  choice uses the effective satellite-frame time, so a timeline crossing
+  dawn/dusk can change products when both catalogues cover it.
 - Capabilities XML is bounded to 1 MiB and decoded as strict UTF-8. Parsing uses
   Android-compatible DOM configuration while explicitly rejecting document-type
   and entity declarations, disabling entity expansion and installing a resolver
   that rejects every external resource. Optional parser hardening is applied
   only when the platform factory supports it.
-- WMS imagery is pinned to one advertised valid time for all tiles, using a
-  MapLibre `TileSet` raster source with EPSG:3857 BBOX substitution. Tiles are
-  capped at source zoom 8 and overscaled afterward. A small image probe checks
-  content type and PNG signature before showing a new layer. An isolated tile
-  error is logged but does not tear down the metadata/probe-verified source;
-  explicit refresh retries it. Source loading is optional and independent of
-  the radar GLES overlay. Satellite layers are withheld if the advertised time is
-  older than 30 minutes for flash areas or 60 minutes for fog, or if the
+- Each WMS frame is pinned to one advertised valid time. The app downloads it
+  explicitly from the allowlisted EUMET HTTPS WMS host, validates the HTTP
+  status/content type, PNG structure/checksums and exact dimensions, and only
+  then supplies its bitmap to a transparent MapLibre `ImageSource`. Its
+  EPSG:3857 BBOX is exactly the provider/region intersection and
+  its projected aspect ratio is preserved within a 128–1024px bound. The same
+  fixed regional image is georeferenced at every camera zoom: it neither
+  requests the full satellite disk nor disappears at world zoom, and a close
+  view deliberately overscales that source rather than starting a hidden tile
+  download. The selected place chooses the smallest code-owned operational
+  region: British Isles first, then Europe, overlapping North America East/West
+  regions, then a bounded local fallback. Camera panning and zooming never
+  change that region or the satellite resource identity. Each definition has
+  an inner selection rectangle and an outer request rectangle with approximately
+  200 km of surrounding margin. The EUMETSAT-advertised bounds are intersected
+  with the outer rectangle before the WMS URL is built; outside that exact
+  georeferenced rectangle the source contains no satellite pixels.
+- A small selected-place image probe checks the latest product's content type
+  and PNG signature before its advertised time range is accepted;
+  cadence-derived historical frames do not add a blocking HTTP probe. For each
+  enabled overlay, the app derives all unique observed product/time frames that
+  intersect the radar observation window and deduplicates the latest observation
+  held through forecast time. Two explicit PNG downloads are allowed at once
+  across Clouds and Lightning (the tested hard configuration maximum is three),
+  and the overlay remains hidden until every identity in that finite set is a
+  complete, verified, atomically committed cache file. Bottom-right
+  `Preparing … n/N` feedback reports verified-file progress without moving the
+  layout. Temporary, partial, malformed, wrong-content and wrong-dimension files
+  never count as ready.
+- Satellite PNGs use an app-owned, atomic, least-recently-used disk cache capped
+  at 128 MiB. MapLibre's separate supported ambient database is capped at
+  64 MiB for the base map, for an intended total map/satellite disk budget of
+  about 192 MiB. Historical regional product/time URLs are immutable within a session; exact
+  product/time/clipped-bounds/region identities prevent repeat fetches on loops
+  and allow different selected places inside one operating region to reuse the
+  same resources. Pan/zoom does not rebuild the plan or restart preparation. A
+  refreshed plan reuses every overlapping verified file and fetches only new
+  frames while retaining the last complete visible set. Network reads have a
+  20-second timeout and at most three attempts. Missing/corrupt/evicted files are
+  invalidated and acquired again rather than becoming permanently false-ready;
+  exhausted failure retains the old complete set and reports that refresh is needed.
+- Radar Refresh creates a new ancillary-layer generation. For enabled Clouds it
+  forces fresh EUMETSAT capability discovery and a current-frame probe for both
+  Cloud Type and Fog / Low Clouds, bypassing their five-minute metadata/probe
+  caches. It does not purge immutable product/time/region PNGs: valid cache files
+  are reused and only new, missing, corrupt or evicted identities download. Rapid
+  repeat taps cancel/supersede older UI work so only the latest generation may
+  publish. Disabled Clouds causes no cloud metadata, probe or frame acquisition.
+  Frame downloads share a global two-request semaphore (the tested hard maximum
+  is three), allow up to three attempts, and use five-second connect and
+  twenty-second read timeouts. Cloud metadata is accepted for at most one hour.
+- Satellite UI status follows the real pipeline. `Preparing … n/N` counts only
+  validated, atomically committed regional PNGs; `Rendering …` means the full
+  compressed set is ready and the cursor frame is being decoded/handed to
+  MapLibre; `Ready`/`Clouds available` requires a post-reveal fully rendered map
+  callback; and `Failed` represents the latest preparation/render attempt. A
+  verified previous complete set remains visible during replacement where one
+  exists, so metadata availability alone is never reported as rendered readiness.
+- After the full set unlocks, only the active image and one progressive
+  replacement normally remain decoded/live. A retiring predecessor exists briefly
+  during handoff; the full set remains compressed on disk, so decoded/GPU state
+  stays bounded. Bitmap decoding runs off the UI thread and MapLibre mutation
+  returns to the main thread. Readiness reveals a replacement
+  while retaining its predecessor; only a later fully rendered frame for the
+  expected active generation retires the old source. This post-reveal overlap
+  avoids a frame in which both rasters are transparent. While playing, a slow
+  forward intermediate may be promoted and loading then jumps to the latest
+  conflated target. Paused scrubbing discards a ready stale pending frame and
+  loads only the exact latest target. Loop wraps/backward seeks and old
+  day/night products cannot snap back over the cursor. Independently changing
+  Clouds never tears down Lightning and vice versa. Source loading is optional
+  and independent of the radar GLES overlay. Satellite layers are withheld if the advertised time is
+  older than 30 minutes for flash areas or 60 minutes for either Clouds
+  product, or if the
   selected place is outside the reported coverage bounds. Empty transparent
   flash imagery is **not** evidence that no lightning occurred.
-- EUMETSAT attribution is listed in Settings > About the data and retained in
-  TileSet metadata exposed by MapLibre's attribution control; core product data
-  are subject to CC BY 4.0. WMS tile substitution on Android
-  still needs a physical-device visual check on each supported MapLibre/API
+- EUMETSAT attribution is listed in Settings > About the data; core product data
+  are subject to CC BY 4.0. Bitmap-backed ImageSource rendering on Android still
+  needs a physical-device visual check on each supported MapLibre/API
   combination. This implementation does **not** ingest the separate per-flash
   NetCDF collection, which requires registered access/token and parsing.
 
