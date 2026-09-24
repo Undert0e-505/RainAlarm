@@ -1,10 +1,14 @@
 package com.rainalarm.app.data
 
 import java.io.File
+import java.io.IOException
 import java.time.Instant
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import javax.xml.parsers.ParserConfigurationException
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.withLock
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -166,6 +170,146 @@ class WeatherLayersTest {
             OpenMeteoWindTimelineCodec.parse(malformedCoordinates, 1, now)
         }
     }
+
+    @Test fun `fast transient wind failure retries quickly then later attempts remain bounded`() =
+        runBlocking {
+            assertEquals(15_000, WindGridNetworkPolicy.connectTimeoutMillis)
+            assertEquals(30_000, WindGridNetworkPolicy.readTimeoutMillis)
+            assertEquals(55_000L, WindGridNetworkPolicy.totalTimeoutMillis)
+            assertEquals(listOf(0L, 1_500L, 10_000L, 35_000L),
+                WindGridNetworkPolicy.attemptOffsetsMillis)
+            assertEquals(4, WindGridNetworkPolicy.maximumAttempts)
+
+            val attempts = mutableListOf<Int>()
+            val pauses = mutableListOf<Long>()
+            var elapsed = 0L
+            val result = WindGridNetworkPolicy.execute(
+                request = { attempt ->
+                    attempts += attempt
+                    if (attempt == 1) throw IOException("temporary mobile failure")
+                    "ready"
+                },
+                pause = { pauses += it; elapsed += it },
+                elapsedRealtimeMillis = { elapsed },
+            )
+            assertEquals("ready", result)
+            assertEquals(listOf(1, 2), attempts)
+            assertEquals(listOf(1_500L), pauses)
+            assertEquals(1_500L, elapsed)
+
+            attempts.clear()
+            pauses.clear()
+            elapsed = 0L
+            val later = WindGridNetworkPolicy.execute(
+                request = { attempt ->
+                    attempts += attempt
+                    if (attempt <= 2) throw IOException("temporary mobile failure")
+                    "ready"
+                },
+                pause = { pauses += it; elapsed += it },
+                elapsedRealtimeMillis = { elapsed },
+            )
+            assertEquals("ready", later)
+            assertEquals(listOf(1, 2, 3), attempts)
+            assertEquals(listOf(1_500L, 8_500L), pauses)
+            assertEquals(10_000L, elapsed)
+        }
+
+    @Test fun `wind retry honors bounded delta-seconds Retry-After`() = runBlocking {
+        var elapsed = 0L
+        val pauses = mutableListOf<Long>()
+        val result = WindGridNetworkPolicy.execute(
+            request = { attempt ->
+                if (attempt == 1) throw WindGridHttpException(429, retryAfterMillis = 4_000L)
+                "ready"
+            },
+            pause = { pauses += it; elapsed += it },
+            elapsedRealtimeMillis = { elapsed },
+        )
+        assertEquals("ready", result)
+        assertEquals(listOf(4_000L), pauses)
+        assertEquals(4_000L, elapsed)
+        assertEquals(5_000L, WindGridNetworkPolicy.retryAfterMillis("5"))
+        assertEquals(WindGridNetworkPolicy.totalTimeoutMillis,
+            WindGridNetworkPolicy.retryAfterMillis("999"))
+        assertEquals(null, WindGridNetworkPolicy.retryAfterMillis("not-a-delay"))
+    }
+
+    @Test fun `wind cache-aside policy never holds cache lock across acquisition`() = runBlocking {
+        val mutex = kotlinx.coroutines.sync.Mutex()
+        val events = mutableListOf<String>()
+        val result = WindGridCachePolicy.load(
+            read = { mutex.withLock { events += "read"; null } },
+            acquire = {
+                // This would deadlock if the cache policy retained the same mutex around network IO.
+                mutex.withLock { events += "network" }
+                "fresh"
+            },
+            write = { value -> mutex.withLock { events += "write:$value" } },
+        )
+        assertEquals("fresh", result)
+        assertEquals(listOf("read", "network", "write:fresh"), events)
+    }
+
+    @Test fun `wind grid request exhausts once and never retries cancellation or permanent response`() =
+        runBlocking {
+            var transientAttempts = 0
+            var elapsed = 0L
+            val exhausted = assertThrows(WindGridAttemptsExhaustedException::class.java) {
+                runBlocking {
+                    WindGridNetworkPolicy.execute(
+                        request = {
+                            transientAttempts++
+                            throw IOException("still offline")
+                        },
+                        pause = { elapsed += it },
+                        elapsedRealtimeMillis = { elapsed },
+                    )
+                }
+            }
+            assertEquals(WindGridNetworkPolicy.maximumAttempts, transientAttempts)
+            assertEquals(35_000L, elapsed)
+            assertEquals(WindGridFailureDiagnostic("network_io", retriesExhausted = true),
+                WindGridFailureDiagnostics.classify(exhausted))
+
+            var permanentAttempts = 0
+            assertThrows(WindGridHttpException::class.java) {
+                runBlocking {
+                    WindGridNetworkPolicy.execute(
+                        request = {
+                            permanentAttempts++
+                            throw WindGridHttpException(400)
+                        },
+                        pause = {},
+                    )
+                }
+            }
+            assertEquals(1, permanentAttempts)
+
+            var cancelledAttempts = 0
+            assertThrows(CancellationException::class.java) {
+                runBlocking {
+                    WindGridNetworkPolicy.execute(
+                        request = {
+                            cancelledAttempts++
+                            throw CancellationException("obsolete viewport")
+                        },
+                        pause = {},
+                    )
+                }
+            }
+            assertEquals(1, cancelledAttempts)
+            assertTrue(WindGridNetworkPolicy.isTransient(WindGridHttpException(503)))
+            assertFalse(WindGridNetworkPolicy.isTransient(WindGridHttpException(404)))
+            assertEquals(WindGridFailureDiagnostic("http", 503),
+                WindGridFailureDiagnostics.classify(WindGridHttpException(503)))
+            assertEquals(WindGridFailureDiagnostic("timeout"),
+                WindGridFailureDiagnostics.classify(WindGridRequestTimeoutException()))
+            assertEquals(WindGridFailureDiagnostic("parse_validation"),
+                WindGridFailureDiagnostics.classify(IllegalArgumentException("invalid payload")))
+            assertEquals(WindGridFailureDiagnostic("cancellation"),
+                WindGridFailureDiagnostics.classify(CancellationException("superseded")))
+        }
 
     @Test fun `selected place daily solar times use IANA zone and roll at local midnight`() {
         val zone = ZoneId.of("Europe/London")

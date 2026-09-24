@@ -7,7 +7,7 @@ import org.junit.Test
 
 class LiveLocationPolicyTest {
     @Test fun foregroundCallbacksCanMoveMarkerBeforeForecastMaterialThreshold() {
-        assertEquals(7_500L, LiveLocationPolicy.UPDATE_INTERVAL_MILLIS)
+        assertEquals(5_000L, LiveLocationPolicy.UPDATE_INTERVAL_MILLIS)
         assertEquals(0f, LiveLocationPolicy.UPDATE_DISTANCE_METRES)
         assertFalse(LiveLocationPolicy.materiallyMoved(51.5000, -0.1000, 51.5003, -0.1002))
         assertFalse(LiveLocationPolicy.isNewerFix(1000L, 1000L))
@@ -21,8 +21,8 @@ class LiveLocationPolicyTest {
             LiveLocationPolicy.allowedProviders(listOf("gps"), fineGranted = false))
     }
 
-    @Test fun precisePermissionCanUseBothEnabledSources() {
-        assertEquals(listOf("network", "gps"),
+    @Test fun precisePermissionUsesGpsWithoutACompetingNetworkStream() {
+        assertEquals(listOf("gps"),
             LiveLocationPolicy.allowedProviders(listOf("network", "gps"), fineGranted = true))
     }
 }

@@ -12,8 +12,8 @@ android {
         applicationId = "com.rainalarm.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 13
-        versionName = "0.2.2"
+        versionCode = 14
+        versionName = "0.3.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -62,6 +62,7 @@ dependencies {
     implementation(libs.maplibre.android)
     implementation(libs.proj4j)
     implementation(libs.androidx.work.runtime)
+    implementation(libs.google.play.services.location)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.tooling.preview)
@@ -122,8 +123,12 @@ tasks.register<JavaExec>("directDebugUnitTest") {
         "com.rainalarm.app.ui.RadarLiveMapPolicyTest",
         "com.rainalarm.app.ui.RadarLiveMapWiringTest",
         "com.rainalarm.app.ui.RadarRefreshOverlayPolicyTest",
+        "com.rainalarm.app.ui.WeatherDataStatusPolicyTest",
         "com.rainalarm.app.ui.RadarMapRevealGateTest",
         "com.rainalarm.app.data.LiveLocationPolicyTest",
+        "com.rainalarm.app.data.NavigationLocationPolicyTest",
+        "com.rainalarm.app.data.FollowRefreshCoordinatorTest",
+        "com.rainalarm.app.ForegroundFollowWiringTest",
         "com.rainalarm.app.ui.RadarChartTimeLinkTest",
         "com.rainalarm.app.data.RadarLoadDeadlineTest",
     )

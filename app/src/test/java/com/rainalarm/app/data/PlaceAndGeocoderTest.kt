@@ -129,7 +129,8 @@ class PlaceAndGeocoderTest {
     fun `foreground fix policy rejects stale positions and refreshes after material travel`() {
         val now = 1_000_000L
         assertTrue(LiveLocationPolicy.isFresh(now - 60_000, now))
-        assertTrue(LiveLocationPolicy.isImmediatelyUsable(now - 20_000, now))
+        assertTrue(LiveLocationPolicy.isImmediatelyUsable(now - 4_000, now))
+        assertFalse(LiveLocationPolicy.isImmediatelyUsable(now - 20_000, now))
         assertFalse(LiveLocationPolicy.isImmediatelyUsable(now - 60_000, now))
         assertFalse(LiveLocationPolicy.isFresh(now - 600_000, now))
         assertFalse(LiveLocationPolicy.materiallyMoved(53.48, -2.24, 53.4801, -2.2401))
@@ -138,7 +139,7 @@ class PlaceAndGeocoderTest {
         assertFalse(LiveLocationPolicy.needsForegroundRefresh(now - 60_000, now))
         assertTrue(LiveLocationPolicy.needsForegroundRefresh(now - 121_000, now))
         assertTrue(LiveLocationPolicy.needsForegroundRefresh(0, now))
-        assertEquals(listOf("network", "gps"), LiveLocationPolicy.allowedProviders(
+        assertEquals(listOf("gps"), LiveLocationPolicy.allowedProviders(
             listOf("network", "gps"), fineGranted = true))
         assertEquals(listOf("network"), LiveLocationPolicy.allowedProviders(
             listOf("network", "gps"), fineGranted = false))

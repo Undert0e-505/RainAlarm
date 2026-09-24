@@ -5,14 +5,14 @@ internal data class RadarRefreshOverlay(val label: String, val accessibilityLabe
 /** A reusable session keeps its map geometry while refresh feedback floats above it. */
 internal object RadarRefreshOverlayPolicy {
     fun initialLoading(completed: Int, total: Int): RadarRefreshOverlay {
-        val progress = if (total > 0) {
-            " ${completed.coerceIn(0, total)}/$total"
-        } else {
-            "…"
-        }
+        val label = WeatherDataStatusPolicy.loading(
+            WeatherDataKind.RADAR,
+            completed.takeIf { total > 0 },
+            total.takeIf { total > 0 },
+        )
         // Keep the semantic label stable while visible progress changes so assistive technology
         // can identify the state without announcing every downloaded resource.
-        return RadarRefreshOverlay("Loading radar$progress", "Loading radar")
+        return RadarRefreshOverlay(label, WeatherDataStatusPolicy.loading(WeatherDataKind.RADAR))
     }
 
     fun status(
@@ -22,15 +22,20 @@ internal object RadarRefreshOverlayPolicy {
         total: Int,
         error: String?,
     ): RadarRefreshOverlay? {
-        if (!hasSession) return null
+        if (!hasSession) return error?.takeIf(String::isNotBlank)?.let {
+            val label = WeatherDataStatusPolicy.unavailable(WeatherDataKind.RADAR)
+            RadarRefreshOverlay(label, label)
+        }
         if (refreshing) {
-            val progress = if (total > 0) " · ${completed.coerceIn(0, total)}/$total" else "…"
-            val spoken = if (total > 0) "${completed.coerceIn(0, total)} of $total resources"
-                else "in progress"
-            return RadarRefreshOverlay("Refreshing radar$progress", "Refreshing radar, $spoken")
+            val label = WeatherDataStatusPolicy.loading(
+                WeatherDataKind.RADAR,
+                completed.takeIf { total > 0 },
+                total.takeIf { total > 0 },
+            )
+            return RadarRefreshOverlay(label, WeatherDataStatusPolicy.loading(WeatherDataKind.RADAR))
         }
         if (error.isNullOrBlank()) return null
-        return RadarRefreshOverlay("Radar refresh failed · retry",
-            "Radar refresh failed: $error. Tap Refresh radar and map layer to retry.")
+        val label = WeatherDataStatusPolicy.unavailable(WeatherDataKind.RADAR)
+        return RadarRefreshOverlay(label, label)
     }
 }

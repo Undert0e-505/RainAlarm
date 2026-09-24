@@ -160,6 +160,51 @@ References:
 - https://postcodes.io/docs/postcode/lookup/
 - https://postcodes.io/docs/licences/
 
+## Foreground current location and Follow
+
+- Current location is one process-wide accepted fix stream shared by Now,
+  Radar, Places and foreground alert evaluation. Google Play services fused
+  high-accuracy location is the primary path; Android's GPS provider is the
+  precise fallback when Play services is unavailable or a fused request fails.
+  Rain Alarm does not call a separate location web endpoint; the device and
+  Google Play services may use their configured system location sources under
+  the platform's own settings and privacy controls.
+  A coarse network fix is only an explicitly provisional last resort for
+  ordinary Current, never Follow navigation truth, and it does not race a good
+  GPS fix merely because it is newer.
+- Ordinary foreground Current requests target a 5-second interval (2-second
+  minimum). Visible Follow requests target 1 second (500 ms minimum), zero
+  batching and a briefly awaited accurate first fix. Follow requires the Fine /
+  Precise permission choice, is opt-in, is not persisted, and stops when Radar
+  leaves composition, Current is deselected or the app backgrounds. The screen
+  is kept on only for that same visible-Follow interval. Follow adds no
+  background location, foreground service, wake lock or ongoing notification;
+  it uses the visible activity view's screen-on flag. Existing WorkManager
+  scheduling remains separate for optional periodic rain alerts.
+- Fix arbitration rejects stale, out-of-order, invalid and physically
+  implausible jumps using monotonic time, both fixes' reported accuracy radii,
+  displacement and elapsed time. A recent accurate fix is not displaced by a
+  much coarser callback; a 15-second weak-signal grace prevents availability
+  flicker, while a stale last fix can be replaced so recovery remains possible.
+  No precise coordinates are written to logs.
+- Every accepted navigation fix moves the Radar marker and, while Follow is
+  active, smoothly supersedes the prior north-up camera transition without
+  changing zoom. Weather and reverse geocoding use a separate analysis anchor:
+  the first fix and a provider-region change are immediate; in Follow the
+  anchor otherwise advances at 1 km, or after two minutes plus at least 250 m.
+  This prevents one-second network or geocoder requests. Outside Follow the
+  established 250 m Current threshold remains.
+- While visible Follow is active, one coordinator derives the next expected
+  publication from actual provider timestamps: recent radar gaps (5/10-minute
+  source fallback), advertised 10-minute Clouds and 5-minute Lightning
+  cadence, and 15-minute Wind/point-model steps. A 45-second publication grace
+  precedes each check. Unchanged or failed checks back off for 1, then 2, then
+  at most 5 minutes. Each stream permits one in-flight generation, only enabled
+  ancillary layers poll, and stale completions cannot publish. Manual Refresh
+  force-checks and rebases the clocks. Stopping Follow, leaving Radar,
+  deselecting Current or backgrounding immediately pauses the coordinator;
+  visible data and caches are retained.
+
 ## Open-Meteo
 
 - Endpoint: `https://api.open-meteo.com/v1/forecast`
@@ -192,8 +237,25 @@ References:
   for 15 minutes,
   with at most eight process-scoped grid entries. A request occurs only after
   a meaningful settled camera change or explicit refresh, never per gesture
-  frame, radar animation frame or 15-minute cursor step. Stale in-flight results are ignored on a
-  later viewport selection. No current-location coordinates are persisted.
+  frame, radar animation frame or 15-minute cursor step. Until MapLibre has
+  supplied stable viewport bounds the Wind grid remains loading rather than
+  being treated as unavailable. The larger 25-coordinate response uses a
+  bounded weak-network policy: 15-second connect and 30-second read limits,
+  attempts scheduled at approximately 0, 15, 30 and 45 seconds for transient
+  network/408/425/429/5xx failures, and a 55-second overall deadline. Missed
+  offsets after a slow request still retain a minimum 1.5-second retry spacing.
+  It remains `Wind loading` throughout that policy. An early nonretryable HTTP
+  or response-validation error is recorded internally without generating
+  further unsuitable requests, but the UI still waits for the active
+  generation's complete 55-second monotonic acquisition window. `Wind
+  unavailable` can appear only once that window ends without a usable grid.
+  A fresh same-viewport grid remains visible during replacement; request
+  identities cancel and prevent stale pan/zoom generations from publishing.
+  Network and parsing work runs outside the small cache critical section. A
+  newly fetched grid's timestamp is reconciled with the slower UI freshness
+  clock so it can reach the map immediately, and loading clears only after the
+  current generation positively reports a rendered arrow field. No
+  current-location coordinates are persisted.
 - `current` and the wind series are weather-model output, **not** measured
   station observations. Fifteen-minute wind is native for supported regional
   models (currently Central Europe and North America) and interpolated from
@@ -267,8 +329,8 @@ References:
   across Clouds and Lightning (the tested hard configuration maximum is three),
   and the overlay remains hidden until every identity in that finite set is a
   complete, verified, atomically committed cache file. Bottom-right
-  `Preparing … n/N` feedback reports verified-file progress without moving the
-  layout. Temporary, partial, malformed, wrong-content and wrong-dimension files
+  `<Data> loading n/N` feedback reports verified-file progress without moving
+  the layout. Temporary, partial, malformed, wrong-content and wrong-dimension files
   never count as ready.
 - Satellite PNGs use an app-owned, atomic, least-recently-used disk cache capped
   at 128 MiB. MapLibre's separate supported ambient database is capped at
@@ -281,7 +343,8 @@ References:
   frames while retaining the last complete visible set. Network reads have a
   20-second timeout and at most three attempts. Missing/corrupt/evicted files are
   invalidated and acquired again rather than becoming permanently false-ready;
-  exhausted failure retains the old complete set and reports that refresh is needed.
+  exhausted failure retains the old complete set where possible and reports only
+  the canonical layer-unavailable state.
 - Radar Refresh creates a new ancillary-layer generation. For enabled Clouds it
   forces fresh EUMETSAT capability discovery and a current-frame probe for both
   Cloud Type and Fog / Low Clouds, bypassing their five-minute metadata/probe
@@ -292,13 +355,22 @@ References:
   Frame downloads share a global two-request semaphore (the tested hard maximum
   is three), allow up to three attempts, and use five-second connect and
   twenty-second read timeouts. Cloud metadata is accepted for at most one hour.
-- Satellite UI status follows the real pipeline. `Preparing … n/N` counts only
-  validated, atomically committed regional PNGs; `Rendering …` means the full
-  compressed set is ready and the cursor frame is being decoded/handed to
-  MapLibre; `Ready`/`Clouds available` requires a post-reveal fully rendered map
-  callback; and `Failed` represents the latest preparation/render attempt. A
-  verified previous complete set remains visible during replacement where one
-  exists, so metadata availability alone is never reported as rendered readiness.
+- Satellite UI status follows the real pipeline but deliberately hides its
+  implementation phases. Download/validation reports `Clouds loading n/N` or
+  `Lightning loading n/N`; bitmap handoff reports the same loading state without
+  a count; and a terminal acquisition/render problem reports only `<Data>
+  unavailable`. A verified previous complete set remains visible during
+  replacement where one exists. Metadata availability alone is never treated as
+  rendered readiness. When Wind or satellite metadata expires, one replacement
+  generation is started for that exact stale identity; a failed generation does
+  not create a recomposition retry loop. Manual Refresh force-retries Radar and
+  every enabled layer, while disabled layers make no request.
+- The compact operational queue orders Location, Radar, Wind, Clouds and
+  Lightning and exposes only `<Data> loading` (optionally `n/N`) or `<Data>
+  unavailable`. Raw provider, model, freshness and exception text remains in
+  internal diagnostics. Location acquisition and failure use the same queue;
+  map-style, renderer, compatibility and chart notices remain in the separate
+  bottom-left system rail.
 - After the full set unlocks, only the active image and one progressive
   replacement normally remain decoded/live. A retiring predecessor exists briefly
   during handoff; the full set remains compressed on disk, so decoded/GPU state
@@ -471,8 +543,10 @@ field is rejected, the direction and future timeline are unavailable.
 
 ## Alerts
 
-The optional alert is disabled by default and follows the active selected saved
-or virtual live place. WorkManager checks approximately
+On a fresh install the optional alert is enabled after notification permission
+is granted; declining permission leaves it off until the user retries in
+Settings. It follows the active selected saved or virtual live place.
+WorkManager checks approximately
 every 15 minutes (the Android periodic minimum); execution is inexact and may
 be deferred by Doze. Regional checks prefer the same fresh, location-selected
 area profile as Now, falling back to projected selected-point raster sampling.

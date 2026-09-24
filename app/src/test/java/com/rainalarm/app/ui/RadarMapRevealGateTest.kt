@@ -80,12 +80,18 @@ class RadarMapRevealGateTest {
         assertFalse(gate.isCovered)
     }
 
-    @Test fun mapViewCoverAndListenersAreScopedToTheSessionInstance() {
+    @Test fun mapViewCoverAndListenersOutliveNullableRadarSessions() {
         val source = listOf(
             File("src/main/java/com/rainalarm/app/ui/RadarImageMap.kt"),
             File("app/src/main/java/com/rainalarm/app/ui/RadarImageMap.kt"),
         ).first(File::isFile).readText()
-        assertTrue(source.contains("key(session)"))
+        assertFalse(source.contains("key(session)"))
+        assertTrue(source.contains("session: RadarSession?"))
+        assertTrue(source.contains("val mapView = remember {"))
+        assertTrue(source.contains("val desiredRadarSlot = remember(session)"))
+        assertTrue(source.contains("val teardown = remember(mapView)"))
+        assertTrue(source.contains("private class RadarBaseMarkerView"))
+        assertTrue(source.contains("baseMarkerView.visibility = if (activeRadarSlot == null)"))
         assertTrue(source.contains("addView(mapCover"))
         assertTrue(source.indexOf("addView(mapCover") < source.indexOf("mapView.getMapAsync"))
         val mapAttach = requireNotNull(Regex("addView\\(\\s*mapView,").find(source)).range.first
@@ -116,7 +122,7 @@ class RadarMapRevealGateTest {
             File("src/main/java/com/rainalarm/app/ui/RadarScreen.kt"),
             File("app/src/main/java/com/rainalarm/app/ui/RadarScreen.kt"),
         ).first(File::isFile).readText()
-        assertTrue(mapSource.contains("key(session)"))
+        assertFalse(mapSource.contains("key(session)"))
         assertFalse(mapSource.contains("key(session, mapStyle)"))
         assertTrue(mapSource.contains("DisposableEffect(map, mapStyle)"))
         assertTrue(mapSource.contains("ready.setStyle(RadarMapAppearance.styleUrl(mapStyle))"))

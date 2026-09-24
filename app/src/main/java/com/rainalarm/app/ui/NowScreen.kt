@@ -152,6 +152,17 @@ fun NowScreen(
             )
         } else refresh()
     }
+    val currentSelected = places.selectedId == com.rainalarm.app.data.CURRENT_LOCATION_ID
+    val currentLocationMessage = if (currentSelected) when (locationState) {
+        LocationUiState.Locating -> WeatherDataStatusPolicy.loading(WeatherDataKind.LOCATION)
+        is LocationUiState.Active -> locationState.message?.let {
+            WeatherDataStatusPolicy.unavailable(WeatherDataKind.LOCATION)
+        }
+        is LocationUiState.Unavailable -> WeatherDataStatusPolicy.unavailable(WeatherDataKind.LOCATION)
+        LocationUiState.Idle -> if (selectedLocationKey == null)
+            WeatherDataStatusPolicy.unavailable(WeatherDataKind.LOCATION) else null
+    } else null
+    val unresolvedCurrent = currentSelected && selectedLocationKey == null
     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         val density = LocalDensity.current
         val metrics = NowLayoutPolicy.measure(maxWidth.value.toInt(), maxHeight.value.toInt(), density.fontScale)
@@ -182,14 +193,51 @@ fun NowScreen(
                 }
             }
             when (state) {
-                ForecastUiState.Loading -> NowPlaceholder("Reading the local radar", "Building the next hour…", metrics, refreshOrRetryLocation,
-                    refreshStatus, compassAppearance, graphAppearance)
-                is ForecastUiState.Error -> NowPlaceholder("Radar unavailable", state.message, metrics, refreshOrRetryLocation,
-                    refreshStatus, compassAppearance, graphAppearance)
+                ForecastUiState.Loading -> if (unresolvedCurrent) NowPlaceholder(
+                    title = currentLocationMessage ?: WeatherDataStatusPolicy.unavailable(WeatherDataKind.LOCATION),
+                    detail = currentLocationMessage ?: WeatherDataStatusPolicy.unavailable(WeatherDataKind.LOCATION),
+                    metrics = metrics,
+                    refresh = refreshOrRetryLocation,
+                    refreshStatus = refreshStatus,
+                    compassAppearance = compassAppearance,
+                    graphAppearance = graphAppearance,
+                    pending = locationState is LocationUiState.Locating,
+                    sourceLabel = currentLocationMessage
+                        ?: WeatherDataStatusPolicy.unavailable(WeatherDataKind.LOCATION),
+                    footerLabel = currentLocationMessage
+                        ?: WeatherDataStatusPolicy.unavailable(WeatherDataKind.LOCATION),
+                ) else NowPlaceholder(
+                    WeatherDataStatusPolicy.loading(WeatherDataKind.RADAR),
+                    WeatherDataStatusPolicy.loading(WeatherDataKind.RADAR), metrics,
+                    refreshOrRetryLocation, refreshStatus, compassAppearance, graphAppearance,
+                    pending = true,
+                    sourceLabel = WeatherDataStatusPolicy.loading(WeatherDataKind.RADAR),
+                    footerLabel = WeatherDataStatusPolicy.loading(WeatherDataKind.RADAR),
+                )
+                is ForecastUiState.Error -> if (unresolvedCurrent) NowPlaceholder(
+                    title = currentLocationMessage ?: WeatherDataStatusPolicy.unavailable(WeatherDataKind.LOCATION),
+                    detail = currentLocationMessage ?: WeatherDataStatusPolicy.unavailable(WeatherDataKind.LOCATION),
+                    metrics = metrics,
+                    refresh = refreshOrRetryLocation,
+                    refreshStatus = refreshStatus,
+                    compassAppearance = compassAppearance,
+                    graphAppearance = graphAppearance,
+                    pending = locationState is LocationUiState.Locating,
+                    sourceLabel = currentLocationMessage
+                        ?: WeatherDataStatusPolicy.unavailable(WeatherDataKind.LOCATION),
+                    footerLabel = currentLocationMessage
+                        ?: WeatherDataStatusPolicy.unavailable(WeatherDataKind.LOCATION),
+                ) else NowPlaceholder(
+                    WeatherDataStatusPolicy.unavailable(WeatherDataKind.RADAR),
+                    WeatherDataStatusPolicy.unavailable(WeatherDataKind.RADAR),
+                    metrics, refreshOrRetryLocation, refreshStatus, compassAppearance, graphAppearance,
+                    sourceLabel = WeatherDataStatusPolicy.unavailable(WeatherDataKind.RADAR),
+                    footerLabel = WeatherDataStatusPolicy.unavailable(WeatherDataKind.RADAR),
+                )
                 is ForecastUiState.Ready -> NowForecastContent(state.forecast, metrics,
                     refreshOrRetryLocation, weather, visibleWeatherMetrics, compassAppearance, graphAppearance,
                     refreshStatus, visitGeneration, selectedLocationKey,
-                    onChartTimeSelected)
+                    onChartTimeSelected, currentLocationMessage)
             }
         }
     }
@@ -198,14 +246,19 @@ fun NowScreen(
 @Composable
 private fun NowPlaceholder(title: String, detail: String, metrics: NowLayoutMetrics,
     refresh: (() -> Unit)? = null, refreshStatus: NowRefreshStatus = NowRefreshStatus.Idle,
-    compassAppearance: NowCardAppearance, graphAppearance: NowCardAppearance) {
+    compassAppearance: NowCardAppearance, graphAppearance: NowCardAppearance,
+    pending: Boolean = title == WeatherDataStatusPolicy.loading(WeatherDataKind.RADAR),
+    sourceLabel: String = if (pending) WeatherDataStatusPolicy.loading(WeatherDataKind.RADAR)
+        else WeatherDataStatusPolicy.unavailable(WeatherDataKind.RADAR),
+    footerLabel: String = if (pending) WeatherDataStatusPolicy.loading(WeatherDataKind.RADAR)
+        else WeatherDataStatusPolicy.unavailable(WeatherDataKind.RADAR),
+) {
     NowCardTheme(compassAppearance) {
     val border = NowBorder
     Card(colors = CardDefaults.cardColors(containerColor = NowSurface), shape = RoundedCornerShape(24.dp),
         modifier = Modifier.fillMaxWidth().height(metrics.compassHeightDp.dp)) {
         Column(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 4.dp)) {
-            NowCardHeader(title, if (title == "Reading the local radar") "RADAR · updating" else "RADAR · unavailable",
-                refresh, refreshStatus)
+            NowCardHeader(title, sourceLabel, refresh, refreshStatus)
             BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 4.dp),
                 contentAlignment = Alignment.Center) {
                 val diameter = minOf(maxWidth, maxHeight, 300.dp)
@@ -215,10 +268,10 @@ private fun NowPlaceholder(title: String, detail: String, metrics: NowLayoutMetr
                     drawCircle(border.copy(alpha = 0.18f), radius = size.minDimension * 0.30f,
                         style = Stroke(width = size.minDimension * 0.05f))
                 }
-                if (title == "Reading the local radar") CircularProgressIndicator(color = NowAccent)
+                if (pending) CircularProgressIndicator(color = NowAccent)
                 else Text("—", color = NowAccent, fontSize = 25.sp, fontWeight = FontWeight.Bold)
             }
-            Text(if (title == "Reading the local radar") "Waiting for radar frames" else "Forecast unavailable",
+            Text(footerLabel,
                 color = NowMuted, fontSize = 12.sp,
                 modifier = Modifier.align(Alignment.CenterHorizontally).heightIn(min = 22.dp))
         }
@@ -281,9 +334,9 @@ private fun NowCardTheme(mode: NowCardAppearance, content: @Composable () -> Uni
 private fun NowCardHeader(status: String, source: String, refresh: (() -> Unit)?, refreshStatus: NowRefreshStatus) {
     val sourceWithRefresh = when (refreshStatus) {
         NowRefreshStatus.Idle -> source
-        NowRefreshStatus.Refreshing -> "Refreshing · $source"
-        NowRefreshStatus.Updated -> "Updated · $source"
-        is NowRefreshStatus.Failed -> "Refresh failed · $source"
+        NowRefreshStatus.Refreshing -> WeatherDataStatusPolicy.loading(WeatherDataKind.RADAR)
+        NowRefreshStatus.Updated -> source
+        is NowRefreshStatus.Failed -> WeatherDataStatusPolicy.unavailable(WeatherDataKind.RADAR)
     }
     Row(Modifier.fillMaxWidth().height(NowLayoutPolicy.cardHeaderHeightDp.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f).padding(start = 4.dp)) {
@@ -291,8 +344,7 @@ private fun NowCardHeader(status: String, source: String, refresh: (() -> Unit)?
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(sourceWithRefresh, color = NowMuted, fontSize = 12.sp, lineHeight = 16.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.semantics { contentDescription = if (refreshStatus is NowRefreshStatus.Failed)
-                    "Refresh failed: ${refreshStatus.message}. $source" else sourceWithRefresh })
+                modifier = Modifier.semantics { contentDescription = sourceWithRefresh })
         }
         refresh?.let { RefreshNowButton(it, refreshStatus) }
     }
@@ -303,14 +355,16 @@ private fun NowForecastContent(forecast: ForecastSnapshot, metrics: NowLayoutMet
     refresh: () -> Unit, weather: CurrentWeather?, visibleWeatherMetrics: Set<NowWeatherMetric>,
     compassAppearance: NowCardAppearance, graphAppearance: NowCardAppearance,
     refreshStatus: NowRefreshStatus, visitGeneration: Int, selectedLocationKey: String?,
-    onChartTimeSelected: (Double) -> Unit) {
+    onChartTimeSelected: (Double) -> Unit, locationNotice: String? = null) {
     val series = forecast.nowcastSeries
     val analysis = series?.let(RainMinuteSeriesAnalyzer::analyze)
     val age = series?.let { NowSourceClock.ageMinutes(it, Instant.now().epochSecond) } ?: 0L
     val freshness = if (age == 0L) "now" else "${age}m ago"
     if (series == null || series.availability == RainMinuteAvailability.UNAVAILABLE || analysis == null) {
-        NowPlaceholder("Next hour unavailable", series?.unavailableReason ?: "No local radar series", metrics, refresh,
-            refreshStatus, compassAppearance, graphAppearance)
+        val unavailable = WeatherDataStatusPolicy.unavailable(WeatherDataKind.RADAR)
+        NowPlaceholder(unavailable, unavailable, metrics, refresh,
+            refreshStatus, compassAppearance, graphAppearance,
+            sourceLabel = unavailable, footerLabel = unavailable)
         return
     }
 
@@ -335,7 +389,7 @@ private fun NowForecastContent(forecast: ForecastSnapshot, metrics: NowLayoutMet
         forecast.sourceLabel.contains("RainViewer", true) -> "EST"
         else -> "RADAR"
     }
-    val source = "$sourceKind · $freshness$coverage"
+    val source = locationNotice ?: "$sourceKind · $freshness$coverage"
     val context = LocalContext.current
     val animationsEnabled = remember(context) {
         runCatching {
@@ -659,7 +713,7 @@ private fun RefreshNowButton(refresh: () -> Unit, refreshStatus: NowRefreshStatu
     IconButton(onClick = refresh, modifier = Modifier.size(48.dp)) {
         if (refreshStatus is NowRefreshStatus.Refreshing) {
             CircularProgressIndicator(Modifier.size(22.dp).semantics {
-                contentDescription = "Refreshing radar nowcast; tap to retry"
+                contentDescription = WeatherDataStatusPolicy.loading(WeatherDataKind.RADAR)
             }, color = NowAccent, strokeWidth = 2.dp)
         } else Icon(Icons.Default.Refresh, contentDescription = "Refresh radar nowcast", tint = NowAccent)
     }

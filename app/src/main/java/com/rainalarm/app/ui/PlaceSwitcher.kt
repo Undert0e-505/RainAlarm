@@ -25,6 +25,7 @@ import androidx.core.content.ContextCompat
 import com.rainalarm.app.LocationUiState
 import com.rainalarm.app.data.CURRENT_LOCATION_ID
 import com.rainalarm.app.data.PlaceCollection
+import com.rainalarm.app.data.LocationFixQuality
 import com.rainalarm.app.R
 
 /** Same selection semantics on Now and Radar; Current remains a virtual, unsaved place. */
@@ -55,6 +56,17 @@ fun PlaceSwitcher(
             arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
         )
     }
+    val currentLabel = when (locationState) {
+        LocationUiState.Locating -> "Current location · locating"
+        is LocationUiState.Active -> when (locationState.quality) {
+            LocationFixQuality.ACCURATE -> "Current location"
+            LocationFixQuality.WEAK -> "Current location · weak signal"
+            LocationFixQuality.PROVISIONAL -> "Current location · provisional"
+            LocationFixQuality.APPROXIMATE -> "Current location · approximate"
+        }
+        is LocationUiState.Unavailable -> "Current location · unavailable"
+        LocationUiState.Idle -> "Current location"
+    }
     androidx.compose.foundation.layout.Box(modifier) {
         IconButton(onClick = { expanded = true }, modifier = Modifier.size(48.dp)) {
             Icon(painterResource(R.drawable.ic_place_switch),
@@ -62,7 +74,7 @@ fun PlaceSwitcher(
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             DropdownMenuItem(
-                text = { Text(if (locationState is LocationUiState.Locating) "Current location · retry" else "Current location") },
+                text = { Text(currentLabel) },
                 onClick = { expanded = false; requestCurrent() },
                 trailingIcon = if (collection.selectedId == CURRENT_LOCATION_ID) {
                     { Icon(Icons.Default.Check, contentDescription = "Selected") }

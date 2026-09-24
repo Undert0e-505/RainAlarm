@@ -10,6 +10,7 @@ serialization = "1.11.0"
 datastore = "1.2.1"
 maplibre = "13.6.1"
 work = "2.11.2"
+playServicesLocation = "21.4.0"
 junit = "4.13.2"
 proj4j = "1.4.3"
 
@@ -29,6 +30,7 @@ kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serializa
 androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastore" }
 maplibre-android = { module = "org.maplibre.gl:android-sdk", version.ref = "maplibre" }
 androidx-work-runtime = { module = "androidx.work:work-runtime-ktx", version.ref = "work" }
+google-play-services-location = { module = "com.google.android.gms:play-services-location", version.ref = "playServicesLocation" }
 junit = { module = "junit:junit", version.ref = "junit" }
 proj4j = { module = "org.locationtech.proj4j:proj4j", version.ref = "proj4j" }
 

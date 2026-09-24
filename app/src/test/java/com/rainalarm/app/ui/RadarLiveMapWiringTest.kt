@@ -19,15 +19,21 @@ class RadarLiveMapWiringTest {
         assertTrue(topRow.contains("IconButton(onClick = { onFollowLiveChange(!followLive) }"))
         assertTrue(screen.contains("Stop following live location"))
         assertTrue(screen.contains("Follow live location"))
-        assertTrue(screen.contains("enabled = hasFreshLiveFix"))
+        assertTrue(screen.contains("enabled = hasFreshLiveFix || followCapability.message != null"))
         assertTrue(!topRow.contains("RadarLayerSegments"))
     }
 
     @Test fun liveMarkerUsesLightweightProjectionWithoutReplanningRasterMesh() {
         val map = source("RadarImageMap.kt")
         val gl = source("LegacyRadarGlOverlayView.kt")
-        assertTrue(map.contains("else overlay.setMarker(markerPlace)"))
-        assertTrue(map.contains("if (!followLive || teardown.isClosed) return@LaunchedEffect"))
+        assertTrue(map.contains("activeRadarSlot?.setMarker(markerPlace)"))
+        assertTrue(map.contains("pendingRadarSlot?.setMarker(markerPlace)"))
+        assertTrue(map.contains("takeIf { it.session === session }"))
+        assertTrue(map.contains("baseMarkerView.update(markerPlace)"))
+        assertTrue(map.contains("baseMarkerView.onCameraMoved()"))
+        assertTrue(map.contains("if (!followLive || teardown.isClosed)"))
+        assertTrue(map.contains("ready.cancelTransitions()"))
+        assertTrue(map.contains("ready.easeCamera(CameraUpdateFactory.newCameraPosition(northUpCamera(target)), duration)"))
         assertTrue(map.contains("REASON_API_GESTURE"))
         assertTrue(gl.contains("if (moved) updateMarkerProjection(mapPlace)"))
     }

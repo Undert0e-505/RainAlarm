@@ -1,6 +1,9 @@
+@file:android.annotation.SuppressLint("LogNotTimber")
 package com.rainalarm.app.data
 
+import android.util.Log
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.time.Instant
@@ -14,6 +17,11 @@ import kotlin.math.ln
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -164,6 +172,170 @@ object WindTimelinePolicy {
         require(frames.isNotEmpty())
         return frames.lastOrNull { it.validEpochSeconds <= cursorEpochSeconds }
             ?: frames.first()
+    }
+}
+
+/**
+ * The 25-coordinate wind timeline is materially larger than point weather. Give weak mobile
+ * connections enough time to complete, while retaining a hard overall deadline and bounded retries
+ * for genuinely transient failures. The first retry is deliberately quick so a brief overload or
+ * connection reset does not impose a 15-second minimum delay. The caller remains in its loading
+ * state for this whole policy.
+ */
+internal object WindGridNetworkPolicy {
+    const val connectTimeoutMillis = 15_000
+    const val readTimeoutMillis = 30_000
+    const val totalTimeoutMillis = 55_000L
+    const val minimumRetrySpacingMillis = 1_500L
+    val attemptOffsetsMillis: List<Long> = listOf(0L, 1_500L, 10_000L, 35_000L)
+    val maximumAttempts: Int get() = attemptOffsetsMillis.size
+
+    suspend fun <T : Any> execute(
+        request: suspend (attempt: Int) -> T,
+        pause: suspend (Long) -> Unit = { delay(it) },
+        elapsedRealtimeMillis: () -> Long = { System.nanoTime() / 1_000_000L },
+        onAttempt: (WindGridAttemptEvent) -> Unit = {},
+    ): T {
+        val startedAt = elapsedRealtimeMillis()
+        val result = withTimeoutOrNull(totalTimeoutMillis) {
+            var lastTransientFailure: Exception? = null
+            var retryNotBeforeOffsetMillis = 0L
+            attemptOffsetsMillis.forEachIndexed { index, scheduledOffset ->
+                if (index > 0) {
+                    val elapsed = (elapsedRealtimeMillis() - startedAt).coerceAtLeast(0L)
+                    pause(maxOf(
+                        scheduledOffset - elapsed,
+                        retryNotBeforeOffsetMillis - elapsed,
+                        minimumRetrySpacingMillis,
+                    ))
+                }
+                val attemptStartedAt = elapsedRealtimeMillis()
+                val attemptNumber = index + 1
+                onAttempt(WindGridAttemptEvent.Started(
+                    attemptNumber,
+                    (attemptStartedAt - startedAt).coerceAtLeast(0L),
+                ))
+                try {
+                    val value = request(attemptNumber)
+                    onAttempt(WindGridAttemptEvent.Succeeded(
+                        attemptNumber,
+                        (elapsedRealtimeMillis() - attemptStartedAt).coerceAtLeast(0L),
+                    ))
+                    return@withTimeoutOrNull value
+                } catch (cancelled: CancellationException) {
+                    onAttempt(WindGridAttemptEvent.Failed(
+                        attemptNumber,
+                        (elapsedRealtimeMillis() - attemptStartedAt).coerceAtLeast(0L),
+                        WindGridFailureDiagnostics.classify(cancelled),
+                    ))
+                    throw cancelled
+                } catch (failure: Exception) {
+                    val diagnostic = WindGridFailureDiagnostics.classify(failure)
+                    onAttempt(WindGridAttemptEvent.Failed(
+                        attemptNumber,
+                        (elapsedRealtimeMillis() - attemptStartedAt).coerceAtLeast(0L),
+                        diagnostic,
+                    ))
+                    if (!isTransient(failure)) throw failure
+                    lastTransientFailure = failure
+                    val elapsed = (elapsedRealtimeMillis() - startedAt).coerceAtLeast(0L)
+                    retryNotBeforeOffsetMillis = elapsed +
+                        ((failure as? WindGridHttpException)?.retryAfterMillis ?: 0L)
+                }
+            }
+            throw WindGridAttemptsExhaustedException(requireNotNull(lastTransientFailure))
+        }
+        return result ?: throw WindGridRequestTimeoutException()
+    }
+
+    fun isTransient(failure: Throwable): Boolean = when (failure) {
+        is WindGridHttpException -> failure.statusCode == 408 || failure.statusCode == 425 ||
+            failure.statusCode == 429 || failure.statusCode in 500..599
+        is IOException -> true
+        else -> false
+    }
+
+    /** Supports the common delta-seconds Retry-After form without extending the bounded window. */
+    fun retryAfterMillis(value: String?): Long? = value?.trim()?.toLongOrNull()
+        ?.takeIf { it >= 0L }
+        ?.let { seconds ->
+            if (seconds > totalTimeoutMillis / 1_000L) totalTimeoutMillis else seconds * 1_000L
+        }
+}
+
+internal sealed interface WindGridAttemptEvent {
+    val attempt: Int
+
+    data class Started(
+        override val attempt: Int,
+        val offsetMillis: Long,
+    ) : WindGridAttemptEvent
+
+    data class Succeeded(
+        override val attempt: Int,
+        val durationMillis: Long,
+    ) : WindGridAttemptEvent
+
+    data class Failed(
+        override val attempt: Int,
+        val durationMillis: Long,
+        val diagnostic: WindGridFailureDiagnostic,
+    ) : WindGridAttemptEvent
+}
+
+internal class WindGridHttpException(
+    val statusCode: Int,
+    val retryAfterMillis: Long? = null,
+) :
+    IOException("Wind grid request returned HTTP $statusCode")
+
+internal class WindGridAttemptsExhaustedException(lastFailure: Exception) :
+    IOException("Wind grid recovery attempts exhausted", lastFailure)
+
+internal class WindGridRequestTimeoutException : IOException("Wind grid request timed out")
+
+internal data class WindGridFailureDiagnostic(
+    val category: String,
+    val httpStatus: Int? = null,
+    val retriesExhausted: Boolean = false,
+)
+
+internal object WindGridFailureDiagnostics {
+    fun classify(failure: Throwable): WindGridFailureDiagnostic = when (failure) {
+        is WindGridAttemptsExhaustedException -> classify(requireNotNull(failure.cause)).copy(
+            retriesExhausted = true,
+        )
+        is WindGridHttpException -> WindGridFailureDiagnostic("http", failure.statusCode)
+        is WindGridRequestTimeoutException -> WindGridFailureDiagnostic("timeout")
+        is CancellationException -> WindGridFailureDiagnostic("cancellation")
+        is kotlinx.serialization.SerializationException,
+        is IllegalArgumentException,
+        is NoSuchElementException -> WindGridFailureDiagnostic("parse_validation")
+        is IOException -> WindGridFailureDiagnostic("network_io")
+        else -> WindGridFailureDiagnostic("unexpected")
+    }
+
+    fun logFields(failure: Throwable): String = classify(failure).let { diagnostic ->
+        buildString {
+            append("category=").append(diagnostic.category)
+            diagnostic.httpStatus?.let { append(" httpStatus=").append(it) }
+            append(" retriesExhausted=").append(diagnostic.retriesExhausted)
+        }
+    }
+}
+
+/** Cache-aside sequencing keeps slow/cancelled HTTP work outside the short cache mutex sections. */
+internal object WindGridCachePolicy {
+    suspend fun <T : Any> load(
+        read: suspend () -> T?,
+        acquire: suspend () -> T,
+        write: suspend (T) -> Unit,
+    ): T {
+        read()?.let { return it }
+        val value = acquire()
+        currentCoroutineContext().ensureActive()
+        write(value)
+        return value
     }
 }
 
@@ -321,22 +493,86 @@ object WeatherLayerRepository {
         viewport: WindViewport,
         window: WindTimelineWindow,
         force: Boolean = false,
-    ): WindGrid = windMutex.withLock {
-        val now = Instant.now().epochSecond
-        val key = "${viewport.requestKey()}:${window.cacheKey}"
-        windCache[key]?.let { grid ->
-            if (!force && now - grid.fetchedEpochSeconds in 0..900)
-                return@withLock grid
+    ): WindGrid {
+        val requestStartedAt = System.nanoTime() / 1_000_000L
+        val result = withTimeoutOrNull(WindGridNetworkPolicy.totalTimeoutMillis) {
+            val viewportKey = viewport.requestKey()
+            val key = "$viewportKey:${window.cacheKey}"
+            WindGridCachePolicy.load(
+                read = {
+                    val waitStartedAt = System.nanoTime() / 1_000_000L
+                    val cached = windMutex.withLock {
+                        val now = Instant.now().epochSecond
+                        windCache[key]?.takeIf {
+                            !force && now - it.fetchedEpochSeconds in 0..900
+                        }
+                    }
+                    Log.d(
+                        "RainRadarWind",
+                        "cache check viewportKey=$viewportKey force=$force " +
+                            "waitMs=${(System.nanoTime() / 1_000_000L - waitStartedAt).coerceAtLeast(0L)} " +
+                            "hit=${cached != null}",
+                    )
+                    cached
+                },
+                acquire = {
+                    val now = Instant.now().epochSecond
+                    val coordinates = viewport.coordinates()
+                    val requestUrl = OpenMeteoWindTimelineCodec.url(coordinates, window)
+                    val response = WindGridNetworkPolicy.execute(
+                        request = { _ ->
+                            fetch(
+                                requestUrl,
+                                256 * 1024,
+                                connectTimeoutMillis = WindGridNetworkPolicy.connectTimeoutMillis,
+                                readTimeoutMillis = WindGridNetworkPolicy.readTimeoutMillis,
+                                retryableHttpStatus = true,
+                            )
+                        },
+                        onAttempt = { event ->
+                            val message = when (event) {
+                                is WindGridAttemptEvent.Started ->
+                                    "attempt=${event.attempt} start offsetMs=${event.offsetMillis}"
+                                is WindGridAttemptEvent.Succeeded ->
+                                    "attempt=${event.attempt} success durationMs=${event.durationMillis}"
+                                is WindGridAttemptEvent.Failed -> buildString {
+                                    append("attempt=").append(event.attempt)
+                                    append(" result=").append(event.diagnostic.category)
+                                    event.diagnostic.httpStatus?.let {
+                                        append(" httpStatus=").append(it)
+                                    }
+                                    append(" durationMs=").append(event.durationMillis)
+                                }
+                            }
+                            Log.d("RainRadarWind", "viewportKey=$viewportKey $message")
+                        },
+                    )
+                    val parseStartedAt = System.nanoTime() / 1_000_000L
+                    val frames = OpenMeteoWindTimelineCodec.parse(response, 25, now)
+                    Log.d(
+                        "RainRadarWind",
+                        "parse complete viewportKey=$viewportKey frames=${frames.size} " +
+                            "durationMs=${(System.nanoTime() / 1_000_000L - parseStartedAt).coerceAtLeast(0L)}",
+                    )
+                    val displayed = WindTimelinePolicy.frameAtOrBefore(frames, now)
+                    WindGrid(viewportKey, displayed.points, coordinates, now, frames)
+                },
+                write = { grid ->
+                    val waitStartedAt = System.nanoTime() / 1_000_000L
+                    windMutex.withLock {
+                        windCache[key] = grid
+                        while (windCache.size > 8) windCache.remove(windCache.keys.first())
+                    }
+                    Log.d(
+                        "RainRadarWind",
+                        "cache store viewportKey=$viewportKey " +
+                            "waitMs=${(System.nanoTime() / 1_000_000L - waitStartedAt).coerceAtLeast(0L)} " +
+                            "totalMs=${(System.nanoTime() / 1_000_000L - requestStartedAt).coerceAtLeast(0L)}",
+                    )
+                },
+            )
         }
-        val coordinates = viewport.coordinates()
-        val frames = OpenMeteoWindTimelineCodec.parse(fetch(
-            OpenMeteoWindTimelineCodec.url(coordinates, window), 256 * 1024,
-        ), 25, now)
-        val displayed = WindTimelinePolicy.frameAtOrBefore(frames, now)
-        val grid = WindGrid(viewport.requestKey(), displayed.points, coordinates, now, frames)
-        windCache[key] = grid
-        while (windCache.size > 8) windCache.remove(windCache.keys.first())
-        grid
+        return result ?: throw WindGridRequestTimeoutException()
     }
 
     suspend fun wind(viewport: WindViewport, force: Boolean = false): WindGrid {
@@ -344,15 +580,28 @@ object WeatherLayerRepository {
         return wind(viewport, WindTimelinePolicy.requestWindow(now - 3 * 3_600L, now + 3_600L), force)
     }
 
-    private suspend fun fetch(rawUrl: String, maxBytes: Int): String = withContext(Dispatchers.IO) {
+    private suspend fun fetch(
+        rawUrl: String,
+        maxBytes: Int,
+        connectTimeoutMillis: Int = 5_000,
+        readTimeoutMillis: Int = 8_000,
+        retryableHttpStatus: Boolean = false,
+    ): String = withContext(Dispatchers.IO) {
         val url = URL(rawUrl)
         require(url.protocol == "https" && url.host == "api.open-meteo.com")
         val connection = url.openConnection() as HttpURLConnection
         connection.instanceFollowRedirects = false
-        connection.connectTimeout = 5_000
-        connection.readTimeout = 8_000
+        connection.connectTimeout = connectTimeoutMillis
+        connection.readTimeout = readTimeoutMillis
         try {
-            require(connection.responseCode == 200)
+            val responseCode = connection.responseCode
+            if (responseCode != 200) {
+                if (retryableHttpStatus) throw WindGridHttpException(
+                    responseCode,
+                    WindGridNetworkPolicy.retryAfterMillis(connection.getHeaderField("Retry-After")),
+                )
+                throw IOException("Weather request returned HTTP $responseCode")
+            }
             require(connection.contentType?.startsWith("application/json") == true)
             require(connection.contentLengthLong in -1..maxBytes.toLong())
             connection.inputStream.use { input ->

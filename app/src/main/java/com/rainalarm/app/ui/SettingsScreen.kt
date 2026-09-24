@@ -196,7 +196,7 @@ fun SettingsScreen(
             modifier = Modifier.fillMaxWidth().semantics { selectableGroup() }) {
             ProviderChoice(
                 title = "Current location",
-                detail = "Live while the app is open; needs a fresh foreground fix. Coordinates are not saved.",
+                detail = "Foreground fused/GPS fixes while open; Follow needs Precise location. Coordinates are not saved.",
                 selected = defaultStartupId == CURRENT_LOCATION_ID,
                 onClick = { setDefaultStartupId(CURRENT_LOCATION_ID) },
             )

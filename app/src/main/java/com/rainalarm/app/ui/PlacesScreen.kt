@@ -429,7 +429,11 @@ fun PlacesScreen(
                 Text("Save current location")
             }
         }
-        val locationError = (locationState as? LocationUiState.Unavailable)?.message
+        val locationError = when (locationState) {
+            is LocationUiState.Active -> locationState.message
+            is LocationUiState.Unavailable -> locationState.message
+            else -> null
+        }
         if (locationError != null) Text(locationError, color = PlacesDanger, fontSize = 12.sp)
 
         Spacer(Modifier.height(22.dp))

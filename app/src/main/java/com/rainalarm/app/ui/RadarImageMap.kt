@@ -62,6 +62,7 @@ import com.rainalarm.app.domain.RainAlarmPalette
 import org.maplibre.android.MapLibre
 import org.maplibre.android.offline.OfflineManager
 import org.maplibre.android.camera.CameraPosition
+import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.geometry.LatLngQuad
 import org.maplibre.android.maps.MapLibreMap
@@ -677,25 +678,59 @@ private class WindFieldView(context: android.content.Context) : View(context) {
     }
     private var map: MapLibreMap? = null
     private var grid: WindGrid? = null
+    private var renderToken: WindGridRenderToken? = null
     private var arrowScale = 1f
     private var locations: List<LatLng> = emptyList()
+    private var renderEligible = false
+    private var observationCallback: (WindGridRenderToken, Int) -> Unit = { _, _ -> }
+    private var deliveredObservation: Pair<WindGridRenderToken, Int>? = null
+    private var pendingObservation: Pair<WindGridRenderToken, Int>? = null
     init { isClickable = false; importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO }
-    fun bind(ready: MapLibreMap) { map = ready; invalidate() }
-    fun update(value: WindGrid?, scale: Float) { if (grid !== value || arrowScale != scale) {
+    fun bind(ready: MapLibreMap) {
+        map = ready
+        resetConfirmation()
+    }
+    fun setObservationCallback(callback: (WindGridRenderToken, Int) -> Unit) {
+        observationCallback = callback
+    }
+    fun update(value: WindGrid?, token: WindGridRenderToken?, scale: Float) {
+        if (grid !== value || renderToken != token || arrowScale != scale) {
         grid = value
+        renderToken = token
         arrowScale = scale
         arrow.strokeWidth = 3.5f * scale
         shadow.strokeWidth = 7.5f * scale
         locations = value?.renderCoordinates()?.map { LatLng(it.first, it.second) }.orEmpty()
+        deliveredObservation = null
+        pendingObservation = null
         invalidate()
     } }
+    fun setRenderEligible(eligible: Boolean) {
+        if (renderEligible == eligible) return
+        renderEligible = eligible
+        Log.d("RainRadarWind", "renderer eligible=$eligible")
+        resetConfirmation()
+    }
+    fun resetConfirmation() {
+        deliveredObservation = null
+        pendingObservation = null
+        invalidate()
+    }
     fun cameraMoved() = invalidate()
     override fun onDraw(canvas: Canvas) {
-        val ready = map ?: return
-        val points = grid?.points ?: return
+        val ready = map
+        val points = grid?.points
+        val token = renderToken
+        if (!renderEligible || ready == null || points == null || token == null ||
+            width <= 0 || height <= 0) {
+            token?.let { publishObservation(it, 0) }
+            return
+        }
+        var drawnArrowCount = 0
         for ((index, sample) in points.withIndex()) {
-            sample.windSpeedKmh ?: continue
-            val from = sample.windFromDegrees ?: continue
+            val speed = sample.windSpeedKmh?.takeIf { it.isFinite() } ?: continue
+            val from = sample.windFromDegrees?.takeIf { it.isFinite() } ?: continue
+            if (speed < 0.0) continue
             val screen = ready.projection.toScreenLocation(locations[index])
             val margin = WindArrowGeometry.cullMargin(arrowScale)
             if (screen.x < -margin || screen.x > width + margin ||
@@ -710,6 +745,32 @@ private class WindFieldView(context: android.content.Context) : View(context) {
             val y1 = screen.y + dy * length / 2
             drawArrow(canvas, x0, y0, x1, y1, dx, dy, shadow)
             drawArrow(canvas, x0, y0, x1, y1, dx, dy, arrow)
+            drawnArrowCount++
+        }
+        publishObservation(token, drawnArrowCount)
+    }
+    override fun onDetachedFromWindow() {
+        renderToken?.let { publishObservation(it, 0) }
+        map = null
+        renderEligible = false
+        super.onDetachedFromWindow()
+    }
+    private fun publishObservation(token: WindGridRenderToken, count: Int) {
+        val observation = token to count
+        if (deliveredObservation == observation || pendingObservation == observation) return
+        pendingObservation = observation
+        post {
+            if (pendingObservation != observation) return@post
+            pendingObservation = null
+            if (renderToken != token) return@post
+            if (deliveredObservation == observation) return@post
+            deliveredObservation = observation
+            Log.d(
+                "RainRadarWind",
+                "draw observed generation=${token.generation} viewportKey=${token.viewportKey} " +
+                    "arrows=$count",
+            )
+            observationCallback(token, count)
         }
     }
     private fun drawArrow(canvas: Canvas, x0: Float, y0: Float, x1: Float, y1: Float,
@@ -861,6 +922,131 @@ internal interface RadarOverlayController {
     fun setMarker(mapPlace: SavedPlace)
     fun onCameraMoved()
     fun dispose()
+}
+
+/** A radar session owns only its overlay views; the MapLibre host outlives session swaps. */
+private class RadarSessionOverlaySlot(
+    context: android.content.Context,
+    val session: RadarSession,
+    private val reportStatus: (RadarSessionOverlaySlot, RadarRendererStatus) -> Unit,
+) {
+    private val staticFallback = session.legacyArchive?.let {
+        LegacyStaticFallbackOverlayView(context, session)
+    }
+    private val overlay: RadarOverlayController = RadarGlOverlayView(context, ::onStatus).apply {
+        bindSession(session)
+    }
+    private var disposed = false
+
+    val hasStaticFallback: Boolean get() = staticFallback != null
+
+    private fun onStatus(status: RadarRendererStatus) {
+        if (disposed) return
+        if (RadarStaticFallbackPolicy.shouldShow(session.legacyArchive != null, status)) {
+            staticFallback?.show()
+        } else {
+            staticFallback?.hide()
+        }
+        reportStatus(this, status)
+    }
+
+    fun addTo(container: FrameLayout) {
+        if (disposed) return
+        staticFallback?.let { fallback ->
+            if (fallback.parent == null) container.addView(
+                fallback,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                ),
+            )
+        }
+        if (overlay.overlayView.parent == null) container.addView(
+            overlay.overlayView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        overlay.overlayView.bringToFront()
+    }
+
+    fun removeFrom(container: FrameLayout?) {
+        container?.removeView(overlay.overlayView)
+        staticFallback?.let { container?.removeView(it) }
+    }
+
+    fun attachMap(map: MapLibreMap) {
+        if (disposed) return
+        overlay.attachMap(map)
+        staticFallback?.attachMap(map)
+    }
+
+    fun setState(bracket: RadarTimelineBracket, playing: Boolean, marker: SavedPlace) {
+        if (!disposed) overlay.setState(bracket, playing, marker)
+    }
+
+    fun setMarker(marker: SavedPlace) {
+        if (disposed) return
+        overlay.setMarker(marker)
+        staticFallback?.setPlace(marker)
+    }
+
+    fun onCameraMoved() {
+        if (disposed) return
+        overlay.onCameraMoved()
+        staticFallback?.onCameraMoved()
+    }
+
+    fun dispose() {
+        if (disposed) return
+        disposed = true
+        overlay.dispose()
+        staticFallback?.dispose()
+        session.release()
+    }
+}
+
+/** Keeps the selected/live marker available while the radar raster is still being acquired. */
+private class RadarBaseMarkerView(context: android.content.Context) : View(context) {
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF4FC3F7.toInt() }
+    private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFF0D0D0D.toInt()
+        style = Paint.Style.STROKE
+        strokeWidth = 2f * resources.displayMetrics.density
+    }
+    private val radius = 7f * resources.displayMetrics.density
+    private var map: MapLibreMap? = null
+    private var marker: SavedPlace? = null
+
+    init {
+        setWillNotDraw(false)
+        isClickable = false
+        isFocusable = false
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+    }
+
+    fun bind(ready: MapLibreMap) {
+        map = ready
+        invalidate()
+    }
+
+    fun update(place: SavedPlace) {
+        if (marker?.latitude == place.latitude && marker?.longitude == place.longitude) return
+        marker = place
+        invalidate()
+    }
+
+    fun onCameraMoved() = invalidate()
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        val ready = map ?: return
+        val place = marker ?: return
+        val point = ready.projection.toScreenLocation(LatLng(place.latitude, place.longitude))
+        canvas.drawCircle(point.x, point.y, radius, fill)
+        canvas.drawCircle(point.x, point.y, radius, stroke)
+    }
 }
 
 private class CanvasRadarOverlayView(context: android.content.Context) : View(context), RadarOverlayController {
@@ -1128,14 +1314,15 @@ private class MapViewLifecycle(private val mapView: MapView) : DefaultLifecycleO
 }
 
 @Composable
-fun RadarImageMap(
-    session: RadarSession,
-    bracket: RadarTimelineBracket,
+internal fun RadarImageMap(
+    session: RadarSession?,
+    bracket: RadarTimelineBracket?,
     mapPlace: SavedPlace,
     onLongPress: (GeoPoint) -> Unit,
     modifier: Modifier = Modifier,
     markerPlace: SavedPlace = mapPlace,
     followLive: Boolean = false,
+    liveFixElapsedRealtimeNanos: Long = 0L,
     onManualCameraGesture: () -> Unit = {},
     recenterSignal: Int = 0,
     isPlaying: Boolean = false,
@@ -1144,6 +1331,9 @@ fun RadarImageMap(
     cameraMemory: RadarCameraMemory,
     windGrid: WindGrid? = null,
     windArrowScale: Float = 1f,
+    windRenderToken: WindGridRenderToken? = null,
+    onWindRenderObservation: (WindGridRenderToken, Int) -> Unit = { _, _ -> },
+    onWindRendererReset: () -> Unit = {},
     satelliteCatalogs: List<EumetLayerMetadata> = emptyList(),
     enabledSatelliteLayers: Set<RadarMapLayer> = emptySet(),
     satelliteDisplayEpochSeconds: Long,
@@ -1155,46 +1345,49 @@ fun RadarImageMap(
     onMapStyleError: (String?) -> Unit = {},
     onWindViewportChanged: (WindViewport) -> Unit = {},
 ) {
-    key(session) {
-        RadarImageMapInstance(
-            session,
-            bracket,
-            mapPlace,
-            onLongPress,
-            modifier,
-            markerPlace,
-            followLive,
-            onManualCameraGesture,
-            recenterSignal,
-            isPlaying,
-            onRendererStatus,
-            mapStyle,
-            cameraMemory,
-            windGrid,
-            windArrowScale,
-            satelliteCatalogs,
-            enabledSatelliteLayers,
-            satelliteDisplayEpochSeconds,
-            satelliteTimelineStartEpochSeconds,
-            satelliteTimelineEndEpochSeconds,
-            satelliteWeather,
-            onSatellitePreparation,
-            onLayerError,
-            onMapStyleError,
-            onWindViewportChanged,
-        )
-    }
+    RadarImageMapInstance(
+        session,
+        bracket,
+        mapPlace,
+        onLongPress,
+        modifier,
+        markerPlace,
+        followLive,
+        liveFixElapsedRealtimeNanos,
+        onManualCameraGesture,
+        recenterSignal,
+        isPlaying,
+        onRendererStatus,
+        mapStyle,
+        cameraMemory,
+        windGrid,
+        windArrowScale,
+        windRenderToken,
+        onWindRenderObservation,
+        onWindRendererReset,
+        satelliteCatalogs,
+        enabledSatelliteLayers,
+        satelliteDisplayEpochSeconds,
+        satelliteTimelineStartEpochSeconds,
+        satelliteTimelineEndEpochSeconds,
+        satelliteWeather,
+        onSatellitePreparation,
+        onLayerError,
+        onMapStyleError,
+        onWindViewportChanged,
+    )
 }
 
 @Composable
 private fun RadarImageMapInstance(
-    session: RadarSession,
-    bracket: RadarTimelineBracket,
+    session: RadarSession?,
+    bracket: RadarTimelineBracket?,
     mapPlace: SavedPlace,
     onLongPress: (GeoPoint) -> Unit,
     modifier: Modifier,
     markerPlace: SavedPlace,
     followLive: Boolean,
+    liveFixElapsedRealtimeNanos: Long,
     onManualCameraGesture: () -> Unit,
     recenterSignal: Int,
     isPlaying: Boolean,
@@ -1203,6 +1396,9 @@ private fun RadarImageMapInstance(
     cameraMemory: RadarCameraMemory,
     windGrid: WindGrid?,
     windArrowScale: Float,
+    windRenderToken: WindGridRenderToken?,
+    onWindRenderObservation: (WindGridRenderToken, Int) -> Unit,
+    onWindRendererReset: () -> Unit,
     satelliteCatalogs: List<EumetLayerMetadata>,
     enabledSatelliteLayers: Set<RadarMapLayer>,
     satelliteDisplayEpochSeconds: Long,
@@ -1246,6 +1442,8 @@ private fun RadarImageMapInstance(
     val currentSatellitePreparation by rememberUpdatedState(onSatellitePreparation)
     val currentMapStyleError by rememberUpdatedState(onMapStyleError)
     val currentWindViewportCallback by rememberUpdatedState(onWindViewportChanged)
+    val currentWindRenderObservation by rememberUpdatedState(onWindRenderObservation)
+    val currentWindRendererReset by rememberUpdatedState(onWindRendererReset)
     val satellitePlaceKey = "${mapPlace.id}:${(mapPlace.latitude * 10).toInt()}:" +
         "${(mapPlace.longitude * 10).toInt()}"
     val satelliteRegion = remember(satellitePlaceKey) { SatelliteRegionPolicy.select(mapPlace) }
@@ -1383,33 +1581,25 @@ private fun RadarImageMapInstance(
     val latestMarkerPlace by rememberUpdatedState(markerPlace)
     val currentManualGesture by rememberUpdatedState(onManualCameraGesture)
     val latestRecenterSignal by rememberUpdatedState(recenterSignal)
-    val staticFallback = remember(session) {
-        session.legacyArchive?.let { LegacyStaticFallbackOverlayView(context, session) }
-    }
     val windView = remember(mapView) { WindFieldView(context) }
-    val overlay: RadarOverlayController = remember(session) {
-        RadarGlOverlayView(context) { status ->
-            if (RadarStaticFallbackPolicy.shouldShow(session.legacyArchive != null, status)) {
-                staticFallback?.show()
-            } else {
-                staticFallback?.hide()
-            }
-            currentStatusCallback(status)
-        }.apply { bindSession(session) }
-    }
+    val baseMarkerView = remember(mapView) { RadarBaseMarkerView(context) }
     val mapLifecycle = remember(mapView) { MapViewLifecycle(mapView) }
     val mapRevealGate = remember(mapView) { RadarMapRevealGate() }
     val mapCover = remember(mapView) {
         View(context).apply { setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(mapStyle)) }
     }
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
+    var mapContainer by remember { mutableStateOf<FrameLayout?>(null) }
+    var activeRadarSlot by remember { mutableStateOf<RadarSessionOverlaySlot?>(null) }
+    var pendingRadarSlot by remember { mutableStateOf<RadarSessionOverlaySlot?>(null) }
     var cameraListener by remember { mutableStateOf<MapLibreMap.OnCameraMoveListener?>(null) }
     var cameraStartListener by remember { mutableStateOf<MapLibreMap.OnCameraMoveStartedListener?>(null) }
     var cameraIdleListener by remember { mutableStateOf<MapLibreMap.OnCameraIdleListener?>(null) }
     var appliedPlace by remember(mapView) { mutableStateOf<SavedPlace?>(null) }
-    var lastBracket by remember(session) { mutableStateOf<RadarTimelineBracket?>(null) }
-    var lastPlaying by remember(session) { mutableStateOf<Boolean?>(null) }
-    var lastMarker by remember(session) { mutableStateOf<SavedPlace?>(null) }
+    var lastFollowFixElapsedRealtimeNanos by remember(mapView) { mutableStateOf(0L) }
+    var lastBracket by remember(mapView) { mutableStateOf<RadarTimelineBracket?>(null) }
+    var lastPlaying by remember(mapView) { mutableStateOf<Boolean?>(null) }
+    var lastMarker by remember(mapView) { mutableStateOf<SavedPlace?>(null) }
     val satelliteBuffers = remember(mapView) {
         SatelliteLayerBuffers(
             onLayerError = { layer, message ->
@@ -1432,12 +1622,56 @@ private fun RadarImageMapInstance(
         val center = position.target ?: return
         cameraMemory.capture(place, center.latitude, center.longitude, position.zoom)
     }
-    val teardown = remember(session, mapView, overlay, staticFallback) {
+    val latestBracket by rememberUpdatedState(bracket)
+    val latestPlaying by rememberUpdatedState(isPlaying)
+    val slotStatusHandler by rememberUpdatedState<(RadarSessionOverlaySlot, RadarRendererStatus) -> Unit> {
+            slot, status ->
+        val isRelevant = slot === pendingRadarSlot ||
+            (pendingRadarSlot == null && slot === activeRadarSlot)
+        if (isRelevant) currentStatusCallback(status)
+        val promote = slot === pendingRadarSlot && when (status) {
+            RadarRendererStatus.Ready, is RadarRendererStatus.Compatibility -> true
+            is RadarRendererStatus.Error -> activeRadarSlot == null || slot.hasStaticFallback
+            RadarRendererStatus.Loading -> false
+        }
+        if (promote) mapContainer?.post {
+            if (slot !== pendingRadarSlot) return@post
+            val outgoing = activeRadarSlot
+            activeRadarSlot = slot
+            pendingRadarSlot = null
+            baseMarkerView.visibility = View.GONE
+            outgoing?.removeFrom(mapContainer)
+            outgoing?.dispose()
+            windView.bringToFront()
+            if (mapCover.visibility == View.VISIBLE) mapCover.bringToFront()
+        }
+    }
+    val desiredRadarSlot = remember(session) {
+        session?.let { selected ->
+            RadarSessionOverlaySlot(context, selected) { slot, status ->
+                slotStatusHandler(slot, status)
+            }
+        }
+    }
+    DisposableEffect(desiredRadarSlot) {
+        onDispose {
+            desiredRadarSlot?.takeUnless {
+                it === activeRadarSlot || it === pendingRadarSlot
+            }?.dispose()
+        }
+    }
+    val teardown = remember(mapView) {
         RadarResourceTeardown(
             stopOverlay = {
                 satelliteBuffers.clear()
-                overlay.dispose()
-                staticFallback?.dispose()
+                windView.setRenderEligible(false)
+                currentWindRendererReset()
+                pendingRadarSlot?.removeFrom(mapContainer)
+                activeRadarSlot?.removeFrom(mapContainer)
+                pendingRadarSlot?.dispose()
+                activeRadarSlot?.takeUnless { it === pendingRadarSlot }?.dispose()
+                pendingRadarSlot = null
+                activeRadarSlot = null
             },
             detachMap = {
                 val ready = map
@@ -1449,7 +1683,7 @@ private fun RadarImageMapInstance(
                 if (ready != null && idleListener != null) ready.removeOnCameraIdleListener(idleListener)
             },
             destroyMap = mapLifecycle::destroy,
-            releaseSession = session::release,
+            releaseSession = {},
         )
     }
 
@@ -1477,6 +1711,8 @@ private fun RadarImageMapInstance(
             if (revealCurrentStyle) mapView.post {
                 if (!teardown.isClosed && !mapRevealGate.isCovered) {
                     mapCover.visibility = View.GONE
+                    windView.bringToFront()
+                    windView.setRenderEligible(true)
                     currentMapStyleError(null)
                 }
             }
@@ -1504,6 +1740,7 @@ private fun RadarImageMapInstance(
     AndroidView(
         factory = {
             FrameLayout(context).apply {
+                mapContainer = this
                 setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(mapStyle))
                 // Register synchronously before attaching MapView: a cached style may render
                 // before Compose's DisposableEffect runs after this factory returns.
@@ -1517,23 +1754,9 @@ private fun RadarImageMapInstance(
                         FrameLayout.LayoutParams.MATCH_PARENT,
                     ),
                 )
-                staticFallback?.let { fallback ->
-                    addView(
-                        fallback,
-                        FrameLayout.LayoutParams(
-                            FrameLayout.LayoutParams.MATCH_PARENT,
-                            FrameLayout.LayoutParams.MATCH_PARENT,
-                        ),
-                    )
-                }
-                addView(
-                    overlay.overlayView,
-                    FrameLayout.LayoutParams(
-                        FrameLayout.LayoutParams.MATCH_PARENT,
-                        FrameLayout.LayoutParams.MATCH_PARENT,
-                    ),
-                )
-                overlay.overlayView.bringToFront()
+                addView(baseMarkerView, FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                baseMarkerView.update(latestMarkerPlace)
                 addView(windView, FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
                 windView.bringToFront()
@@ -1545,9 +1768,10 @@ private fun RadarImageMapInstance(
                 mapView.getMapAsync { ready ->
                     if (teardown.isClosed) return@getMapAsync
                     map = ready
-                    overlay.attachMap(ready)
+                    baseMarkerView.bind(ready)
+                    activeRadarSlot?.attachMap(ready)
+                    pendingRadarSlot?.attachMap(ready)
                     windView.bind(ready)
-                    staticFallback?.attachMap(ready)
                     ready.setMaxZoomPreference(21.0)
                     ready.uiSettings.isRotateGesturesEnabled = false
                     ready.uiSettings.isTiltGesturesEnabled = false
@@ -1561,9 +1785,10 @@ private fun RadarImageMapInstance(
                     saveCamera(ready, initialPlace)
                     val listener = MapLibreMap.OnCameraMoveListener {
                         appliedPlace?.let { saveCamera(ready, it) }
-                        overlay.onCameraMoved()
+                        activeRadarSlot?.onCameraMoved()
+                        pendingRadarSlot?.onCameraMoved()
+                        baseMarkerView.onCameraMoved()
                         windView.cameraMoved()
-                        staticFallback?.onCameraMoved()
                     }
                     cameraListener = listener
                     ready.addOnCameraMoveListener(listener)
@@ -1579,8 +1804,9 @@ private fun RadarImageMapInstance(
                             // Re-project the radar, wind and selected marker at the settled camera.
                             // Satellite ImageSources remain fixed to the selected region and do not
                             // participate in viewport-driven reloads.
-                            overlay.onCameraMoved()
-                            staticFallback?.onCameraMoved()
+                            activeRadarSlot?.onCameraMoved()
+                            pendingRadarSlot?.onCameraMoved()
+                            baseMarkerView.onCameraMoved()
                             windView.cameraMoved()
                             val bounds = ready.projection.visibleRegion.latLngBounds
                             currentWindViewportCallback(WindViewport(
@@ -1591,23 +1817,64 @@ private fun RadarImageMapInstance(
                     cameraIdleListener = idle
                     ready.addOnCameraIdleListener(idle)
                     mapView.post { if (!teardown.isClosed) idle.onCameraIdle() }
-                    overlay.onCameraMoved()
+                    activeRadarSlot?.onCameraMoved()
+                    pendingRadarSlot?.onCameraMoved()
+                    baseMarkerView.onCameraMoved()
                 }
             }
         },
         update = { container ->
+            mapContainer = container
             container.setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(mapStyle))
             mapView.setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(mapStyle))
-            if (lastBracket != bracket || lastPlaying != isPlaying) {
-                overlay.setState(bracket, isPlaying, markerPlace)
+            when {
+                desiredRadarSlot == null -> {
+                    pendingRadarSlot?.removeFrom(container)
+                    activeRadarSlot?.removeFrom(container)
+                    pendingRadarSlot?.dispose()
+                    activeRadarSlot?.takeUnless { it === pendingRadarSlot }?.dispose()
+                    pendingRadarSlot = null
+                    activeRadarSlot = null
+                    baseMarkerView.visibility = View.VISIBLE
+                    currentStatusCallback(RadarRendererStatus.Loading)
+                }
+                desiredRadarSlot !== activeRadarSlot && desiredRadarSlot !== pendingRadarSlot -> {
+                    pendingRadarSlot?.removeFrom(container)
+                    pendingRadarSlot?.dispose()
+                    pendingRadarSlot = desiredRadarSlot
+                    desiredRadarSlot.addTo(container)
+                    map?.let(desiredRadarSlot::attachMap)
+                    latestBracket?.let { desiredRadarSlot.setState(it, latestPlaying, latestMarkerPlace) }
+                    desiredRadarSlot.setMarker(latestMarkerPlace)
+                    windView.bringToFront()
+                    if (mapCover.visibility == View.VISIBLE) mapCover.bringToFront()
+                }
+            }
+            baseMarkerView.update(markerPlace)
+            baseMarkerView.visibility = if (activeRadarSlot == null) View.VISIBLE else View.GONE
+            if (bracket != null && (lastBracket != bracket || lastPlaying != isPlaying)) {
+                // A replacement session preloads above the old usable radar. Only the slot that
+                // owns the new timeline may consume its frame indices; keep the outgoing slot
+                // frozen until the replacement has produced a renderable frame.
+                activeRadarSlot?.takeIf { it.session === session }
+                    ?.setState(bracket, isPlaying, markerPlace)
+                pendingRadarSlot?.takeIf { it.session === session }
+                    ?.setState(bracket, isPlaying, markerPlace)
                 lastBracket = bracket
                 lastPlaying = isPlaying
-            } else overlay.setMarker(markerPlace)
+            } else {
+                activeRadarSlot?.setMarker(markerPlace)
+                pendingRadarSlot?.setMarker(markerPlace)
+            }
             if (lastMarker != markerPlace) {
-                staticFallback?.setPlace(markerPlace)
+                activeRadarSlot?.setMarker(markerPlace)
+                pendingRadarSlot?.setMarker(markerPlace)
                 lastMarker = markerPlace
             }
-            windView.update(displayedWindGrid, windArrowScale)
+            windView.setObservationCallback { token, count ->
+                currentWindRenderObservation(token, count)
+            }
+            windView.update(displayedWindGrid, windRenderToken, windArrowScale)
         },
         modifier = modifier,
     )
@@ -1619,6 +1886,8 @@ private fun RadarImageMapInstance(
         if (ready == null || teardown.isClosed) return@DisposableEffect onDispose { }
         var active = true
         val styleGeneration = mapRevealGate.styleRequested()
+        windView.setRenderEligible(false)
+        currentWindRendererReset()
         mapCover.setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(mapStyle))
         mapCover.visibility = View.VISIBLE
         currentMapStyleError(null)
@@ -1634,8 +1903,9 @@ private fun RadarImageMapInstance(
                         it, latestSatelliteRequests, latestEnabledSatelliteLayers,
                         latestSatellitePlayback, latestSatelliteCacheContext,
                     )
-                    overlay.onCameraMoved()
-                    staticFallback?.onCameraMoved()
+                    activeRadarSlot?.onCameraMoved()
+                    pendingRadarSlot?.onCameraMoved()
+                    baseMarkerView.onCameraMoved()
                     mapView.post { if (!teardown.isClosed) cameraIdleListener?.onCameraIdle() }
                 }
             }
@@ -1706,12 +1976,23 @@ private fun RadarImageMapInstance(
         saveCamera(ready, reference)
     }
 
-    LaunchedEffect(map, followLive, markerPlace.latitude, markerPlace.longitude) {
+    LaunchedEffect(
+        map, followLive, markerPlace.latitude, markerPlace.longitude,
+        liveFixElapsedRealtimeNanos,
+    ) {
         val ready = map ?: return@LaunchedEffect
-        if (!followLive || teardown.isClosed) return@LaunchedEffect
+        if (!followLive || teardown.isClosed) {
+            lastFollowFixElapsedRealtimeNanos = 0L
+            return@LaunchedEffect
+        }
         val target = RadarCameraTarget(markerPlace.latitude, markerPlace.longitude, ready.cameraPosition.zoom)
         appliedPlace = markerPlace
-        ready.cameraPosition = northUpCamera(target)
+        val duration = RadarFollowCameraPolicy.durationMillis(
+            lastFollowFixElapsedRealtimeNanos, liveFixElapsedRealtimeNanos,
+        )
+        ready.cancelTransitions()
+        ready.easeCamera(CameraUpdateFactory.newCameraPosition(northUpCamera(target)), duration)
+        lastFollowFixElapsedRealtimeNanos = liveFixElapsedRealtimeNanos
         saveCamera(ready, markerPlace)
     }
 }
