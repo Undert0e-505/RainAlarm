@@ -1,6 +1,7 @@
 package com.rainalarm.app.ui
 
 import com.rainalarm.app.data.CURRENT_LOCATION_ID
+import com.rainalarm.app.data.RadarProviderKind
 import com.rainalarm.app.data.SavedPlace
 
 /** A live marker is independent of the materially updated forecast/session place. */
@@ -13,6 +14,23 @@ internal object RadarLiveMapPolicy {
 
     fun shouldCenterOnFix(selectedId: String, liveFix: SavedPlace?, following: Boolean): Boolean =
         following && canFollow(selectedId, liveFix)
+}
+
+/**
+ * Playback belongs to the logical place/provider choice, not to one downloaded RadarSession.
+ * Refreshes replace the session object, while place/provider changes intentionally get a fresh
+ * paused player.
+ */
+internal data class RadarPlaybackRefreshIdentity(
+    val selectedPlaceId: String,
+    val requestedProvider: RadarProviderKind?,
+)
+
+internal object RadarPlaybackRefreshPolicy {
+    fun identity(
+        selectedPlaceId: String,
+        requestedProvider: RadarProviderKind?,
+    ): RadarPlaybackRefreshIdentity = RadarPlaybackRefreshIdentity(selectedPlaceId, requestedProvider)
 }
 
 /** Keeps successive Follow camera movements smooth without building an animation queue. */

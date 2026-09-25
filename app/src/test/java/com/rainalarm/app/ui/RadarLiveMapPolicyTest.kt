@@ -1,6 +1,7 @@
 package com.rainalarm.app.ui
 
 import com.rainalarm.app.data.CURRENT_LOCATION_ID
+import com.rainalarm.app.data.RadarProviderKind
 import com.rainalarm.app.data.SavedPlace
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -34,5 +35,28 @@ class RadarLiveMapPolicyTest {
         assertEquals(500, RadarFollowCameraPolicy.durationMillis(1_000_000_000, 1_200_000_000))
         assertEquals(1_000, RadarFollowCameraPolicy.durationMillis(1_000_000_000, 2_000_000_000))
         assertEquals(1_200, RadarFollowCameraPolicy.durationMillis(1_000_000_000, 4_000_000_000))
+    }
+
+    @Test fun playbackIdentitySurvivesSessionRefreshButChangesForPlaceOrProvider() {
+        val before = RadarPlaybackRefreshPolicy.identity(
+            CURRENT_LOCATION_ID,
+            RadarProviderKind.METEOGROUP_REGIONAL,
+        )
+        val refreshed = RadarPlaybackRefreshPolicy.identity(
+            CURRENT_LOCATION_ID,
+            RadarProviderKind.METEOGROUP_REGIONAL,
+        )
+        val newPlace = RadarPlaybackRefreshPolicy.identity(
+            "saved-place",
+            RadarProviderKind.METEOGROUP_REGIONAL,
+        )
+        val newProvider = RadarPlaybackRefreshPolicy.identity(
+            CURRENT_LOCATION_ID,
+            RadarProviderKind.OPEN_RAINVIEWER,
+        )
+
+        assertEquals(before, refreshed)
+        assertFalse(before == newPlace)
+        assertFalse(before == newProvider)
     }
 }

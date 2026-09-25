@@ -1559,7 +1559,11 @@ private fun ColumnScope.RadarPlayer(
     var cursor by remember(session) { mutableFloatStateOf(
         (chartDecision as? RadarChartTimeDecision.Apply)?.cursorSeconds ?: initialCursor,
     ) }
-    var playing by remember(session) { mutableStateOf(false) }
+    val playbackRefreshIdentity = RadarPlaybackRefreshPolicy.identity(
+        selectedPlaceId,
+        session?.providerSelection?.requested,
+    )
+    var playing by remember(playbackRefreshIdentity) { mutableStateOf(false) }
     var chartTimeMessage by remember(session) { mutableStateOf<String?>(null) }
     LaunchedEffect(session, chartTimeRequest?.token, chartDecision) {
         val request = chartTimeRequest ?: return@LaunchedEffect

@@ -163,20 +163,65 @@ class RadarRendererSafetyTest {
     }
 
     @Test
-    fun `interrupted renderer stage selects compatibility and clears after success`() {
+    fun `cross process interruption selects compatibility and clears after success`() {
         class FakeStore(var value: String? = null) : RadarRendererStageStore {
             override fun read(): String? = value
             override fun write(value: String?) { this.value = value }
         }
         RadarRendererStage.entries.forEach { stage ->
-            val store = FakeStore(stage.name)
-            val guard = RadarRendererStageGuard(store)
-            assertTrue(guard.compatibilityMode)
-            assertEquals(stage, guard.interruptedStage)
-            guard.clear()
+            val store = FakeStore()
+            RadarRendererStageGuard(store, processToken = "old", ownerToken = "old-owner").mark(stage)
+            val recovered = RadarRendererStageGuard(store, processToken = "new", ownerToken = "new-owner")
+            assertTrue(recovered.compatibilityMode)
+            assertEquals(stage, recovered.interruptedStage)
+            recovered.mark(RadarRendererStage.MESH_READY)
+            recovered.clear()
             assertNull(store.value)
         }
-        assertFalse(RadarRendererStageGuard(FakeStore()).compatibilityMode)
+        assertFalse(RadarRendererStageGuard(
+            FakeStore(), processToken = "process", ownerToken = "owner",
+        ).compatibilityMode)
+    }
+
+    @Test
+    fun `same process session handoff is expected and owners cannot clear each other`() {
+        class FakeStore(var value: String? = null) : RadarRendererStageStore {
+            override fun read(): String? = value
+            override fun write(value: String?) { this.value = value }
+        }
+        val store = FakeStore()
+        val outgoing = RadarRendererStageGuard(store, processToken = "same", ownerToken = "outgoing")
+        outgoing.mark(RadarRendererStage.VELOCITY_UPLOAD)
+
+        val incoming = RadarRendererStageGuard(store, processToken = "same", ownerToken = "incoming")
+        assertFalse(incoming.compatibilityMode)
+        assertNull(incoming.interruptedStage)
+        incoming.mark(RadarRendererStage.MESH_READY)
+        outgoing.finishExpected()
+        assertEquals(
+            RadarRendererStageRecord("same", "incoming", RadarRendererStage.MESH_READY).encode(),
+            store.value,
+        )
+        incoming.finishExpected()
+        assertNull(store.value)
+    }
+
+    @Test
+    fun `legacy ambiguous breadcrumb is discarded without exposing internal stage wording`() {
+        class FakeStore(var value: String? = RadarRendererStage.VELOCITY_UPLOAD.name) : RadarRendererStageStore {
+            override fun read(): String? = value
+            override fun write(value: String?) { this.value = value }
+        }
+        val store = FakeStore()
+        val guard = RadarRendererStageGuard(store, processToken = "process", ownerToken = "owner")
+        assertFalse(guard.compatibilityMode)
+        assertNull(store.value)
+
+        val status = RadarRendererRecoveryPolicy.status(RadarRendererStage.VELOCITY_UPLOAD)
+        assertTrue(status is RadarRendererStatus.Compatibility)
+        val message = (status as RadarRendererStatus.Compatibility).message
+        assertFalse(message.contains("velocity", ignoreCase = true))
+        assertFalse(message.contains("upload", ignoreCase = true))
     }
 
     @Test

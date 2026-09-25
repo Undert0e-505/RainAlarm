@@ -260,7 +260,10 @@ References:
   cadence, and 15-minute Wind/point-model steps. A 45-second publication grace
   precedes each check. Unchanged or failed checks back off for 1, then 2, then
   at most 5 minutes. Each stream permits one in-flight generation, only enabled
-  ancillary layers poll, and stale completions cannot publish. Manual Refresh
+  ancillary layers poll, and stale completions cannot publish. A refreshed
+  same-place radar session preserves active playback through its renderer
+  handoff; direct timeline scrubbing and chart-time navigation still pause.
+  Manual Refresh uses the same playback-preserving replacement path while it
   force-checks and rebases the clocks. Stopping Follow, leaving Radar,
   deselecting Current or backgrounding immediately pauses the coordinator;
   visible data and caches are retained.
@@ -632,8 +635,9 @@ Regional screen sessions retain bounded compressed JPEG data rather than a
 decoded bitmap set (4 MiB per resource, 64 MiB per session). Transfers run two
 at a time in current/forecast/history priority order while the timeline remains
 chronological. From its first draw, the GL renderer keeps at most three
-radar/velocity frame pairs (six textures), or two pairs after a prior interrupted
-renderer stage. It uploads only the current frame for the first draw, decodes
+radar/velocity frame pairs (six textures), or two pairs after a genuine prior
+renderer-process interruption. It uploads only the current frame for the first
+draw, decodes
 adjacent pairs lazily during slider use, and evicts old textures before allocating
 replacements. There is no full-residency warm-up path.
 
@@ -643,8 +647,11 @@ two-channel luminance/alpha, both converted one row at a time. Regional rasters
 are conservatively stored in power-of-two backing textures with exact adjusted
 UV coordinates for GLES 2 driver compatibility. EGL recreation rebuilds lazily
 from the same compressed session bytes and never causes a network reload. A
-local interrupted-stage marker enables the safer two-pair mode on the next
-session. A caught renderer failure is shown in the UI and switches to a lazy,
+versioned process/renderer-owned interruption marker enables the safer two-pair
+mode on the next process. Normal overlapping refresh handoffs ignore an outgoing
+renderer marker and cannot clear the incoming renderer's state. A genuine
+recovery uses concise user-facing wording without exposing internal stages. A
+caught renderer failure is shown in the UI and switches to a lazy,
 downsampled static CPU display of the current regional frame rather than leaving
 a blank radar. Background Now/alert analysis decodes only 5×5 selected-point
 regions. It retains compact minimum/average/maximum intensity values for each

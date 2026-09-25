@@ -139,7 +139,6 @@ internal class RadarGlOverlayView(
     @Volatile private var surfaceHeight = 0
     private val stageGuard = RadarRendererStageGuard(SharedPreferencesRadarRendererStageStore(context))
     private val recoveredStage = stageGuard.interruptedStage
-    private var rendererFailed = false
 
     companion object {
         private const val TAG = "RainRadarRenderer"
@@ -244,6 +243,7 @@ internal class RadarGlOverlayView(
         if (disposed) return
         disposed = true
         lifecycleGate.dispose()
+        if (session?.legacyArchive != null) stageGuard.finishExpected()
         val done = CountDownLatch(1)
         renderHandler.post {
             renderer?.close()
@@ -251,7 +251,6 @@ internal class RadarGlOverlayView(
             done.countDown()
         }
         done.await(750, TimeUnit.MILLISECONDS)
-        if (!rendererFailed && session?.legacyArchive != null) stageGuard.clear()
         renderThread.quitSafely()
         map = null
     }
@@ -325,11 +324,7 @@ internal class RadarGlOverlayView(
                 lifecycleGate.drawSucceeded()
                 if (session?.legacyArchive != null) stageGuard.clear()
                 val status = if (session?.legacyArchive != null) {
-                    recoveredStage?.let {
-                        RadarRendererStatus.Compatibility(
-                            "Safe radar mode enabled after an interrupted ${it.name.lowercase().replace('_', ' ')} stage.",
-                        )
-                    } ?: RadarRendererStatus.Ready
+                    RadarRendererRecoveryPolicy.status(recoveredStage)
                 } else RadarRendererStatus.Ready
                 report(status)
             }
@@ -370,7 +365,6 @@ internal class RadarGlOverlayView(
 
     private fun fail(failure: Throwable) {
         Log.e(TAG, "Radar renderer failure", failure)
-        rendererFailed = true
         runCatching { renderer?.close() }
             .onFailure { Log.e(TAG, "Radar renderer cleanup failed", it) }
         renderer = null

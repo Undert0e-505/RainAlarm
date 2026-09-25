@@ -37,4 +37,13 @@ class RadarLiveMapWiringTest {
         assertTrue(map.contains("REASON_API_GESTURE"))
         assertTrue(gl.contains("if (moved) updateMarkerProjection(mapPlace)"))
     }
+
+    @Test fun radarRefreshKeepsPlaybackButDirectScrubbingStillPauses() {
+        val screen = source("RadarScreen.kt")
+        assertTrue(screen.contains("val playbackRefreshIdentity = RadarPlaybackRefreshPolicy.identity("))
+        assertTrue(screen.contains("var playing by remember(playbackRefreshIdentity)"))
+        assertTrue(screen.contains("onValueChange = {\n                cursor ="))
+        assertTrue(screen.contains("cursor = it.takeIf { value -> value.isFinite() }"))
+        assertTrue(screen.contains("playing = false"))
+    }
 }

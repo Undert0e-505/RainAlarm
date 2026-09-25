@@ -2,6 +2,8 @@ package com.rainalarm.app.ui
 
 import android.content.Context
 import java.nio.ByteBuffer
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
 
 internal enum class RadarRendererStage {
     EGL_CREATE,
@@ -18,15 +20,82 @@ internal interface RadarRendererStageStore {
     fun write(value: String?)
 }
 
-internal class RadarRendererStageGuard(private val store: RadarRendererStageStore) {
-    val interruptedStage: RadarRendererStage? = store.read()?.let { stored ->
-        RadarRendererStage.entries.firstOrNull { it.name == stored }
+internal data class RadarRendererStageRecord(
+    val processToken: String,
+    val ownerToken: String,
+    val stage: RadarRendererStage,
+) {
+    fun encode(): String = listOf(FORMAT_VERSION, processToken, ownerToken, stage.name).joinToString(SEPARATOR)
+
+    companion object {
+        private const val FORMAT_VERSION = "2"
+        private const val SEPARATOR = "|"
+
+        fun decode(value: String?): RadarRendererStageRecord? {
+            val parts = value?.split(SEPARATOR) ?: return null
+            if (parts.size != 4 || parts[0] != FORMAT_VERSION || parts[1].isBlank() || parts[2].isBlank()) {
+                return null
+            }
+            val stage = RadarRendererStage.entries.firstOrNull { it.name == parts[3] } ?: return null
+            return RadarRendererStageRecord(parts[1], parts[2], stage)
+        }
+    }
+}
+
+private object RadarRendererProcessIdentity {
+    val token: String = UUID.randomUUID().toString()
+    val lock = Any()
+    private val nextOwner = AtomicLong()
+
+    fun ownerToken(): String = nextOwner.incrementAndGet().toString()
+}
+
+internal class RadarRendererStageGuard(
+    private val store: RadarRendererStageStore,
+    private val processToken: String = RadarRendererProcessIdentity.token,
+    private val ownerToken: String = RadarRendererProcessIdentity.ownerToken(),
+) {
+    val interruptedStage: RadarRendererStage? = synchronized(RadarRendererProcessIdentity.lock) {
+        val stored = store.read()
+        val record = RadarRendererStageRecord.decode(stored)
+        when {
+            record == null -> {
+                // Version-one breadcrumbs did not identify their renderer and routinely mistook a
+                // normal overlapping session handoff for a process interruption. Discard them.
+                if (stored != null) store.write(null)
+                null
+            }
+            record.processToken == processToken -> null
+            else -> record.stage
+        }
     }
 
     val compatibilityMode: Boolean get() = interruptedStage != null
 
-    fun mark(stage: RadarRendererStage) = store.write(stage.name)
-    fun clear() = store.write(null)
+    @Volatile private var acceptingMarks = true
+
+    fun mark(stage: RadarRendererStage) = synchronized(RadarRendererProcessIdentity.lock) {
+        if (acceptingMarks) store.write(RadarRendererStageRecord(processToken, ownerToken, stage).encode())
+    }
+
+    fun clear() = synchronized(RadarRendererProcessIdentity.lock) {
+        val active = RadarRendererStageRecord.decode(store.read())
+        if (active?.processToken == processToken && active.ownerToken == ownerToken) store.write(null)
+    }
+
+    /** Prevent queued work from recreating a breadcrumb after an expected session handoff. */
+    fun finishExpected() {
+        acceptingMarks = false
+        clear()
+    }
+}
+
+internal object RadarRendererRecoveryPolicy {
+    private const val RECOVERY_MESSAGE = "Radar display recovered in compatibility mode."
+
+    fun status(interruptedStage: RadarRendererStage?): RadarRendererStatus =
+        if (interruptedStage == null) RadarRendererStatus.Ready
+        else RadarRendererStatus.Compatibility(RECOVERY_MESSAGE)
 }
 
 internal class SharedPreferencesRadarRendererStageStore(context: Context) : RadarRendererStageStore {
