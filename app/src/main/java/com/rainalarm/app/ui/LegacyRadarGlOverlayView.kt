@@ -18,6 +18,7 @@ import android.view.TextureView
 import android.view.View
 import android.util.Log
 import com.rainalarm.app.data.RadarSession
+import com.rainalarm.app.data.RegionalRadarArea
 import com.rainalarm.app.data.SavedPlace
 import com.rainalarm.app.data.consumeAndRelease
 import com.rainalarm.app.domain.RadarProjectionMesh
@@ -39,6 +40,66 @@ import java.util.IdentityHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+
+/**
+ * Separates a logical regional identity from the raster's actual encoding and geometry.
+ * OPERA carries a region for fallback/attribution, but its bitmaps are already resampled onto
+ * their declared Web Mercator tier bounds. Only a real legacy archive is a native Meteo raster.
+ */
+internal class RadarRasterRenderPolicy private constructor(
+    val logicalRegion: RegionalRadarArea?,
+    val legacyNativeRaster: Boolean,
+) {
+    init {
+        require(!legacyNativeRaster || logicalRegion != null) {
+            "A native regional raster requires its projection metadata"
+        }
+    }
+
+    val coloredSource: Float get() = if (legacyNativeRaster) 0f else 1f
+
+    fun mesh(tierBounds: com.rainalarm.app.domain.GeoQuad?): RadarProjectionMesh =
+        if (legacyNativeRaster) {
+            RegionalProjectionMesh.build(requireNotNull(logicalRegion))
+        } else {
+            BoundsProjectionMesh.build(requireNotNull(tierBounds))
+        }
+
+    fun legacyTextureLayout(): LegacyTextureLayout? = if (legacyNativeRaster) {
+        requireNotNull(logicalRegion).let {
+            LegacyTextureLayout.plan(it.rasterWidth, it.rasterHeight, forcePowerOfTwo = true)
+        }
+    } else null
+
+    fun velocityScale(denseVelocity: RadarVelocityField?): Float = if (legacyNativeRaster) {
+        requireNotNull(logicalRegion).velocityScale
+    } else {
+        denseVelocity?.maxDisplacementPixels ?: 0f
+    }
+
+    fun sourceDimensions(bitmapDimensions: Pair<Int, Int>?): Pair<Int, Int> =
+        if (legacyNativeRaster) {
+            requireNotNull(logicalRegion).rasterWidth to logicalRegion.rasterHeight
+        } else {
+            requireNotNull(bitmapDimensions).also { (width, height) ->
+                require(width > 0 && height > 0) {
+                    "A bounds-projected raster draw requires a decoded bitmap"
+                }
+            }
+        }
+
+    companion object {
+        fun forSession(session: RadarSession): RadarRasterRenderPolicy = resolve(
+            logicalRegion = session.region,
+            legacyArchivePresent = session.legacyArchive != null,
+        )
+
+        internal fun resolve(
+            logicalRegion: RegionalRadarArea?,
+            legacyArchivePresent: Boolean,
+        ): RadarRasterRenderPolicy = RadarRasterRenderPolicy(logicalRegion, legacyArchivePresent)
+    }
+}
 
 /**
  * Clean-room GLES renderer for the regional feed. It implements the recovered symmetric local
@@ -282,9 +343,10 @@ internal class RadarGlOverlayView(
         val tier: RadarResolutionTier,
     )
 
-    private fun meshFor(tier: RadarResolutionTier): RadarProjectionMesh = requireNotNull(session).region?.let {
-        RegionalProjectionMesh.build(it)
-    } ?: BoundsProjectionMesh.build(requireNotNull(requireNotNull(session).tier(tier)).bounds)
+    private fun meshFor(tier: RadarResolutionTier): RadarProjectionMesh {
+        val bound = requireNotNull(session)
+        return RadarRasterRenderPolicy.forSession(bound).mesh(bound.tier(tier)?.bounds)
+    }
 
     private fun initializeIfReady() {
         if (disposed || renderer != null) return
@@ -338,14 +400,13 @@ internal class RadarGlOverlayView(
         private var context: EGLContext = EGL14.EGL_NO_CONTEXT
         private var surface: EGLSurface = EGL14.EGL_NO_SURFACE
         private val legacyArchive = session.legacyArchive
+        private val rasterPolicy = RadarRasterRenderPolicy.forSession(session)
         private val textures = IdentityHashMap<Bitmap, Int>()
         private val velocityTextures = IdentityHashMap<RadarVelocityField, Int>()
         private data class LegacyPairTextures(val radar: Int, val velocity: Int)
         private val legacyPairs = HashMap<Int, LegacyPairTextures>()
         private val legacyResidency = LegacyPairResidency(if (compatibilityMode) 2 else MAX_RESIDENT_PAIRS)
-        private val legacyLayout = session.region?.let {
-            LegacyTextureLayout.plan(it.rasterWidth, it.rasterHeight, forcePowerOfTwo = true)
-        }
+        private val legacyLayout = rasterPolicy.legacyTextureLayout()
         private var lutTexture = 0
         private var neutralVelocityTexture = 0
         private var program = 0
@@ -454,19 +515,21 @@ internal class RadarGlOverlayView(
             GLES20.glUniform1f(uniform("time"), bracket.fraction.toFloat().coerceIn(0f, 1f))
             GLES20.glUniform1f(
                 uniform("velocityScale"),
-                session.region?.velocityScale ?: denseVelocity?.maxDisplacementPixels ?: 0f,
+                rasterPolicy.velocityScale(denseVelocity),
             )
-            val raster = session.region
+            val (sourceWidth, sourceHeight) = rasterPolicy.sourceDimensions(
+                first?.bitmap?.let { it.width to it.height },
+            )
             GLES20.glUniform2f(
                 uniform("pixelSize"),
-                1f / (raster?.rasterWidth ?: requireNotNull(first).bitmap.width),
-                1f / (raster?.rasterHeight ?: requireNotNull(first).bitmap.height),
+                1f / sourceWidth,
+                1f / sourceHeight,
             )
             // The retired texture surface used 90% overall opacity; keep alpha
             // in the LUT and apply the surface-level factor only once here.
             GLES20.glUniform1f(uniform("layerAlpha"), 0.90f)
             GLES20.glUniform1f(uniform("markerMode"), 0f)
-            GLES20.glUniform1f(uniform("coloredSource"), if (session.region == null) 1f else 0f)
+            GLES20.glUniform1f(uniform("coloredSource"), rasterPolicy.coloredSource)
             val textureLayout = legacyLayout
             GLES20.glUniform2f(
                 uniform("textureOffset"),

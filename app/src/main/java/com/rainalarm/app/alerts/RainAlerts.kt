@@ -126,9 +126,9 @@ object RainAlertDecisionEngine {
         val (detailDxPixelsPerMinute, detailDyPixelsPerMinute) =
             reliableMotion.pixelsPerMinute(RadarResolutionTier.DETAIL)
         val dxPixelsPerMinute = detailDxPixelsPerMinute *
-            latest.width / RadarResolutionTier.DETAIL.imageSize
+            latest.width / RadarResolutionTier.DETAIL.standardImageSize
         val dyPixelsPerMinute = detailDyPixelsPerMinute *
-            latest.height / RadarResolutionTier.DETAIL.imageSize
+            latest.height / RadarResolutionTier.DETAIL.standardImageSize
         var first: Int? = null
         var last: Int? = null
         for (minute in 1..60) {

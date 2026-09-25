@@ -2,6 +2,9 @@ package com.rainalarm.app.data
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.RectF
 import com.rainalarm.app.domain.GeoPoint
 import com.rainalarm.app.domain.GeoQuad
 import com.rainalarm.app.domain.IntensityGrid
@@ -23,6 +26,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.ByteArrayOutputStream
@@ -33,11 +38,139 @@ import java.util.Collections
 import java.util.IdentityHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.roundToInt
 
 const val RADAR_IMAGE_ZOOM = 7
 const val RADAR_IMAGE_SIZE = 512
 private const val MAX_IMAGE_BYTES = 3 * 1024 * 1024
 private const val MOTION_ANALYSIS_SIZE = 64
+
+data class RainViewerRasterPlacement(
+    val left: Double,
+    val top: Double,
+    val right: Double,
+    val bottom: Double,
+)
+
+data class RainViewerRasterSegment(
+    val center: GeoPoint,
+    val sourceBounds: GeoQuad,
+    val destination: RainViewerRasterPlacement,
+)
+
+data class RainViewerRasterPlan(
+    val zoom: Int,
+    val imageSize: Int,
+    val targetBounds: GeoQuad,
+    val outputWidth: Int,
+    val outputHeight: Int,
+    val segments: List<RainViewerRasterSegment>,
+    val regionalAreaId: String? = null,
+)
+
+object RainViewerRasterPlanner {
+    private const val MAX_ZOOM = 7
+    private const val MAX_REGIONAL_SEGMENTS = 2
+
+    fun forTier(place: SavedPlace, tier: RadarResolutionTier): RainViewerRasterPlan {
+        val area = if (tier == RadarResolutionTier.REGIONAL) {
+            RegionalRadarAreas.forPoint(place.latitude, place.longitude)
+        } else null
+        return area?.let(::forRegionalArea) ?: forSelectedPlace(place, tier)
+    }
+
+    fun forRegionalArea(area: RegionalRadarArea): RainViewerRasterPlan {
+        val target = area.bounds
+        val (left, top) = WebMercator.worldFraction(target.topLeft)
+        val (right, bottom) = WebMercator.worldFraction(target.bottomRight)
+        val width = right - left
+        val height = bottom - top
+        require(width > 0.0 && height > 0.0)
+        // One coordinate response covers one standard tile at its requested zoom. Allow at most
+        // two overlapping windows so large UK/France footprints retain useful ~z4 resolution
+        // rather than dropping to a single, visibly coarse z3 image.
+        val zoom = (MAX_ZOOM downTo 0).first { candidate ->
+            val span = 1.0 / (1 shl candidate)
+            val columns = kotlin.math.ceil(width / span).toInt().coerceAtLeast(1)
+            val rows = kotlin.math.ceil(height / span).toInt().coerceAtLeast(1)
+            columns * rows <= MAX_REGIONAL_SEGMENTS
+        }
+        return build(target, zoom, area.id)
+    }
+
+    private fun forSelectedPlace(place: SavedPlace, tier: RadarResolutionTier): RainViewerRasterPlan {
+        val center = GeoPoint(place.latitude, place.longitude)
+        val bounds = WebMercator.coordinateImageBounds(center, tier.zoom, RADAR_IMAGE_SIZE)
+        return RainViewerRasterPlan(
+            zoom = tier.zoom,
+            imageSize = RADAR_IMAGE_SIZE,
+            targetBounds = bounds,
+            outputWidth = RADAR_IMAGE_SIZE,
+            outputHeight = RADAR_IMAGE_SIZE,
+            segments = listOf(
+                RainViewerRasterSegment(
+                    center,
+                    bounds,
+                    RainViewerRasterPlacement(0.0, 0.0, RADAR_IMAGE_SIZE.toDouble(), RADAR_IMAGE_SIZE.toDouble()),
+                ),
+            ),
+        )
+    }
+
+    private fun build(
+        targetBounds: GeoQuad,
+        zoom: Int,
+        regionalAreaId: String?,
+    ): RainViewerRasterPlan {
+        val (targetLeft, targetTop) = WebMercator.worldFraction(targetBounds.topLeft)
+        val (targetRight, targetBottom) = WebMercator.worldFraction(targetBounds.bottomRight)
+        val targetWidth = targetRight - targetLeft
+        val targetHeight = targetBottom - targetTop
+        val sourceSpan = 1.0 / (1 shl zoom)
+        val columns = kotlin.math.ceil(targetWidth / sourceSpan).toInt().coerceAtLeast(1)
+        val rows = kotlin.math.ceil(targetHeight / sourceSpan).toInt().coerceAtLeast(1)
+        require(columns * rows <= MAX_REGIONAL_SEGMENTS)
+        val outputWidth = (targetWidth * RADAR_IMAGE_SIZE * (1 shl zoom)).roundToInt().coerceAtLeast(1)
+        val outputHeight = (targetHeight * RADAR_IMAGE_SIZE * (1 shl zoom)).roundToInt().coerceAtLeast(1)
+        val edgeGuard = sourceSpan / RADAR_IMAGE_SIZE
+
+        fun centers(minimum: Double, maximum: Double, count: Int): List<Double> = when (count) {
+            1 -> listOf((minimum + maximum) / 2.0)
+            else -> List(count) { index ->
+                minimum + sourceSpan / 2.0 - edgeGuard +
+                    (maximum - minimum - sourceSpan + edgeGuard * 2.0) *
+                    index / (count - 1).toDouble()
+            }
+        }
+        val segments = centers(targetTop, targetBottom, rows).flatMap { centerY ->
+            centers(targetLeft, targetRight, columns).map { centerX ->
+                val center = WebMercator.pointAtWorldFraction(centerX, centerY)
+                val sourceBounds = WebMercator.coordinateImageBounds(center, zoom, RADAR_IMAGE_SIZE)
+                val (sourceLeft, sourceTop) = WebMercator.worldFraction(sourceBounds.topLeft)
+                val (sourceRight, sourceBottom) = WebMercator.worldFraction(sourceBounds.bottomRight)
+                RainViewerRasterSegment(
+                    center,
+                    sourceBounds,
+                    RainViewerRasterPlacement(
+                        (sourceLeft - targetLeft) / targetWidth * outputWidth,
+                        (sourceTop - targetTop) / targetHeight * outputHeight,
+                        (sourceRight - targetLeft) / targetWidth * outputWidth,
+                        (sourceBottom - targetTop) / targetHeight * outputHeight,
+                    ),
+                )
+            }
+        }
+        return RainViewerRasterPlan(
+            zoom = zoom,
+            imageSize = RADAR_IMAGE_SIZE,
+            targetBounds = targetBounds,
+            outputWidth = outputWidth,
+            outputHeight = outputHeight,
+            segments = segments,
+            regionalAreaId = regionalAreaId,
+        )
+    }
+}
 
 @Serializable
 data class RainViewerFrame(
@@ -84,6 +217,22 @@ fun buildCoordinateRadarUrl(
     zoom: Int = RADAR_IMAGE_ZOOM,
     imageSize: Int = RADAR_IMAGE_SIZE,
     showLikelySnow: Boolean = false,
+): String = buildCoordinateRadarUrl(
+    host,
+    frame,
+    GeoPoint(place.latitude, place.longitude),
+    zoom,
+    imageSize,
+    showLikelySnow,
+)
+
+fun buildCoordinateRadarUrl(
+    host: String,
+    frame: RainViewerFrame,
+    center: GeoPoint,
+    zoom: Int = RADAR_IMAGE_ZOOM,
+    imageSize: Int = RADAR_IMAGE_SIZE,
+    showLikelySnow: Boolean = false,
 ): String {
     val hostUrl = URL(host)
     require(hostUrl.protocol == "https" && hostUrl.host.isNotBlank()) {
@@ -93,7 +242,7 @@ fun buildCoordinateRadarUrl(
     require(zoom in 0..7) { "Radar image zoom must be between 0 and 7" }
     require(imageSize == 256 || imageSize == 512) { "Radar image size must be 256 or 512" }
     return "${host.removeSuffix("/")}${frame.path}/$imageSize/$zoom/" +
-        "${place.latitude}/${place.longitude}/2/1_${if (showLikelySnow) 1 else 0}.png"
+        "${center.latitude}/${center.longitude}/2/1_${if (showLikelySnow) 1 else 0}.png"
 }
 
 fun buildCoordinateCoverageUrl(
@@ -110,6 +259,36 @@ fun buildCoordinateCoverageUrl(
     require(imageSize == 256 || imageSize == 512) { "Radar image size must be 256 or 512" }
     return "${host.removeSuffix("/")}/v2/coverage/0/$imageSize/$zoom/" +
         "${place.latitude}/${place.longitude}/0/0_0.png"
+}
+
+fun buildCoordinateCoverageUrl(
+    host: String,
+    center: GeoPoint,
+    zoom: Int = RADAR_IMAGE_ZOOM,
+    imageSize: Int = RADAR_IMAGE_SIZE,
+): String = buildCoordinateCoverageUrl(
+    host,
+    SavedPlace("coverage", center.latitude, center.longitude, id = "coverage"),
+    zoom,
+    imageSize,
+)
+
+/** Small process cache: RainViewer documents this mask as changing infrequently. */
+private object RainViewerCoverageCache {
+    private const val MAX_ENTRIES = 16
+    private val mutex = Mutex()
+    private val encoded = object : LinkedHashMap<String, ByteArray>(MAX_ENTRIES, 0.75f, true) {}
+
+    suspend fun get(url: String, fetch: suspend () -> ByteArray): ByteArray = mutex.withLock {
+        encoded[url]?.let { return@withLock it }
+        val value = fetch()
+        encoded[url] = value
+        while (encoded.size > MAX_ENTRIES) encoded.entries.iterator().let { iterator ->
+            iterator.next()
+            iterator.remove()
+        }
+        value
+    }
 }
 
 enum class RadarLoadMode { SCREEN_TWO_TIER, ALERT_ANALYSIS }
@@ -230,6 +409,33 @@ data class LegacyCompressedFrame(
     val velocityJpeg: ByteArray?,
 )
 
+/** Provider-published/current unknown-area raster. Transparent pixels are known coverage. */
+data class RadarCoverageRaster(
+    val bounds: GeoQuad,
+    val bitmap: Bitmap,
+    val semantics: RadarCoverageSemantics,
+)
+
+fun RadarCoverageRaster.coverageAt(point: GeoPoint): Boolean? {
+    if (bitmap.isRecycled) return null
+    val (left, top) = WebMercator.worldFraction(bounds.topLeft)
+    val (right, bottom) = WebMercator.worldFraction(bounds.bottomRight)
+    val (x, y) = WebMercator.worldFraction(point)
+    if (x !in left..right || y !in top..bottom) return false
+    val pixelX = (((x - left) / (right - left)) * bitmap.width).toInt()
+        .coerceIn(0, bitmap.width - 1)
+    val pixelY = (((y - top) / (bottom - top)) * bitmap.height).toInt()
+        .coerceIn(0, bitmap.height - 1)
+    val alpha = (bitmap.getPixel(pixelX, pixelY) ushr 24) and 0xff
+    return alpha < 128
+}
+
+enum class RadarCoverageSemantics {
+    NOMINAL,
+    CURRENT_COMPOSITE,
+    PROVIDER_PUBLISHED,
+}
+
 data class RadarPointSample(
     val time: Long,
     val forecast: Boolean,
@@ -281,6 +487,7 @@ data class RadarSession(
     val region: RegionalRadarArea? = null,
     val denseVelocity: Map<RadarResolutionTier, DenseVelocitySet> = emptyMap(),
     val legacyArchive: LegacyRadarArchive? = null,
+    val mapCoverage: RadarCoverageRaster? = null,
 ) {
     private val released = AtomicBoolean(false)
 
@@ -310,6 +517,7 @@ data class RadarSession(
                 if (released.add(velocity) && !velocity.isRecycled) velocity.recycle()
             }
         }
+        mapCoverage?.bitmap?.let { if (released.add(it) && !it.isRecycled) it.recycle() }
     }
 }
 
@@ -326,13 +534,26 @@ class RadarSessionLoader(
         val manifest = RainViewerManifestParser.parse(endpoint.fetchManifest())
         val selectedFrames = maxFrames?.let { manifest.frames.takeLast(it.coerceAtLeast(2)) }
             ?: manifest.frames
-        // The static coverage product is requested once per point-analysis session, not once
-        // per radar frame. Failure is retained as unknown coverage so wet motion analysis can
-        // still proceed, while a transparent precipitation tile can never be called clear.
-        val coverageDeferred = if (mode == RadarLoadMode.ALERT_ANALYSIS) {
+        val regionalPlan = RainViewerRasterPlanner.forTier(place, RadarResolutionTier.REGIONAL)
+        val detailPlan = RainViewerRasterPlanner.forTier(place, RadarResolutionTier.DETAIL)
+        // One provider-published mask is loaded per session, not per radar frame. Screen loads
+        // use the exact regional raster plan so the unknown-area scrim remains aligned; compact
+        // Now/alert loads retain the detail grid used to distinguish clear from unknown.
+        val coverageRasterDeferred = if (mode == RadarLoadMode.SCREEN_TWO_TIER) {
             async(Dispatchers.IO) {
                 try {
-                    downloadCoverage(manifest.host, place, RadarResolutionTier.DETAIL)
+                    downloadCoverageRaster(manifest.host, regionalPlan)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Throwable) {
+                    null
+                }
+            }
+        } else null
+        val coverageGridDeferred = if (mode == RadarLoadMode.ALERT_ANALYSIS) {
+            async(Dispatchers.IO) {
+                try {
+                    downloadCoverageGrid(manifest.host, detailPlan)
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (_: Throwable) {
@@ -341,7 +562,7 @@ class RadarSessionLoader(
             }
         } else null
         val complete = AtomicInteger(0)
-        val total = radarRequestPlan(selectedFrames, mode).size
+        val total = selectedFrames.size * (regionalPlan.segments.size + detailPlan.segments.size)
         onProgress(0, total)
 
         var regionalDownload: DownloadedTier? = null
@@ -351,9 +572,9 @@ class RadarSessionLoader(
             regionalDownload = try {
                 downloadTier(
                     manifest.host,
-                    place,
                     selectedFrames,
                     RadarResolutionTier.REGIONAL,
+                    regionalPlan,
                     keepLatestSamplingGrid = false,
                     complete,
                     total,
@@ -369,9 +590,9 @@ class RadarSessionLoader(
             detailDownload = try {
                 downloadTier(
                     manifest.host,
-                    place,
                     selectedFrames,
                     RadarResolutionTier.DETAIL,
+                    detailPlan,
                     keepLatestSamplingGrid = mode == RadarLoadMode.ALERT_ANALYSIS,
                     complete,
                     total,
@@ -399,21 +620,25 @@ class RadarSessionLoader(
         val regionalAggregate = estimatePhysicalAggregate(
             regionalAnalyses.takeLast(5),
             RadarResolutionTier.REGIONAL,
+            regionalDownload?.tierFrames?.bounds,
         )
         val detailAggregate = estimatePhysicalAggregate(
             detailAnalyses.takeLast(5),
             RadarResolutionTier.DETAIL,
+            detailDownload?.tierFrames?.bounds,
         )
         val pairMotions = (0 until selectedFrames.lastIndex).map { index ->
             val regionalPair = estimatePhysicalPair(
                 regionalAnalyses.getOrNull(index),
                 regionalAnalyses.getOrNull(index + 1),
                 RadarResolutionTier.REGIONAL,
+                regionalDownload?.tierFrames?.bounds,
             )
             val detailPair = estimatePhysicalPair(
                 detailAnalyses.getOrNull(index),
                 detailAnalyses.getOrNull(index + 1),
                 RadarResolutionTier.DETAIL,
+                detailDownload?.tierFrames?.bounds,
             )
             RadarMotionPolicy.preferred(regionalPair, detailPair)
         }
@@ -433,7 +658,8 @@ class RadarSessionLoader(
             dense(regionalDownload)?.let { put(RadarResolutionTier.REGIONAL, it) }
             dense(detailDownload)?.let { put(RadarResolutionTier.DETAIL, it) }
         }
-        val detailCoverage = coverageDeferred?.await()
+        val detailCoverage = coverageGridDeferred?.await()
+        val mapCoverage = coverageRasterDeferred?.await()
         RadarSession(
             place = place,
             regional = regionalDownload?.tierFrames,
@@ -445,6 +671,7 @@ class RadarSessionLoader(
             latestDetailCoverage = detailCoverage,
             detailFailureMessage = detailFailure,
             denseVelocity = denseVelocity,
+            mapCoverage = mapCoverage,
         )
     }
 
@@ -464,9 +691,9 @@ class RadarSessionLoader(
 
     private suspend fun downloadTier(
         host: String,
-        place: SavedPlace,
         frames: List<RainViewerFrame>,
         tier: RadarResolutionTier,
+        rasterPlan: RainViewerRasterPlan,
         keepLatestSamplingGrid: Boolean,
         complete: AtomicInteger,
         total: Int,
@@ -478,18 +705,30 @@ class RadarSessionLoader(
         val images = try {
             frames.map { frame ->
                 async(dispatcher) {
-                    val bytes = endpoint.fetchImage(
-                        buildCoordinateRadarUrl(
-                            host,
-                            frame,
-                            place,
-                            zoom = tier.zoom,
-                            imageSize = tier.imageSize,
-                            showLikelySnow = showLikelySnow,
-                        ),
-                    )
-                    currentCoroutineContext().ensureActive()
-                    val bitmap = decode(bytes, tier.imageSize)
+                    val sourceBitmaps = ArrayList<Bitmap>(rasterPlan.segments.size)
+                    val bitmap = try {
+                        rasterPlan.segments.forEach { segment ->
+                            val bytes = endpoint.fetchImage(
+                                buildCoordinateRadarUrl(
+                                    host,
+                                    frame,
+                                    segment.center,
+                                    zoom = rasterPlan.zoom,
+                                    imageSize = rasterPlan.imageSize,
+                                    showLikelySnow = showLikelySnow,
+                                ),
+                            )
+                            currentCoroutineContext().ensureActive()
+                            val decoded = decode(bytes, rasterPlan.imageSize)
+                            sourceBitmaps += decoded
+                            val count = complete.incrementAndGet()
+                            withContext(Dispatchers.Main.immediate) { onProgress(count, total) }
+                        }
+                        renderRasterPlan(rasterPlan, sourceBitmaps)
+                    } catch (failure: Throwable) {
+                        sourceBitmaps.forEach { if (!it.isRecycled) it.recycle() }
+                        throw failure
+                    }
                     allocated += bitmap
                     currentCoroutineContext().ensureActive()
                     val motionGrid = bitmap.toAnalysisGrid(MOTION_ANALYSIS_SIZE)
@@ -503,8 +742,6 @@ class RadarSessionLoader(
                         samplingGrid = decoded?.severity,
                         snowGrid = decoded?.snow,
                     )
-                    val count = complete.incrementAndGet()
-                    withContext(Dispatchers.Main.immediate) { onProgress(count, total) }
                     result
                 }
             }.awaitAll().sortedBy { it.bitmapFrame.frame.time }
@@ -515,11 +752,7 @@ class RadarSessionLoader(
         DownloadedTier(
             tierFrames = RadarTierFrames(
                 tier = tier,
-                bounds = WebMercator.imageBounds(
-                    GeoPoint(place.latitude, place.longitude),
-                    tier.zoom,
-                    tier.imageSize,
-                ),
+                bounds = rasterPlan.targetBounds,
                 frames = images.map { it.bitmapFrame },
             ),
             analyses = images.map { it.analysis },
@@ -528,20 +761,83 @@ class RadarSessionLoader(
         )
     }
 
-    private suspend fun downloadCoverage(
+    private fun renderRasterPlan(
+        plan: RainViewerRasterPlan,
+        sources: List<Bitmap>,
+    ): Bitmap {
+        require(sources.size == plan.segments.size && sources.isNotEmpty())
+        val only = sources.singleOrNull()
+        if (only != null && plan.outputWidth == plan.imageSize && plan.outputHeight == plan.imageSize &&
+            plan.segments.single().destination == RainViewerRasterPlacement(
+                0.0, 0.0, plan.imageSize.toDouble(), plan.imageSize.toDouble(),
+            )
+        ) return only
+
+        val output = Bitmap.createBitmap(plan.outputWidth, plan.outputHeight, Bitmap.Config.ARGB_8888)
+        return try {
+            val canvas = Canvas(output)
+            val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+            sources.zip(plan.segments).forEach { (source, segment) ->
+                val destination = segment.destination
+                canvas.drawBitmap(
+                    source,
+                    null,
+                    RectF(
+                        destination.left.toFloat(),
+                        destination.top.toFloat(),
+                        destination.right.toFloat(),
+                        destination.bottom.toFloat(),
+                    ),
+                    paint,
+                )
+            }
+            sources.forEach { if (!it.isRecycled) it.recycle() }
+            output
+        } catch (failure: Throwable) {
+            if (!output.isRecycled) output.recycle()
+            throw failure
+        }
+    }
+
+    private suspend fun downloadCoverageGrid(
         host: String,
-        place: SavedPlace,
-        tier: RadarResolutionTier,
+        plan: RainViewerRasterPlan,
     ): IntensityGrid {
-        val bytes = endpoint.fetchImage(
-            buildCoordinateCoverageUrl(host, place, tier.zoom, tier.imageSize),
-        )
-        currentCoroutineContext().ensureActive()
-        val bitmap = decode(bytes, tier.imageSize)
+        val bitmap = downloadCoverageBitmap(host, plan)
         return try {
             bitmap.toCoverageGrid()
         } finally {
             if (!bitmap.isRecycled) bitmap.recycle()
+        }
+    }
+
+    private suspend fun downloadCoverageRaster(
+        host: String,
+        plan: RainViewerRasterPlan,
+    ): RadarCoverageRaster = RadarCoverageRaster(
+        bounds = plan.targetBounds,
+        bitmap = downloadCoverageBitmap(host, plan),
+        semantics = RadarCoverageSemantics.PROVIDER_PUBLISHED,
+    )
+
+    private suspend fun downloadCoverageBitmap(
+        host: String,
+        plan: RainViewerRasterPlan,
+    ): Bitmap {
+        val sources = ArrayList<Bitmap>(plan.segments.size)
+        return try {
+            plan.segments.forEach { segment ->
+                val url = buildCoordinateCoverageUrl(
+                    host, segment.center, plan.zoom, plan.imageSize,
+                )
+                val bytes = RainViewerCoverageCache.get(url) { endpoint.fetchImage(url) }
+                currentCoroutineContext().ensureActive()
+                sources += decode(bytes, plan.imageSize)
+            }
+            renderRasterPlan(plan, sources)
+        } catch (failure: Throwable) {
+            sources.forEach { if (!it.isRecycled) it.recycle() }
+            throw failure
         }
     }
 
@@ -565,28 +861,37 @@ private fun estimatePhysicalPair(
     before: TimedIntensityGrid?,
     after: TimedIntensityGrid?,
     tier: RadarResolutionTier,
+    bounds: GeoQuad?,
 ): PhysicalRadarMotion? {
-    if (before == null || after == null) return null
+    if (before == null || after == null || bounds == null) return null
     val estimate = RadarMotionEstimator.estimatePair(before, after) ?: return null
+    val span = WebMercator.worldFractionSpan(bounds)
     return PhysicalRadarMotion.fromAnalysisPixels(
         estimate,
         tier,
         before.grid.width,
         before.grid.height,
+        span.width,
+        span.height,
     ).takeIf(RadarMotionPolicy::usable)
 }
 
 private fun estimatePhysicalAggregate(
     frames: List<TimedIntensityGrid>,
     tier: RadarResolutionTier,
+    bounds: GeoQuad?,
 ): PhysicalRadarMotion? {
     val first = frames.firstOrNull() ?: return null
+    bounds ?: return null
     val estimate = RadarMotionEstimator.estimate(frames) ?: return null
+    val span = WebMercator.worldFractionSpan(bounds)
     return PhysicalRadarMotion.fromAnalysisPixels(
         estimate,
         tier,
         first.grid.width,
         first.grid.height,
+        span.width,
+        span.height,
     ).takeIf(RadarMotionPolicy::usable)
 }
 

@@ -1,7 +1,11 @@
 package com.rainalarm.app.ui
 
+import com.rainalarm.app.data.RegionalRadarAreas
+import com.rainalarm.app.domain.GeoPoint
+import com.rainalarm.app.domain.GeoQuad
 import com.rainalarm.app.domain.RainAlarmPalette
 import com.rainalarm.app.domain.RadarLinearSampling
+import com.rainalarm.app.domain.RadarVelocityField
 import java.io.File
 import java.nio.ByteBuffer
 import org.junit.Assert.assertEquals
@@ -11,6 +15,49 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RadarRendererSafetyTest {
+    @Test
+    fun `logical OPERA region never selects legacy Meteo raster behavior`() {
+        val uk = RegionalRadarAreas.all.single { it.id == "uk" }
+        val opera = RadarRasterRenderPolicy.resolve(uk, legacyArchivePresent = false)
+        val bounds = GeoQuad(
+            GeoPoint(61.0, -12.0), GeoPoint(61.0, 6.0),
+            GeoPoint(48.0, -12.0), GeoPoint(48.0, 6.0),
+        )
+        val velocity = RadarVelocityField(
+            width = 1,
+            height = 1,
+            channels = byteArrayOf(128.toByte(), 128.toByte()),
+            maxDisplacementPixels = 72f,
+            sourceIntervalSeconds = 300,
+            confidence = 0.8,
+        )
+
+        assertFalse(opera.legacyNativeRaster)
+        assertEquals(1f, opera.coloredSource, 0f)
+        assertNull(opera.legacyTextureLayout())
+        assertEquals(72f, opera.velocityScale(velocity), 0f)
+        assertEquals(512 to 384, opera.sourceDimensions(512 to 384))
+        val mesh = opera.mesh(bounds)
+        assertEquals(2, mesh.columns)
+        assertEquals(bounds.topLeft.latitude, mesh.vertices.first().latitude, 0.0)
+        assertEquals(bounds.topLeft.longitude, mesh.vertices.first().longitude, 0.0)
+    }
+
+    @Test
+    fun `only an actual legacy archive selects native Meteo raster behavior`() {
+        val uk = RegionalRadarAreas.all.single { it.id == "uk" }
+        val meteo = RadarRasterRenderPolicy.resolve(uk, legacyArchivePresent = true)
+
+        assertTrue(meteo.legacyNativeRaster)
+        assertEquals(0f, meteo.coloredSource, 0f)
+        assertEquals(uk.velocityScale, meteo.velocityScale(null), 0f)
+        assertEquals(uk.rasterWidth to uk.rasterHeight, meteo.sourceDimensions(null))
+        assertEquals(1024, requireNotNull(meteo.legacyTextureLayout()).backingWidth)
+        val mesh = meteo.mesh(null)
+        assertTrue(mesh.projectionAccurate)
+        assertTrue(mesh.columns > 2)
+    }
+
     @Test
     fun `pair cache never exceeds three pairs or six textures and evicts before allocation`() {
         val policy = LegacyPairResidency(3)

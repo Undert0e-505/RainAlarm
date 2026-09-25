@@ -18,7 +18,8 @@ class RadarProviderTest {
         val rules = listOf(File("proguard-rules.pro"), File("app/proguard-rules.pro"))
             .first(File::isFile).readText()
         for (projection in listOf("LongLatProjection", "TransverseMercatorProjection",
-            "StereographicAzimuthalProjection", "SwissObliqueMercatorProjection")) {
+            "StereographicAzimuthalProjection", "SwissObliqueMercatorProjection",
+            "LambertAzimuthalEqualAreaProjection")) {
             assertTrue("Missing no-arg constructor keep rule for $projection",
                 rules.contains("org.locationtech.proj4j.proj.$projection { public <init>(); }"))
         }
@@ -106,6 +107,7 @@ class RadarProviderTest {
         assertEquals(RadarProviderKind.METEOGROUP_REGIONAL, RadarProviderPreference.decode(null))
         assertEquals(RadarProviderKind.METEOGROUP_REGIONAL, RadarProviderPreference.decode("removed-provider"))
         assertEquals(RadarProviderKind.OPEN_RAINVIEWER, RadarProviderPreference.decode("OPEN_RAINVIEWER"))
+        assertEquals(RadarProviderKind.EUMETNET_OPERA, RadarProviderPreference.decode("EUMETNET_OPERA"))
     }
 
     @Test
@@ -116,6 +118,27 @@ class RadarProviderTest {
         assertTrue(RainViewerSnowPolicy.effective(RadarProviderKind.OPEN_RAINVIEWER, true))
         assertFalse(RainViewerSnowPolicy.effective(RadarProviderKind.OPEN_RAINVIEWER, false))
         assertFalse(RainViewerSnowPolicy.effective(RadarProviderKind.METEOGROUP_REGIONAL, true))
+        assertFalse(RainViewerSnowPolicy.effective(RadarProviderKind.EUMETNET_OPERA, true))
+    }
+
+    @Test fun providerFallbackOrderKeepsExplicitRainViewerDirectAndOperaBetweenRegionalAndWorldwide() {
+        assertEquals(
+            listOf(RadarProviderKind.METEOGROUP_REGIONAL, RadarProviderKind.EUMETNET_OPERA,
+                RadarProviderKind.OPEN_RAINVIEWER),
+            RadarProviderFallbackPolicy.providersFor(RadarProviderKind.METEOGROUP_REGIONAL, true),
+        )
+        assertEquals(
+            listOf(RadarProviderKind.EUMETNET_OPERA, RadarProviderKind.OPEN_RAINVIEWER),
+            RadarProviderFallbackPolicy.providersFor(RadarProviderKind.EUMETNET_OPERA, true),
+        )
+        assertEquals(
+            listOf(RadarProviderKind.OPEN_RAINVIEWER),
+            RadarProviderFallbackPolicy.providersFor(RadarProviderKind.OPEN_RAINVIEWER, true),
+        )
+        assertEquals(
+            listOf(RadarProviderKind.OPEN_RAINVIEWER),
+            RadarProviderFallbackPolicy.providersFor(RadarProviderKind.EUMETNET_OPERA, false),
+        )
     }
 
     @Test

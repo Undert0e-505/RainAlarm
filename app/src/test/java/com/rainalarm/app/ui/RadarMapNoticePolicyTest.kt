@@ -27,6 +27,7 @@ class RadarMapNoticePolicyTest {
 
     @Test fun compatibilityAndChartExpireWhilePersistentFailuresRemain() {
         for (kind in listOf(
+            RadarMapNoticeKind.PROVIDER_FALLBACK,
             RadarMapNoticeKind.RENDERER_COMPATIBILITY,
             RadarMapNoticeKind.CHART_TIME,
         )) {

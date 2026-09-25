@@ -1,17 +1,29 @@
 # Data sources
 
-Rain Alarm has two selectable radar providers. MeteoGroup regional is the
-default; RainViewer is the open worldwide choice and automatic session fallback.
-They are independent composites with different inputs and processing, so their
+Rain Alarm has three selectable radar providers. MeteoGroup regional is the
+initial preferred provider, EUMETNET OPERA is the open European choice, and
+RainViewer is the open worldwide choice. The Settings pin is one persisted
+global preference; each selected place resolves a separate active provider.
+The preferred provider is tried first when its hard geographic capability
+allows it, followed by the other eligible providers in regional MeteoGroup,
+pan-European OPERA and worldwide RainViewer quality order. A fallback never
+moves the pin, and manual Refresh retries the preference. They are independent
+composites with different inputs and processing, so their
 precipitation footprints, intensities and timestamps can materially disagree.
 Rain Alarm normalizes presentation thresholds and colours but does not dilate,
 move or otherwise force either provider's echoes to match the other.
 
-Provider selection is displayed immediately, then persisted after a 400 ms
-quiet period. The selected-place Now analysis observes only that settled value;
+Preferred-provider pin selection is displayed immediately, then persisted after
+a 400 ms quiet period. The selected-place Now analysis observes only that settled value;
 rapid changes therefore cancel the pending choice and start at most one new
 radar analysis after the user stops tapping. This coalescing does not delay app
 startup, place changes, manual refresh, or the Radar screen's own refresh.
+
+Settings keeps every provider pinnable even when it cannot serve the current
+place and shows concise availability / `In use here` context. Radar adds no
+persistent provider badge: a genuine place/provider fallback is announced once
+beside the map information icon and fades. Network, publication and decode
+failure stay distinct from hard geographic capability.
 
 ## MeteoGroup regional
 
@@ -28,9 +40,30 @@ startup, place changes, manual refresh, or the Radar screen's own refresh.
   server timestamps and forecast flags, including forecast frames through +60.
 - No credentials or secrets are included. Requests use HTTPS and validate the
   fixed host, relative paths, media types, sizes, and raster dimensions.
+- For the UK/Ireland feed only, the map draws a style-aware translucent scrim
+  outside a versioned nominal radar-range envelope. Offline generation forms
+  geodesic circles for the 16 Met Office/Jersey sites at the documented 255 km
+  useful qualitative range, Dublin at 250.0 km and Shannon at 248.5 km (the
+  maximum corrected-reflectivity ranges encoded by their current CC BY 4.0 ODIM
+  HDF sweeps). Their union is intersected with the exact native projected UK
+  raster mesh and topology-preserving simplified with less than 1 km measured
+  error. The geometry is packaged with the app; map use makes no extra request.
+  It is nominal structural reach, not live availability, and does not model
+  terrain, beam blockage, temporary outage or changing composite inputs.
+- Meteo JPEG black means both dry and unknown and its velocity JPEG has no
+  reliable validity sentinel, so the mask never reacts to echo pixels. The
+  interior is unchanged and radar, ancillary weather, marker, controls, notices
+  and attribution stay above the scrim. Other Meteo areas remain unmasked until
+  evidence-backed redistributable geometry exists. OPERA and RainViewer use the
+  separate current/published raster-mask rules documented below. A prior valid
+  mask remains stable during a same-provider refresh.
+- UK/Jersey source acknowledgement: Contains public sector information licensed
+  under the Open Government Licence v3.0. Met Éireann radar open data is
+  credited under CC BY 4.0.
 - This is an undocumented availability-dependent application feed. Rain Alarm
-  treats coverage, parse, network, or image failures as a reason to use the
-  open provider for that screen or worker session and explains the fallback.
+  treats coverage, parse, network, or image failures as a reason to try OPERA
+  and then RainViewer for that screen or worker session and explains the
+  fallback.
 
 The renderer is a clean-room implementation based on observable inputs and the
 recovered mathematical behaviour only. For output pixel `p` and fraction `t`:
@@ -137,8 +170,25 @@ configurations pass the native-projection mesh tests.
 
 ## Place search
 
-- Ordinary town/place queries continue to use Open-Meteo's GeoNames-backed
-  geocoding endpoint. A query which matches a complete UK postcode shape
+- A single explicit non-postcode search first runs two independent bounded requests:
+  Open-Meteo's GeoNames-backed endpoint supplies settlements, while Photon's
+  public `https://photon.komoot.io/api/` endpoint supplies OSM named places and
+  POIs such as estates, halls and parks. Results are relevance-ranked, bounded
+  to eight and deduplicated by name/nearby coordinate. Failure of either endpoint
+  does not discard useful results from the other. Photon requests use an
+  identifying Rain Alarm User-Agent, conservative 5 s connect / 7 s read
+  timeouts, and a 12-query in-process LRU/single-flight cache. Search remains
+  explicit-submit rather than autocomplete and embeds no API key.
+- If those primary results have no strong name match, Rain Alarm makes one
+  sequential, bounded `en.wikipedia.org/w/api.php` generator search and accepts
+  only result pages with finite valid coordinates. This fallback improves
+  notable estates, halls and landmarks without sending every query to a third
+  service. Straight and curly possessives normalize to the same search/cache
+  key. Wikipedia search order is treated as source confidence only after the
+  primary results proved weak; any failure leaves useful primary results intact.
+  It uses the same identifying User-Agent, 4 s connect / 6 s read timeouts, a
+  five-result ceiling and an eight-query in-process LRU/single-flight cache.
+- A query which matches a complete UK postcode shape
   (case-insensitive, with or without its internal space) instead uses the exact
   `https://api.postcodes.io/postcodes/{postcode}` lookup. A valid unknown
   postcode returns no match; connectivity, server and malformed-response errors
@@ -153,12 +203,22 @@ configurations pass the native-projection mesh tests.
   Royal Mail copyright and database right, and National Statistics data © Crown
   copyright and database right. Northern Ireland data has separate ONSPD/LPS
   terms; consult the current provider notice before redistribution.
+- Photon is an open-source geocoder over © OpenStreetMap contributors data. Its
+  public demo service is treated as best-effort and modest-use; OSM attribution
+  appears in Places and Settings > About the data.
+- The notable-place fallback uses geocoded English Wikipedia pages supplied by
+  the Wikimedia API. Wikipedia/Wikimedia attribution appears alongside Photon
+  in Places and Settings > About the data.
 
 References:
 
 - https://postcodes.io/docs/overview/
 - https://postcodes.io/docs/postcode/lookup/
 - https://postcodes.io/docs/licences/
+- https://photon.komoot.io/
+- https://www.openstreetmap.org/copyright
+- https://www.mediawiki.org/wiki/API:Search
+- https://www.wikipedia.org/
 
 ## Foreground current location and Follow
 
@@ -320,6 +380,12 @@ References:
   200 km of surrounding margin. The EUMETSAT-advertised bounds are intersected
   with the outer rectangle before the WMS URL is built; outside that exact
   georeferenced rectangle the source contains no satellite pixels.
+- Preparation progress counts the unique real satellite frame identities that
+  intersect the active radar session's observed window. Clouds remains the same
+  provider-independent EUMETSAT source, but a provider with a longer radar
+  history can legitimately produce a larger `n/N` than one with a shorter
+  history; that difference is neither a duplicate cloud download nor evidence
+  that the other provider omitted frames.
 - A small selected-place image probe checks the latest product's content type
   and PNG signature before its advertised time range is accepted;
   cadence-derived historical frames do not add a blocking HTTP probe. For each
@@ -404,23 +470,103 @@ References:
 - https://user.eumetsat.int/catalogue/EO%3AEUM%3ADAT%3A1023
 - https://maplibre.org/maplibre-style-spec/sources/
 
+## EUMETNET OPERA Open Radar Data
+
+- Public 24-hour cache: `https://s3.waw3-1.cloudferro.com/openradar-24h/`.
+  Rain Alarm constructs five-minute UTC object keys of the form
+  `YYYY/MM/DD/OPERA/COMP/OPERA@yyyyMMddTHHmm@0@DBZH.tiff`, allows the normal
+  publication delay, and probes a bounded recent window across UTC midnight.
+  It does not list an entire bucket and embeds no access key.
+- The current composite is a tiled Cloud Optimized GeoTIFF. The reader validates
+  classic-TIFF endianness and tags, two contiguous float32 samples, 512-pixel
+  Adobe-Deflate tiles with no predictor, no-data values, and the exact
+  ellipsoidal Lambert Azimuthal Equal Area parameters before accepting a frame.
+  Band 0 DBZH drives precipitation; band 1 quality is retained by the source but
+  is not treated as intensity. NaN means covered but undetected/dry, while the
+  explicit fill sentinel remains uncovered/unknown.
+- Metadata and only the compressed tile ranges intersecting the required output
+  are fetched. A normal screen window requests about 13 observations (roughly
+  60 minutes) before animation begins. Regional output is resampled onto the
+  exact configured MeteoGroup `RegionalRadarArea` bounds when one contains the
+  place. Elsewhere inside OPERA's native product domain, a stable regional plan
+  is centred on the selected place; a separate local tier retains honest
+  native-scale detail for point analysis. Both tiers share decoded source blocks
+  inside the session. The map always retains the complete regional tier at close
+  zoom; the selected-point detail tier is not substituted into map rendering.
+  Camera pan/zoom therefore does not refetch, re-anchor or discard sibling
+  regional segments.
+- Screen, Now and alert loaders share a process-wide single-flight cache keyed by
+  immutable object key and exact byte range. It retains at most 32 MiB of
+  compressed responses plus 64 small parsed metadata records; decoded float
+  tiles remain short-lived and session-local. A simultaneous map and point
+  analysis therefore await one network fetch instead of downloading the same
+  COG ranges twice. Independent UI cancellation does not cancel a shared fetch
+  still needed by another consumer. Refresh reuses immutable historical keys
+  and downloads only newly published objects or evicted ranges.
+- OPERA eligibility uses the fixed 3,800×4,400 pixel, 1 km CIRRUS composite
+  grid in its native ellipsoidal LAEA projection (55°N, 10°E), not the five
+  MeteoGroup rectangles. A small inward tolerance prevents GPS jitter exactly
+  on the product edge from flapping selection. Outside that hard pan-European
+  grid OPERA is unsupported; inside it, current no-data cannot redefine the
+  domain or force provider switching. OPERA carries no snow classification.
+- For a screen session the latest regional DBZH no-data field becomes a
+  transparent-known / darkened-unknown mask aligned to that exact rendered
+  raster. It is a **current composite validity view**, not permanent radar-site
+  reach: temporary gaps remain visual only. The world outside the loaded
+  regional footprint is darkened without claiming a global OPERA footprint.
+  The in-footprint alpha mask and small outside bands share one raster
+  compositor, tint, opacity, nearest sampling and zero fade; no vector layer is
+  mixed into the dynamic scrim, so the regional rectangle does not acquire a
+  different shade at low zoom.
+  Mask render/decode failure fails open. Although the source also includes a
+  quality sample, Rain Alarm does not currently infer hard coverage from its
+  numeric value because that would conflate current quality with domain.
+- DBZH is converted through the same reflectivity/intensity calibration and
+  colour treatment as other open radar. OPERA supplies observations only.
+  Neighbouring observations feed the same confidence-gated dense and broad
+  motion estimator used for map `Estimate` frames, Now and alerts. Rejected
+  motion remains unavailable; the app never labels an estimate as an OPERA
+  forecast.
+- EUMETNET OPERA Open Radar Data is attributed under CC BY 4.0 in Settings >
+  About the data, alongside the other weather-data providers. The map's compact
+  native attribution control remains reserved for the basemap sources.
+
+References:
+
+- https://eumetnet.eu/activities/observations-programme/current-activities/opera/
+- https://openradar.eu/
+- https://creativecommons.org/licenses/by/4.0/
+
 ## RainViewer
 
 - Endpoint: `https://api.rainviewer.com/public/weather-maps.json`
 - Use: past radar frames only. Rain Alarm does not present these frames as a
   forecast.
-- Images: coordinate-centred 512-pixel PNGs requested at provider zoom 5 for
-  regional coverage and zoom 7 for local detail. Scheme ID `2` is Universal
-  Blue with source smoothing enabled. Explicit Open-radar selection requests
+- Images: coordinate images use the provider's pixel ratio correctly: 256- and
+  512-pixel responses cover identical geography, with the 512 response carrying
+  twice the linear pixel density. Local detail remains centred on the selected
+  place at zoom 7. Regional imagery is selected and, when necessary, assembled
+  at the smallest practical zoom needed to cover the exact corresponding
+  MeteoGroup `RegionalRadarArea`, then cropped/resampled to those exact bounds.
+  Pan/zoom anywhere inside that fixed regional footprint does not refetch or
+  re-anchor the source. Outside configured areas, the regional tier remains an
+  honest selected-place-centred fallback. Scheme ID `2` is Universal Blue with
+  source smoothing enabled. Explicit RainViewer selection requests
   `1_0` by default (snow colours off); the persisted **Show likely snow** option
   requests `1_1`. Automatic fallback from a requested MeteoGroup session always
   remains snow-off.
-- Point analysis also requests exactly one small, static RainViewer coverage
-  mask at detail tier (`/v2/coverage/0/...`) per loaded analysis session, never
-  one per history frame. In that documented mask, transparent pixels are
-  covered and opaque black pixels are outside radar coverage. A failed or
-  malformed mask is retained as unknown so it cannot turn transparent/no-data
-  precipitation pixels into a false dry result.
+- Each session requests RainViewer's official `/v2/coverage` mask once per
+  raster plan, never once per history frame. Screen sessions assemble it with
+  the exact same segments, crop and bounds as the complete regional radar tier;
+  point analysis uses its detail plan. In that documented mask, transparent
+  pixels are covered and opaque black pixels are outside radar coverage. The
+  map darkens published unknown pixels and the world outside the loaded regional
+  footprint. The central alpha mask and small outside bands use one raster
+  compositor, identical tint/opacity, nearest sampling and zero fade so zooming
+  does not expose a rectangular vector/raster shade boundary. A failed or malformed mask is retained as unknown/fail-open: it
+  neither darkens the world nor turns transparent/no-data precipitation pixels
+  into a false dry result. Encoded coverage responses have a bounded 16-entry
+  process cache and are not downloaded per animation frame.
 - A centralized decoder projects every RGB value—including source-smoothed
   intermediate colours—onto RainViewer's published Universal Blue rain curve
   and, only for `1_1`, its snow curve. The result is pre-encoded as shared Rain
@@ -444,9 +590,9 @@ References:
   limit. Radar fetches the manifest once per visible place session, normally
   downloads two images for each of roughly 13 returned observations with
   concurrency capped at three, and retains those decoded images only for that
-  composable session. Map pan, zoom, and recentering do not fetch more radar
-  data. The regional z5 tier spans four times the projected width and height of
-  the z7 image. If local-detail loading fails, the required regional tier stays
+  composable session. The complete regional tier remains selected at every map
+  zoom, so pan, zoom, and recentering do not fetch more radar data or collapse
+  the view to one selected-location segment. If local-detail loading fails, the required regional tier stays
   usable and the UI labels that degraded state. Background alerts fetch five
   recent frames at z5 for motion plus z7 for current-location sampling.
 - Constraint: this public service is best-effort and is intended for personal,
@@ -587,9 +733,11 @@ References:
 
 ## Operational posture
 
-Radar imagery, area lookup, Open-Meteo, postcodes.io and RainViewer use HTTPS. Complete
-UK postcode queries go to postcodes.io while other place-search text goes to
-Open-Meteo. Live device coordinates remain process-memory-only unless the user
+Radar imagery, area lookup, Open-Meteo, Photon, Wikimedia, postcodes.io and RainViewer use HTTPS. Complete
+UK postcode queries go only to postcodes.io while other submitted place-search
+text goes first to Open-Meteo and Photon; a weak combined match may then go to
+English Wikipedia/Wikimedia for geocoded notable pages. Any one non-postcode
+source can fail without discarding useful results from another. Live device coordinates remain process-memory-only unless the user
 explicitly saves the current fix as an ordinary saved place. The legacy
 area chart host's HTTPS certificate fails hostname verification, so only
 `android.weatherpro.weatherservice.meteogroup.de` has a narrow Android

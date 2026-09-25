@@ -18,7 +18,20 @@ data class RadarProjectionMesh(
     val vertices: List<RadarGeoVertex>,
     val indices: ShortArray,
     val projectionAccurate: Boolean,
-)
+) {
+    /** Exact outer raster perimeter in clockwise geographic order, closed at its first vertex. */
+    fun perimeterClockwise(): List<RadarGeoVertex> {
+        require(columns >= 2 && rows >= 2 && vertices.size == columns * rows)
+        fun vertex(row: Int, column: Int) = vertices[row * columns + column]
+        return buildList(2 * columns + 2 * rows - 3) {
+            // Bottom-left -> top-left -> top-right -> bottom-right -> bottom-left.
+            for (row in rows - 1 downTo 0) add(vertex(row, 0))
+            for (column in 1 until columns) add(vertex(0, column))
+            for (row in 1 until rows) add(vertex(row, columns - 1))
+            for (column in columns - 2 downTo 0) add(vertex(rows - 1, column))
+        }
+    }
+}
 
 data class RadarPixelCoordinate(val x: Double, val y: Double)
 

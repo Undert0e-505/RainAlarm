@@ -13,7 +13,10 @@ class RadarLoadDeadlineTest {
             val primary = RadarLoadDeadline.primary(mode)
             val total = RadarLoadDeadline.total(mode)
             assertTrue(primary > 0 && total > primary)
-            assertTrue(total - primary >= 20_000L)
+            assertTrue(total - primary >= 30_000L)
+            assertTrue(RadarLoadDeadline.opera(mode, afterRegional = true) > 0L)
+            assertTrue(RadarLoadDeadline.opera(mode, afterRegional = false) >
+                RadarLoadDeadline.opera(mode, afterRegional = true))
             assertEquals(total - primary,
                 RadarLoadDeadline.remaining(total, 0L, primary * 1_000_000L))
             assertEquals(0L, RadarLoadDeadline.remaining(total, 0L, (total + 1) * 1_000_000L))

@@ -12,8 +12,8 @@ android {
         applicationId = "com.rainalarm.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 14
-        versionName = "0.3.0"
+        versionCode = 15
+        versionName = "0.3.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -47,7 +47,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
     packaging.resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
 }
 
@@ -131,5 +134,8 @@ tasks.register<JavaExec>("directDebugUnitTest") {
         "com.rainalarm.app.ForegroundFollowWiringTest",
         "com.rainalarm.app.ui.RadarChartTimeLinkTest",
         "com.rainalarm.app.data.RadarLoadDeadlineTest",
+        "com.rainalarm.app.data.OperaCogTest",
+        "com.rainalarm.app.data.RainViewerRegionalCoverageTest",
+        "com.rainalarm.app.ui.RadarCoverageMaskPolicyTest",
     )
 }

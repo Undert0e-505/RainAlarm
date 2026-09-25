@@ -30,6 +30,9 @@ import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.rainalarm.app.data.RadarSession
+import com.rainalarm.app.data.RadarCoverageRaster
+import com.rainalarm.app.data.RadarProviderKind
+import com.rainalarm.app.data.RegionalRadarArea
 import com.rainalarm.app.data.SavedPlace
 import com.rainalarm.app.data.WindGrid
 import com.rainalarm.app.data.WindViewport
@@ -49,6 +52,9 @@ import com.rainalarm.app.data.SatelliteRegionPolicy
 import com.rainalarm.app.data.RadarMapLayer
 import com.rainalarm.app.data.RadarMapStyle
 import com.rainalarm.app.domain.GeoPoint
+import com.rainalarm.app.domain.GeoQuad
+import com.rainalarm.app.domain.MeteoNominalCoverage
+import com.rainalarm.app.domain.MeteoNominalCoveragePolygon
 import com.rainalarm.app.domain.NorthUpRadarGeoreference
 import com.rainalarm.app.domain.RadarMotionPolicy
 import com.rainalarm.app.domain.RadarOverlayFramePlan
@@ -57,6 +63,7 @@ import com.rainalarm.app.domain.RadarResolutionTier
 import com.rainalarm.app.domain.RadarResourceTeardown
 import com.rainalarm.app.domain.RadarCameraMemory
 import com.rainalarm.app.domain.RadarCameraTarget
+import com.rainalarm.app.domain.WebMercator
 import com.rainalarm.app.domain.RadarTimelineBracket
 import com.rainalarm.app.domain.RainAlarmPalette
 import org.maplibre.android.MapLibre
@@ -69,10 +76,16 @@ import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.style.sources.ImageSource
+import org.maplibre.android.style.sources.GeoJsonSource
+import org.maplibre.android.style.layers.FillLayer
 import org.maplibre.android.style.layers.RasterLayer
 import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.maps.Style
+import org.maplibre.geojson.Feature
+import org.maplibre.geojson.FeatureCollection
+import org.maplibre.geojson.Point
+import org.maplibre.geojson.Polygon
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -212,6 +225,273 @@ private fun applyMapLabelContrast(style: Style, mapStyle: RadarMapStyle) {
     }
 }
 private const val RADAR_OPACITY = 0.90
+
+internal data class RadarCoverageMask(
+    val outerRing: List<GeoPoint>,
+    val coverage: List<MeteoNominalCoveragePolygon>,
+    val colorArgb: Int,
+    val opacity: Float,
+)
+
+/** A geographic unknown-coverage mask used only for evidence-backed nominal coverage. */
+internal object RadarCoverageMaskPolicy {
+    fun palette(style: RadarMapStyle): Pair<Int, Float> = when (style) {
+        RadarMapStyle.DARK -> 0xFF000000.toInt() to 0.36f
+        RadarMapStyle.SLATE -> 0xFF101827.toInt() to 0.30f
+        RadarMapStyle.LIGHT -> 0xFF24313A.toInt() to 0.28f
+    }
+
+    fun mask(
+        provider: RadarProviderKind,
+        area: RegionalRadarArea?,
+        style: RadarMapStyle,
+    ): RadarCoverageMask? {
+        if (provider != RadarProviderKind.METEOGROUP_REGIONAL || area == null) return null
+        // Other regional feed rectangles are image geometry, not evidence of observation reach.
+        // UK/Ireland is the only currently versioned, redistributable nominal network envelope.
+        val coverage = MeteoNominalCoverage.forAreaId(area.id) ?: return null
+        val outer = listOf(
+            GeoPoint(-WebMercator.MAX_LATITUDE, -180.0),
+            GeoPoint(-WebMercator.MAX_LATITUDE, 180.0),
+            GeoPoint(WebMercator.MAX_LATITUDE, 180.0),
+            GeoPoint(WebMercator.MAX_LATITUDE, -180.0),
+            GeoPoint(-WebMercator.MAX_LATITUDE, -180.0),
+        )
+        val (color, opacity) = palette(style)
+        return RadarCoverageMask(outer, coverage, color, opacity)
+    }
+
+}
+
+/**
+ * Splits the world outside a dynamic provider raster into small geographic image bands. The
+ * central alpha mask and every outside band consequently use the same RasterLayer compositor,
+ * opacity, resampling and layer order; mixing a raster centre with a vector world fill produced a
+ * visible rectangular shade boundary at low zoom. Each outside bitmap is only 2x2 pixels.
+ */
+internal object RadarCoverageRasterBandPolicy {
+    private const val EPSILON = 1e-7
+    private val longitudeCuts = listOf(-180.0, -90.0, 0.0, 90.0, 180.0)
+
+    fun outsideBands(bounds: GeoQuad): List<GeoQuad>? {
+        val west = bounds.topLeft.longitude
+        val east = bounds.topRight.longitude
+        val north = bounds.topLeft.latitude
+        val south = bounds.bottomLeft.latitude
+        val axisAligned = kotlin.math.abs(bounds.topRight.latitude - north) < EPSILON &&
+            kotlin.math.abs(bounds.bottomRight.latitude - south) < EPSILON &&
+            kotlin.math.abs(bounds.bottomLeft.longitude - west) < EPSILON &&
+            kotlin.math.abs(bounds.bottomRight.longitude - east) < EPSILON
+        // Dateline-crossing or non-axis-aligned imagery needs a different split. Failing open is
+        // safer than darkening the wrong hemisphere.
+        if (!axisAligned || west !in -180.0..180.0 || east !in -180.0..180.0 ||
+            north !in -WebMercator.MAX_LATITUDE..WebMercator.MAX_LATITUDE ||
+            south !in -WebMercator.MAX_LATITUDE..WebMercator.MAX_LATITUDE ||
+            west >= east || south >= north) {
+            return null
+        }
+
+        return buildList {
+            longitudeSlices(-180.0, 180.0).forEach { (left, right) ->
+                rectangle(WebMercator.MAX_LATITUDE, north, left, right)?.let(::add)
+                rectangle(south, -WebMercator.MAX_LATITUDE, left, right)?.let(::add)
+            }
+            longitudeSlices(-180.0, west).forEach { (left, right) ->
+                rectangle(north, south, left, right)?.let(::add)
+            }
+            longitudeSlices(east, 180.0).forEach { (left, right) ->
+                rectangle(north, south, left, right)?.let(::add)
+            }
+        }
+    }
+
+    fun sourceId(index: Int): String = "rain-alarm-provider-coverage-outside-$index-source"
+    fun layerId(index: Int): String = "rain-alarm-provider-coverage-outside-$index-layer"
+
+    private fun longitudeSlices(west: Double, east: Double): List<Pair<Double, Double>> {
+        if (east - west <= EPSILON) return emptyList()
+        val points = buildList {
+            add(west)
+            longitudeCuts.filterTo(this) { it > west + EPSILON && it < east - EPSILON }
+            add(east)
+        }
+        return points.zipWithNext()
+    }
+
+    private fun rectangle(north: Double, south: Double, west: Double, east: Double): GeoQuad? {
+        if (north - south <= EPSILON || east - west <= EPSILON) return null
+        return GeoQuad(
+            GeoPoint(north, west),
+            GeoPoint(north, east),
+            GeoPoint(south, east),
+            GeoPoint(south, west),
+        )
+    }
+}
+
+private class RadarCoverageMaskController {
+    private val vectorSourceId = "rain-alarm-regional-coverage-mask-source"
+    private val vectorLayerId = "rain-alarm-regional-coverage-mask-layer"
+    private val rasterSourceId = "rain-alarm-provider-coverage-mask-source"
+    private val rasterLayerId = "rain-alarm-provider-coverage-mask-layer"
+    private var currentStyle: Style? = null
+    private val dynamicRasterResources = mutableListOf<DynamicRasterResource>()
+    private var currentKey: String? = null
+
+    fun reconcile(style: Style, session: RadarSession?, mapStyle: RadarMapStyle) {
+        val nextKey = session?.let {
+            "${System.identityHashCode(it)}:${it.providerSelection.active}:$mapStyle"
+        }
+        if (currentStyle === style && currentKey == nextKey) return
+        currentStyle?.let(::remove)
+        currentStyle = style
+        currentKey = nextKey
+        val selection = session?.providerSelection ?: return
+        session.mapCoverage?.let { raster ->
+            addRaster(style, raster, mapStyle)
+            return
+        }
+        val mask = RadarCoverageMaskPolicy.mask(selection.active, session.region, mapStyle) ?: return
+        addVector(style, mask)
+    }
+
+    private fun addVector(style: Style, mask: RadarCoverageMask) {
+        fun List<GeoPoint>.points() = map { Point.fromLngLat(it.longitude, it.latitude) }
+        fun List<GeoPoint>.signedArea(): Double = zipWithNext().sumOf { (first, second) ->
+            first.longitude * second.latitude - second.longitude * first.latitude
+        } / 2.0
+        fun List<GeoPoint>.clockwise(): List<GeoPoint> =
+            if (signedArea() <= 0.0) this else reversed()
+        fun List<GeoPoint>.counterClockwise(): List<GeoPoint> =
+            if (signedArea() >= 0.0) this else reversed()
+        val worldRings = buildList {
+            add(mask.outerRing.counterClockwise().points())
+            // Each disjoint nominal component is a hole in the world-sized unknown scrim.
+            mask.coverage.forEach { add(it.exterior.clockwise().points()) }
+        }
+        val features = buildList {
+            add(Feature.fromGeometry(Polygon.fromLngLats(worldRings)))
+            // A hole inside a known component is unknown again, so render it as its own fill.
+            mask.coverage.forEach { polygon ->
+                polygon.holes.forEach { hole ->
+                    add(Feature.fromGeometry(Polygon.fromLngLats(listOf(
+                        hole.counterClockwise().points(),
+                    ))))
+                }
+            }
+        }
+        style.addSource(GeoJsonSource(
+            vectorSourceId,
+            FeatureCollection.fromFeatures(features),
+        ))
+        val layer = FillLayer(vectorLayerId, vectorSourceId).withProperties(
+            PropertyFactory.fillColor(mask.colorArgb),
+            PropertyFactory.fillOpacity(mask.opacity),
+        )
+        val firstWeatherLayer = style.layers.firstOrNull {
+            it.id.startsWith("rain-alarm-satellite-")
+        }
+        if (firstWeatherLayer != null) style.addLayerBelow(layer, firstWeatherLayer.id)
+        else style.addLayer(layer)
+    }
+
+    fun clear() {
+        currentStyle?.let(::remove)
+        currentStyle = null
+        currentKey = null
+    }
+
+    private fun addRaster(style: Style, raster: RadarCoverageRaster, mapStyle: RadarMapStyle) {
+        if (raster.bitmap.isRecycled || raster.bitmap.width <= 0 || raster.bitmap.height <= 0) return
+        val (color, opacity) = RadarCoverageMaskPolicy.palette(mapStyle)
+        val tinted = tintUnknownRaster(raster.bitmap, color)
+        try {
+            addRasterResource(style, rasterSourceId, rasterLayerId, raster.bounds, tinted, opacity)
+            RadarCoverageRasterBandPolicy.outsideBands(raster.bounds).orEmpty()
+                .forEachIndexed { index, bounds ->
+                    val solid = Bitmap.createBitmap(
+                        intArrayOf(color, color, color, color),
+                        2,
+                        2,
+                        Bitmap.Config.ARGB_8888,
+                    )
+                    addRasterResource(
+                        style,
+                        RadarCoverageRasterBandPolicy.sourceId(index),
+                        RadarCoverageRasterBandPolicy.layerId(index),
+                        bounds,
+                        solid,
+                        opacity,
+                    )
+                }
+        } catch (failure: Exception) {
+            if (dynamicRasterResources.none { it.bitmap === tinted } && !tinted.isRecycled) {
+                tinted.recycle()
+            }
+            Log.w("RainRadarCoverage", "Provider coverage mask could not be rendered", failure)
+            remove(style)
+        }
+    }
+
+    private fun addRasterResource(
+        style: Style,
+        sourceId: String,
+        layerId: String,
+        bounds: GeoQuad,
+        bitmap: Bitmap,
+        opacity: Float,
+    ) {
+        val resource = DynamicRasterResource(sourceId, layerId, bitmap)
+        // Track before the first style mutation so partial additions are cleaned up on failure.
+        dynamicRasterResources += resource
+        style.addSource(ImageSource(sourceId, bounds.toLatLngQuad(), bitmap))
+        val layer = RasterLayer(layerId, sourceId).withProperties(
+            PropertyFactory.rasterOpacity(opacity),
+            PropertyFactory.rasterFadeDuration(0f),
+            PropertyFactory.rasterResampling("nearest"),
+        )
+        val firstWeatherLayer = style.layers.firstOrNull {
+            it.id.startsWith("rain-alarm-satellite-")
+        }
+        if (firstWeatherLayer != null) style.addLayerBelow(layer, firstWeatherLayer.id)
+        else style.addLayer(layer)
+    }
+
+    private fun GeoQuad.toLatLngQuad() = LatLngQuad(
+        LatLng(topLeft.latitude, topLeft.longitude),
+        LatLng(topRight.latitude, topRight.longitude),
+        LatLng(bottomRight.latitude, bottomRight.longitude),
+        LatLng(bottomLeft.latitude, bottomLeft.longitude),
+    )
+
+    private fun tintUnknownRaster(source: Bitmap, color: Int): Bitmap {
+        val pixels = IntArray(source.width * source.height)
+        source.getPixels(pixels, 0, source.width, 0, 0, source.width, source.height)
+        val rgb = color and 0x00ffffff
+        pixels.indices.forEach { index -> pixels[index] = (pixels[index] and -0x1000000) or rgb }
+        return Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888).also {
+            it.setPixels(pixels, 0, source.width, 0, 0, source.width, source.height)
+        }
+    }
+
+    private fun remove(style: Style) {
+        dynamicRasterResources.forEach { runCatching { style.removeLayer(it.layerId) } }
+        dynamicRasterResources.forEach { runCatching { style.removeSource(it.sourceId) } }
+        dynamicRasterResources.map { it.bitmap }.distinctBy { System.identityHashCode(it) }.forEach {
+            if (!it.isRecycled) it.recycle()
+        }
+        dynamicRasterResources.clear()
+        runCatching { style.removeLayer(vectorLayerId) }
+        runCatching { style.removeSource(vectorSourceId) }
+    }
+
+    private data class DynamicRasterResource(
+        val sourceId: String,
+        val layerId: String,
+        val bitmap: Bitmap,
+    )
+}
+
 internal object SatelliteLayerRenderPolicy {
     /** Clouds are added first so Lightning remains legible above them. */
     val renderOrder: List<RadarMapLayer> = listOf(RadarMapLayer.FOG, RadarMapLayer.LIGHTNING)
@@ -1344,6 +1624,7 @@ internal fun RadarImageMap(
     onLayerError: (RadarMapLayer, String) -> Unit = { _, _ -> },
     onMapStyleError: (String?) -> Unit = {},
     onWindViewportChanged: (WindViewport) -> Unit = {},
+    onRadarTierChanged: (RadarResolutionTier) -> Unit = {},
 ) {
     RadarImageMapInstance(
         session,
@@ -1375,6 +1656,7 @@ internal fun RadarImageMap(
         onLayerError,
         onMapStyleError,
         onWindViewportChanged,
+        onRadarTierChanged,
     )
 }
 
@@ -1409,6 +1691,7 @@ private fun RadarImageMapInstance(
     onLayerError: (RadarMapLayer, String) -> Unit,
     onMapStyleError: (String?) -> Unit,
     onWindViewportChanged: (WindViewport) -> Unit,
+    onRadarTierChanged: (RadarResolutionTier) -> Unit,
 ) {
     val context = LocalContext.current
     val applicationContext = context.applicationContext
@@ -1442,6 +1725,8 @@ private fun RadarImageMapInstance(
     val currentSatellitePreparation by rememberUpdatedState(onSatellitePreparation)
     val currentMapStyleError by rememberUpdatedState(onMapStyleError)
     val currentWindViewportCallback by rememberUpdatedState(onWindViewportChanged)
+    val currentRadarTierCallback by rememberUpdatedState(onRadarTierChanged)
+    val latestRadarSession by rememberUpdatedState(session)
     val currentWindRenderObservation by rememberUpdatedState(onWindRenderObservation)
     val currentWindRendererReset by rememberUpdatedState(onWindRendererReset)
     val satellitePlaceKey = "${mapPlace.id}:${(mapPlace.latitude * 10).toInt()}:" +
@@ -1583,6 +1868,7 @@ private fun RadarImageMapInstance(
     val latestRecenterSignal by rememberUpdatedState(recenterSignal)
     val windView = remember(mapView) { WindFieldView(context) }
     val baseMarkerView = remember(mapView) { RadarBaseMarkerView(context) }
+    val coverageMask = remember(mapView) { RadarCoverageMaskController() }
     val mapLifecycle = remember(mapView) { MapViewLifecycle(mapView) }
     val mapRevealGate = remember(mapView) { RadarMapRevealGate() }
     val mapCover = remember(mapView) {
@@ -1642,6 +1928,7 @@ private fun RadarImageMapInstance(
             baseMarkerView.visibility = View.GONE
             outgoing?.removeFrom(mapContainer)
             outgoing?.dispose()
+            map?.style?.let { coverageMask.reconcile(it, slot.session, mapStyle) }
             windView.bringToFront()
             if (mapCover.visibility == View.VISIBLE) mapCover.bringToFront()
         }
@@ -1664,6 +1951,7 @@ private fun RadarImageMapInstance(
         RadarResourceTeardown(
             stopOverlay = {
                 satelliteBuffers.clear()
+                coverageMask.clear()
                 windView.setRenderEligible(false)
                 currentWindRendererReset()
                 pendingRadarSlot?.removeFrom(mapContainer)
@@ -1789,6 +2077,13 @@ private fun RadarImageMapInstance(
                         pendingRadarSlot?.onCameraMoved()
                         baseMarkerView.onCameraMoved()
                         windView.cameraMoved()
+                        latestRadarSession?.let { current ->
+                            currentRadarTierCallback(RadarOverlayPlanner.activeTier(
+                                ready.cameraPosition.zoom,
+                                current.regional != null || current.legacyArchive != null,
+                                current.detail != null,
+                            ))
+                        }
                     }
                     cameraListener = listener
                     ready.addOnCameraMoveListener(listener)
@@ -1812,6 +2107,13 @@ private fun RadarImageMapInstance(
                             currentWindViewportCallback(WindViewport(
                                 bounds.getLatSouth(), bounds.getLonWest(), bounds.getLatNorth(), bounds.getLonEast(),
                             ))
+                            latestRadarSession?.let { current ->
+                                currentRadarTierCallback(RadarOverlayPlanner.activeTier(
+                                    ready.cameraPosition.zoom,
+                                    current.regional != null || current.legacyArchive != null,
+                                    current.detail != null,
+                                ))
+                            }
                         }
                     }
                     cameraIdleListener = idle
@@ -1835,6 +2137,7 @@ private fun RadarImageMapInstance(
                     activeRadarSlot?.takeUnless { it === pendingRadarSlot }?.dispose()
                     pendingRadarSlot = null
                     activeRadarSlot = null
+                    coverageMask.clear()
                     baseMarkerView.visibility = View.VISIBLE
                     currentStatusCallback(RadarRendererStatus.Loading)
                 }
@@ -1897,6 +2200,7 @@ private fun RadarImageMapInstance(
                     if (RadarMapLabelContrastPolicy.paletteFor(mapStyle) != null) {
                         applyMapLabelContrast(it, mapStyle)
                     }
+                    coverageMask.reconcile(it, activeRadarSlot?.session, mapStyle)
                 }
                 if (active && !teardown.isClosed && mapRevealGate.styleLoaded(styleGeneration)) {
                     satelliteBuffers.onStyleLoaded(

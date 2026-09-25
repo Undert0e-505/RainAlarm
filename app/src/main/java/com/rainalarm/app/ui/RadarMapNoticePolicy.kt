@@ -9,6 +9,7 @@ internal enum class RadarMapNoticeKind(
 ) {
     RENDERER_FAILURE(priority = 450, lifetimeMillis = null),
     MAP_STYLE(priority = 400, lifetimeMillis = null),
+    PROVIDER_FALLBACK(priority = 300, lifetimeMillis = 4_500L),
     RENDERER_COMPATIBILITY(priority = 200, lifetimeMillis = 4_500L),
     CHART_TIME(priority = 100, lifetimeMillis = 4_500L),
 }

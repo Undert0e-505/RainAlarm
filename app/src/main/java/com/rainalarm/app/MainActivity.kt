@@ -121,6 +121,9 @@ import com.rainalarm.app.data.SavedPlace
 import com.rainalarm.app.data.RadarPlaybackSpeed
 import com.rainalarm.app.data.AppearanceMode
 import com.rainalarm.app.data.RadarProviderKind
+import com.rainalarm.app.data.RadarProviderSelection
+import com.rainalarm.app.data.RadarProviderNoticePolicy
+import com.rainalarm.app.data.RadarProviderNoticeDeduplicator
 import com.rainalarm.app.data.RadarSettingsRepository
 import com.rainalarm.app.data.RadarMapLayer
 import com.rainalarm.app.data.RadarLoadDeadline
@@ -280,9 +283,27 @@ data class PointRefreshCompletion(
     val succeeded: Boolean = false,
 )
 
+data class ProviderSelectionContext(
+    val placeKey: String,
+    val selection: RadarProviderSelection,
+)
+
+data class ProviderMapNoticeEvent(
+    val token: Long,
+    val placeKey: String,
+    val message: String,
+)
+
 @android.annotation.SuppressLint("LogNotTimber") // Local adb diagnostics must work without a logging dependency.
 class RainAlarmViewModel(application: Application) : AndroidViewModel(application) {
-    private val repository = RadarAwareForecastRepository(application)
+    private val _providerSelectionContext = MutableStateFlow<ProviderSelectionContext?>(null)
+    private val _providerMapNotice = MutableStateFlow<ProviderMapNoticeEvent?>(null)
+    private var providerMapNoticeSerial = 0L
+    private val providerNoticeDeduplicator = RadarProviderNoticeDeduplicator()
+    private val repository = RadarAwareForecastRepository(
+        application,
+        onProviderSelection = ::reportProviderSelection,
+    )
     private val places = PlacePreferences(application)
     private val locationClient = PlatformLocationClient(application)
     private val alertScheduler = RainAlertScheduler(application)
@@ -328,6 +349,10 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     val selectedPlace = combine(placesState, _livePlace, _startupReady) { collection, live, ready ->
         if (!ready) null else if (collection.selectedId == CURRENT_LOCATION_ID) live else collection.selected
     }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    val activeRadarSelection = combine(selectedPlace, _providerSelectionContext) { place, context ->
+        context?.selection?.takeIf { place != null && context.placeKey == forecastSelectionKey(place) }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    val providerMapNotice: StateFlow<ProviderMapNoticeEvent?> = _providerMapNotice.asStateFlow()
     val defaultStartupId = places.defaultStartupId.stateIn(
         viewModelScope, SharingStarted.Eagerly, CURRENT_LOCATION_ID,
     )
@@ -545,6 +570,24 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
             ContextCompat.checkSelfPermission(getApplication(), POST_NOTIFICATIONS_PERMISSION) ==
                 PackageManager.PERMISSION_GRANTED
+
+    fun reportProviderSelection(place: SavedPlace, selection: RadarProviderSelection) {
+        val placeKey = forecastSelectionKey(place)
+        _providerSelectionContext.value = ProviderSelectionContext(placeKey, selection)
+        val message = RadarProviderNoticePolicy.message(selection)
+        // The logical current-location row keeps one identity as its coordinates move. A real
+        // active-provider transition changes the selection portion; ordinary GPS fixes do not
+        // repeatedly announce the same fallback.
+        synchronized(this) {
+            val shouldShow = providerNoticeDeduplicator.shouldShow(place.id, selection)
+            if (message == null || !shouldShow) return
+            _providerMapNotice.value = ProviderMapNoticeEvent(++providerMapNoticeSerial, placeKey, message)
+        }
+    }
+
+    fun consumeProviderMapNotice(token: Long) {
+        if (_providerMapNotice.value?.token == token) _providerMapNotice.value = null
+    }
 
     fun onStartupLocationPermissionResult(granted: Boolean) {
         if (granted) useCurrentLocation()
@@ -1165,6 +1208,8 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
     val radarCameraMemory = remember { RadarCameraMemory(currentRecenterTick) }
     val alertState by viewModel.alertState.collectAsStateWithLifecycle()
     val radarProvider by viewModel.radarProvider.collectAsStateWithLifecycle()
+    val activeRadarSelection by viewModel.activeRadarSelection.collectAsStateWithLifecycle()
+    val providerMapNotice by viewModel.providerMapNotice.collectAsStateWithLifecycle()
     val showLikelySnow by viewModel.showLikelySnow.collectAsStateWithLifecycle()
     val radarPlaybackSpeed by viewModel.radarPlaybackSpeed.collectAsStateWithLifecycle()
     val appAppearance by viewModel.appAppearance.collectAsStateWithLifecycle()
@@ -1288,6 +1333,9 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
                                 if (pendingChartTime?.token == token) pendingChartTime = null
                             },
                             showLikelySnow = showLikelySnow,
+                            providerNoticeEvent = providerMapNotice,
+                            onProviderNoticeConsumed = viewModel::consumeProviderMapNotice,
+                            onProviderSelection = viewModel::reportProviderSelection,
                         )
                         Destination.PLACES -> PlacesScreen(
                             collection = placesState,
@@ -1327,6 +1375,9 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
                             visibleMetrics = visibleWeatherMetrics,
                             setMetricVisible = viewModel::setWeatherMetricVisible,
                             message = settingsMessage,
+                            selectedPlace = selectedPlace,
+                            activeProvider = activeRadarSelection?.active,
+                            activeProviderCoverage = activeRadarSelection?.coverageState,
                         )
                     }
                 }

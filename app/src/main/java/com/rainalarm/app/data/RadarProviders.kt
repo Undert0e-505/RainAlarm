@@ -18,7 +18,6 @@ import com.rainalarm.app.domain.GeoPoint
 import com.rainalarm.app.domain.GeoQuad
 import com.rainalarm.app.domain.RadarResolutionTier
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -29,7 +28,6 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -42,6 +40,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 enum class RadarProviderKind {
     METEOGROUP_REGIONAL,
+    EUMETNET_OPERA,
     OPEN_RAINVIEWER,
 }
 
@@ -144,6 +143,7 @@ data class RadarProviderSelection(
     val requested: RadarProviderKind,
     val active: RadarProviderKind,
     val fallbackMessage: String? = null,
+    val coverageState: RadarProviderCoverageState = RadarProviderCoverageState.SUPPORTED,
 )
 
 private val Context.radarSettingsDataStore by preferencesDataStore(name = "radar_settings")
@@ -681,6 +681,7 @@ class MeteoGroupRadarSessionLoader(
 class RadarProviderCoordinator(
     private val settings: RadarSettingsRepository,
     private val regional: MeteoGroupRadarSessionLoader = MeteoGroupRadarSessionLoader(),
+    private val opera: OperaRadarSessionLoader = OperaRadarSessionLoader(),
     private val open: RadarSessionLoader = RadarSessionLoader(),
 ) {
     suspend fun load(
@@ -691,54 +692,130 @@ class RadarProviderCoordinator(
     ): RadarSession {
         val startedNanos = System.nanoTime()
         val totalBudget = RadarLoadDeadline.total(mode)
-        suspend fun loadOpen(message: String? = null, showLikelySnow: Boolean = false): RadarSession {
-            val remaining = RadarLoadDeadline.remaining(totalBudget, startedNanos, System.nanoTime())
-            if (remaining == 0L) throw RadarLoadTimedOutException("Radar download timed out. Tap refresh to try again.")
-            val loaded = try {
-                withTimeout(remaining) {
-                    open.load(place, maxFrames, mode, onProgress, showLikelySnow)
+        val point = GeoPoint(place.latitude, place.longitude)
+        fun coverageState(session: RadarSession, active: RadarProviderKind): RadarProviderCoverageState {
+            val capability = RadarProviderCapabilityResolver.capability(active, point)
+            if (!capability.geographicallyUsable) return capability.state
+            // OPERA no-data is a current-composite observation gap, not proof that the point is
+            // outside its fixed European product domain. It informs only the visual mask.
+            if (active != RadarProviderKind.OPEN_RAINVIEWER) return capability.state
+            val published = session.mapCoverage?.coverageAt(point)
+                ?: session.latestDetailCoverage?.let { coverage ->
+                    coverage[coverage.width / 2, coverage.height / 2] >= 0.5f
                 }
-            } catch (_: TimeoutCancellationException) {
-                currentCoroutineContext().ensureActive()
-                throw RadarLoadTimedOutException("Radar download timed out. Tap refresh to try again.")
-            }
+            return RadarProviderCapabilityResolver.refine(capability, published).state
+        }
+        fun select(
+            loaded: RadarSession,
+            requested: RadarProviderKind,
+            active: RadarProviderKind,
+        ): RadarSession {
+            val state = coverageState(loaded, active)
+            val message = if (state == RadarProviderCoverageState.UNCOVERED) {
+                "Radar unavailable at this location"
+            } else if (requested != active) {
+                "${RadarProviderCapabilityResolver.displayName(requested)} unavailable here · using " +
+                    RadarProviderCapabilityResolver.displayName(active)
+            } else null
             return loaded.copy(providerSelection = RadarProviderSelection(
-                if (message == null) RadarProviderKind.OPEN_RAINVIEWER else RadarProviderKind.METEOGROUP_REGIONAL,
-                RadarProviderKind.OPEN_RAINVIEWER,
-                message,
+                requested, active, message, state,
             ))
         }
-        return when (settings.selectedProvider()) {
-            RadarProviderKind.OPEN_RAINVIEWER -> {
-                Log.i("RainRadarProvider", "Loading requested open radar session")
-                loadOpen(showLikelySnow = RainViewerSnowPolicy.effective(
-                    RadarProviderKind.OPEN_RAINVIEWER,
-                    settings.selectedShowLikelySnow(),
-                ))
+        val requested = settings.selectedProvider()
+        val candidates = RadarProviderCapabilityResolver.providersFor(requested, point)
+        var lastFailure: Throwable? = null
+        var timedOut = false
+        var uncoveredRainViewer: RadarSession? = null
+        candidates.forEachIndexed { index, candidate ->
+            val remaining = RadarLoadDeadline.remaining(totalBudget, startedNanos, System.nanoTime())
+            if (remaining == 0L) {
+                timedOut = true
+                return@forEachIndexed
             }
-            RadarProviderKind.METEOGROUP_REGIONAL -> {
-                val area = RegionalRadarAreas.forPoint(place.latitude, place.longitude)
-                if (area == null) {
-                    Log.i("RainRadarProvider", "No regional area matched; selecting open fallback")
-                    loadOpen("MeteoGroup regional coverage is unavailable here; using open radar.")
-                } else {
-                    Log.i("RainRadarProvider", "Loading requested MeteoGroup area=${area.id}")
-                    when (val attempt = RadarLoadDeadline.attemptPrimary(RadarLoadDeadline.primary(mode)) {
+            val isLast = index == candidates.lastIndex
+            val candidateBudget = when (candidate) {
+                RadarProviderKind.METEOGROUP_REGIONAL ->
+                    minOf(remaining, RadarLoadDeadline.primary(mode))
+                RadarProviderKind.EUMETNET_OPERA -> minOf(
+                    remaining,
+                    RadarLoadDeadline.opera(
+                        mode,
+                        afterRegional = candidates.take(index)
+                            .contains(RadarProviderKind.METEOGROUP_REGIONAL),
+                    ),
+                )
+                RadarProviderKind.OPEN_RAINVIEWER -> if (isLast) remaining
+                    else minOf(remaining, RadarLoadDeadline.primary(mode))
+            }
+            Log.i("RainRadarProvider", "Loading $candidate for preferred=$requested")
+            val attempt = RadarLoadDeadline.attemptPrimary(candidateBudget) {
+                when (candidate) {
+                    RadarProviderKind.METEOGROUP_REGIONAL ->
                         regional.load(place, maxFrames, mode, onProgress)
-                    }) {
-                        is PrimaryRadarAttempt.Ready -> attempt.value
-                        PrimaryRadarAttempt.TimedOut -> {
-                            Log.w("RainRadarProvider", "MeteoGroup session exceeded primary deadline; selecting open fallback")
-                            loadOpen("MeteoGroup regional radar timed out; using open radar for this session.")
-                        }
-                        is PrimaryRadarAttempt.Failed -> {
-                            Log.w("RainRadarProvider", "MeteoGroup load failed; selecting open fallback", attempt.cause)
-                            loadOpen("MeteoGroup regional radar could not load; using open radar for this session.")
-                        }
+                    RadarProviderKind.EUMETNET_OPERA ->
+                        opera.load(place, maxFrames, mode, onProgress)
+                    RadarProviderKind.OPEN_RAINVIEWER -> open.load(
+                        place,
+                        maxFrames,
+                        mode,
+                        onProgress,
+                        showLikelySnow = RainViewerSnowPolicy.effective(
+                            requested,
+                            settings.selectedShowLikelySnow(),
+                        ),
+                    )
+                }
+            }
+            when (attempt) {
+                is PrimaryRadarAttempt.Ready -> {
+                    val selected = select(attempt.value, requested, candidate)
+                    // A provider-published RainViewer mask can prove that this point is outside
+                    // coverage. Try another hard-eligible provider, but retain this fail-open map
+                    // session so an all-provider miss still leaves the base map usable.
+                    if (candidate == RadarProviderKind.OPEN_RAINVIEWER &&
+                        selected.providerSelection.coverageState == RadarProviderCoverageState.UNCOVERED &&
+                        !isLast
+                    ) {
+                        uncoveredRainViewer?.release()
+                        uncoveredRainViewer = selected
+                    } else {
+                        uncoveredRainViewer?.release()
+                        return selected
                     }
+                }
+                PrimaryRadarAttempt.TimedOut -> {
+                    timedOut = true
+                    Log.w("RainRadarProvider", "$candidate deadline exceeded; trying next provider")
+                }
+                is PrimaryRadarAttempt.Failed -> {
+                    lastFailure = attempt.cause
+                    Log.w("RainRadarProvider", "$candidate failed; trying next provider", attempt.cause)
                 }
             }
         }
+        uncoveredRainViewer?.let { return it }
+        if (timedOut) throw RadarLoadTimedOutException(
+            "Radar download timed out. Tap refresh to try again.",
+        )
+        throw lastFailure ?: IOException("Radar is unavailable at this location")
+    }
+}
+
+/** Pure compatibility/fallback ordering used by policy tests and UI explanations. */
+object RadarProviderFallbackPolicy {
+    fun providersFor(requested: RadarProviderKind, point: GeoPoint): List<RadarProviderKind> =
+        RadarProviderCapabilityResolver.providersFor(requested, point)
+
+    @Deprecated("Use coordinate-aware provider capabilities")
+    fun providersFor(requested: RadarProviderKind, hasRegionalArea: Boolean): List<RadarProviderKind> = when (requested) {
+        RadarProviderKind.METEOGROUP_REGIONAL -> if (hasRegionalArea) {
+            listOf(RadarProviderKind.METEOGROUP_REGIONAL, RadarProviderKind.EUMETNET_OPERA,
+                RadarProviderKind.OPEN_RAINVIEWER)
+        } else listOf(RadarProviderKind.OPEN_RAINVIEWER)
+        RadarProviderKind.EUMETNET_OPERA -> if (hasRegionalArea) {
+            listOf(RadarProviderKind.EUMETNET_OPERA, RadarProviderKind.OPEN_RAINVIEWER)
+        } else listOf(RadarProviderKind.OPEN_RAINVIEWER)
+        RadarProviderKind.OPEN_RAINVIEWER -> listOf(RadarProviderKind.OPEN_RAINVIEWER)
     }
 }
 

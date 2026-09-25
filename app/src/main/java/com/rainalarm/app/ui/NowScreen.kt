@@ -386,7 +386,8 @@ private fun NowForecastContent(forecast: ForecastSnapshot, metrics: NowLayoutMet
     } else ""
     val sourceKind = when {
         series.intensityEncoding == com.rainalarm.app.domain.RadarIntensityEncoding.REGIONAL_AREA_CHART -> "AREA FORECAST"
-        forecast.sourceLabel.contains("RainViewer", true) -> "EST"
+        forecast.sourceLabel.contains("RainViewer", true) ||
+            forecast.sourceLabel.contains("OPERA", true) -> "EST"
         else -> "RADAR"
     }
     val source = locationNotice ?: "$sourceKind · $freshness$coverage"

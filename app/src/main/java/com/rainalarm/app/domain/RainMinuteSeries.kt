@@ -253,7 +253,8 @@ object OpenMinuteSeriesBuilder {
             )
         }
         val aggregatePixels = reliableAggregate?.pixelsPerMinute(samplingTier)?.let { (dx, dy) ->
-            dx * grid.width / samplingTier.imageSize to dy * grid.height / samplingTier.imageSize
+            dx * grid.width / samplingTier.standardImageSize to
+                dy * grid.height / samplingTier.standardImageSize
         }
         val denseDisplacement = reliableDense?.displacementAt(0.5, 0.5)
         val travelBearing = denseDisplacement?.let { bearingForVector(it.first, it.second) }

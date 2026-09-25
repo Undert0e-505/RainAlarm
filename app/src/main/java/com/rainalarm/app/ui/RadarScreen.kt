@@ -83,6 +83,7 @@ import androidx.compose.ui.unit.sp
 import com.rainalarm.app.LocationUiState
 import com.rainalarm.app.FollowUiCapability
 import com.rainalarm.app.PointRefreshCompletion
+import com.rainalarm.app.ProviderMapNoticeEvent
 import com.rainalarm.app.data.RadarSession
 import com.rainalarm.app.data.RadarProviderCoordinator
 import com.rainalarm.app.data.RadarSettingsRepository
@@ -108,6 +109,9 @@ import com.rainalarm.app.data.FollowRefreshTicket
 import com.rainalarm.app.data.ProviderCadencePolicy
 import com.rainalarm.app.data.ProviderPublicationClock
 import com.rainalarm.app.data.RadarProviderKind
+import com.rainalarm.app.data.RadarProviderSelection
+import com.rainalarm.app.data.forecastSelectionKey
+import com.rainalarm.app.domain.RadarResolutionTier
 import com.rainalarm.app.domain.RadarCameraMemory
 import com.rainalarm.app.domain.RadarSelectedCenterPolicy
 import com.rainalarm.app.domain.RadarPlaybackClock
@@ -437,6 +441,9 @@ fun LiveRadarScreen(
     chartTimeRequest: RadarChartTimeRequest? = null,
     onChartTimeConsumed: (Int) -> Unit = {},
     showLikelySnow: Boolean = false,
+    providerNoticeEvent: ProviderMapNoticeEvent? = null,
+    onProviderNoticeConsumed: (Long) -> Unit = {},
+    onProviderSelection: (SavedPlace, RadarProviderSelection) -> Unit = { _, _ -> },
 ) {
     val context = LocalContext.current
     val loader = remember { RadarProviderCoordinator(RadarSettingsRepository(context)) }
@@ -555,6 +562,7 @@ fun LiveRadarScreen(
                 candidate = null
                 return@LaunchedEffect
             }
+            onProviderSelection(place, loaded.providerSelection)
             session = loaded
             candidate = null
         } catch (cancelled: CancellationException) {
@@ -1132,6 +1140,17 @@ fun LiveRadarScreen(
         }
         setMapLayerEnabled(layer, enabled)
     }
+    val providerNotice = providerNoticeEvent?.takeIf { event ->
+        place?.let(::forecastSelectionKey) == event.placeKey
+    }
+    LaunchedEffect(providerNotice?.token) {
+        val event = providerNotice ?: return@LaunchedEffect
+        delay(requireNotNull(RadarMapNoticeKind.PROVIDER_FALLBACK.lifetimeMillis))
+        onProviderNoticeConsumed(event.token)
+    }
+    val providerMapNotice = providerNotice?.let {
+        RadarMapNotice(RadarMapNoticeKind.PROVIDER_FALLBACK, it.message)
+    }
     BoxWithConstraints(Modifier.fillMaxSize()) {
     val screenWidthDp = maxWidth.value.toInt()
     val screenHeightDp = maxHeight.value.toInt()
@@ -1251,7 +1270,7 @@ fun LiveRadarScreen(
                 refreshing = refreshing,
                 refreshProgress = progress,
                 refreshError = error,
-                externalNotice = null,
+                externalNotice = providerMapNotice,
             )
             else -> RadarLoadingShell(
                 mapStyle = mapStyle,
@@ -1260,7 +1279,7 @@ fun LiveRadarScreen(
                 currentSelected = currentSelected,
                 onCurrentLocation = { requestCurrentLocation(true) },
                 onRefresh = performManualRefresh,
-                notice = null,
+                notice = providerMapNotice,
                 locationStatus = locationOperationalStatus,
                 radarLoading = place != null && error == null,
             )
@@ -1510,11 +1529,13 @@ private fun ColumnScope.RadarPlayer(
         (times[latestObservationIndex] - times.first()).toFloat()
     } else 0f
     val providerForecast = forecastFlags.any { it }
-    val preferredOpenTier = if (session?.detail != null) {
-        com.rainalarm.app.domain.RadarResolutionTier.DETAIL
-    } else {
-        com.rainalarm.app.domain.RadarResolutionTier.REGIONAL
+    var displayedRadarTier by remember(session) {
+        mutableStateOf(if (session?.regional != null || session?.legacyArchive != null) {
+            RadarResolutionTier.REGIONAL
+        } else RadarResolutionTier.DETAIL)
     }
+    val preferredOpenTier = displayedRadarTier.takeIf { session?.tier(it) != null }
+        ?: if (session?.detail != null) RadarResolutionTier.DETAIL else RadarResolutionTier.REGIONAL
     val estimatedForecast = session != null && !providerForecast &&
         session.velocity(preferredOpenTier)?.futureField != null
     val forecastAvailable = providerForecast || estimatedForecast
@@ -1669,6 +1690,7 @@ private fun ColumnScope.RadarPlayer(
                 onLayerError = onLayerError,
                 onMapStyleError = { mapStyleError = it },
                 onWindViewportChanged = onWindViewportChanged,
+                onRadarTierChanged = { displayedRadarTier = it },
             )
             RadarMapNoticeRail(
                 mapNotice,

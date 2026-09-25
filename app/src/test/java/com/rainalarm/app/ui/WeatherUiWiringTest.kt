@@ -119,12 +119,36 @@ class WeatherUiWiringTest {
         val places = source("PlacesScreen.kt")
         val settings = source("SettingsScreen.kt")
         assertTrue(places.contains("val geocoder = remember { PlaceGeocoder() }"))
-        assertTrue(places.contains("Towns: Open-Meteo · UK postcodes: postcodes.io"))
+        assertTrue(places.contains(
+            "Towns: Open-Meteo · Named places: Photon/OSM + Wikipedia · UK postcodes: postcodes.io",
+        ))
         assertTrue(places.contains("val liveSnapshot = if (collection.selectedId == CURRENT_LOCATION_ID)"))
         assertTrue(places.contains("LiveLocationSavePolicy.snapshot((locationState as? LocationUiState.Active)?.place)"))
         assertTrue(places.contains("onClick = { saveAndSelect(liveSnapshot) }"))
         assertTrue(places.contains("Text(\"Save current location\")"))
         assertTrue(settings.contains("UK postcode lookup: postcodes.io"))
+        assertTrue(settings.contains(
+            "Named-place search: Photon using © OpenStreetMap contributors data, with " +
+                "geocoded notable-place fallback from Wikipedia/Wikimedia",
+        ))
+    }
+
+    @Test fun `radar provider preference uses accessible pins without changing startup radio semantics`() {
+        val settings = source("SettingsScreen.kt")
+        assertTrue(settings.contains("PREFERRED RADAR PROVIDER"))
+        assertTrue(settings.contains("Icons.Filled.PushPin else Icons.Outlined.PushPin"))
+        assertTrue(settings.contains("if (!pinned) onClick()"))
+        assertTrue(settings.contains("pinned as preferred radar provider"))
+        assertTrue(settings.contains("set as preferred radar provider"))
+        val pinChoice = settings.substring(
+            settings.indexOf("private fun ProviderPinChoice"),
+            settings.indexOf("private fun ProviderChoice"),
+        )
+        assertFalse(pinChoice.contains("RadioButton"))
+        assertFalse(pinChoice.contains(".selectable("))
+        val startupChoice = settings.substring(settings.indexOf("private fun ProviderChoice"))
+        assertTrue(startupChoice.contains("role = Role.RadioButton"))
+        assertTrue(startupChoice.contains("RadioButton(selected = selected"))
     }
 
     @Test fun `radar refresh reloads session and layer without replacing camera memory`() {
@@ -181,10 +205,19 @@ class WeatherUiWiringTest {
         assertTrue(forecast.contains("aggregateMotion = session.motion"))
         assertTrue(forecast.contains("coverageGrid = session.latestDetailCoverage"))
         assertTrue(forecast.contains("buildOpenRadarMinuteSeries(session, evaluatedAt.epochSecond)"))
-        assertTrue(forecast.contains("radarSettings.selectedProvider() == RadarProviderKind.OPEN_RAINVIEWER"))
+        assertTrue(forecast.contains("selectedProvider != RadarProviderKind.METEOGROUP_REGIONAL"))
+        assertTrue(forecast.contains("RadarProviderKind.EUMETNET_OPERA -> \"OPERA radar estimate\""))
         assertTrue(forecast.contains("Open radar could not provide a reliable local analysis"))
         assertTrue(alerts.contains("buildOpenRadarMinuteSeries(session, evaluatedAt.epochSecond)"))
         assertFalse(alerts.contains("OpenMinuteSeriesBuilder.fromDenseField("))
+    }
+
+    @Test fun `settings marks the default MeteoGroup source as recommended`() {
+        val settings = source("SettingsScreen.kt")
+        assertTrue(settings.contains("title = \"MeteoGroup regional (recommended)\""))
+        assertFalse(settings.contains("title = \"MeteoGroup regional\""))
+        assertTrue(settings.contains("title = \"Open European / OPERA\""))
+        assertFalse(settings.contains("European composite observations; future frames are app estimates"))
     }
 
     @Test fun `radar header centers selected place through existing camera tick`() {
@@ -314,10 +347,16 @@ class WeatherUiWiringTest {
         assertTrue(map.contains(".attributionGravity(Gravity.BOTTOM or Gravity.START)"))
         assertTrue(map.contains("ready.uiSettings.isAttributionEnabled = true"))
         assertTrue(settings.contains("Regional radar: MeteoGroup/DTN."))
-        assertTrue(settings.contains("Open radar: RainViewer."))
+        assertTrue(settings.contains("Contains public sector information licensed under the Open Government Licence v3.0"))
+        assertTrue(settings.contains("Met Éireann radar open data is CC BY 4.0"))
+        assertTrue(settings.contains("The fixed envelope is not live radar availability."))
+        assertTrue(settings.contains("European open radar: EUMETNET OPERA Open Radar Data (CC BY 4.0)."))
+        assertTrue(settings.contains("Worldwide open radar: RainViewer."))
         assertTrue(settings.contains("Open-Meteo (CC BY 4.0)"))
         assertTrue(settings.contains("© EUMETSAT (CC BY 4.0)"))
         assertTrue(settings.contains("© OpenStreetMap contributors"))
+        assertTrue(settings.contains("Version ${'$'}{BuildConfig.VERSION_NAME}"))
+        assertFalse(settings.contains("Version 0.3.1"))
     }
 
     @Test fun `top controls exclude second row segments and statuses remain right aligned`() {
@@ -838,5 +877,24 @@ class WeatherUiWiringTest {
         assertTrue(settings.contains("Switch(checked = showLikelySnow"))
         assertTrue(main.contains("showLikelySnow = showLikelySnow"))
         assertTrue(radar.contains("LaunchedEffect(RadarLiveSessionPolicy.loadIdentity(place), reload, showLikelySnow)"))
+    }
+
+    @Test fun `dynamic provider coverage uses one raster compositor and cleans every resource`() {
+        val map = source("RadarImageMap.kt")
+        val addRaster = map.substring(
+            map.indexOf("private fun addRaster(style:"),
+            map.indexOf("private fun tintUnknownRaster"),
+        )
+        assertTrue(addRaster.contains("RadarCoverageRasterBandPolicy.outsideBands"))
+        assertTrue(addRaster.contains("addRasterResource("))
+        assertTrue(addRaster.contains("PropertyFactory.rasterResampling(\"nearest\")"))
+        assertFalse(addRaster.contains("addVector("))
+        val remove = map.substring(
+            map.indexOf("private fun remove(style:"),
+            map.indexOf("private data class DynamicRasterResource"),
+        )
+        assertTrue(remove.contains("dynamicRasterResources.forEach { runCatching { style.removeLayer"))
+        assertTrue(remove.contains("dynamicRasterResources.forEach { runCatching { style.removeSource"))
+        assertTrue(remove.contains("dynamicRasterResources.clear()"))
     }
 }

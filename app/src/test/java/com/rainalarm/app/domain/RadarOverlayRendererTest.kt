@@ -68,7 +68,7 @@ class RadarOverlayRendererTest {
             RadarOverlayPlanner.activeTier(5.0, regionalAvailable = true, detailAvailable = true),
         )
         assertEquals(
-            RadarResolutionTier.DETAIL,
+            RadarResolutionTier.REGIONAL,
             RadarOverlayPlanner.activeTier(7.0, regionalAvailable = true, detailAvailable = true),
         )
         assertEquals(
@@ -121,8 +121,8 @@ class RadarOverlayRendererTest {
         assertEquals(regionalPixels.first * 4.0, detailPixels.first, 1e-12)
         assertEquals(regionalPixels.second * 4.0, detailPixels.second, 1e-12)
 
-        val regionalBounds = WebMercator.imageBounds(GeoPoint(51.5, -0.1), 5, 512)
-        val detailBounds = WebMercator.imageBounds(GeoPoint(51.5, -0.1), 7, 512)
+        val regionalBounds = WebMercator.coordinateImageBounds(GeoPoint(51.5, -0.1), 5, 512)
+        val detailBounds = WebMercator.coordinateImageBounds(GeoPoint(51.5, -0.1), 7, 512)
         val regionalRect = NorthUpRadarGeoreference.screenRect(
             regionalBounds,
             GeoPoint(51.5, -0.1),
@@ -149,9 +149,9 @@ class RadarOverlayRendererTest {
     @Test
     fun sameGeographicEchoStaysFixedAcrossTierSwitchPanAndZoom() {
         val requestCenter = GeoPoint(57.25, -4.0)
-        val echo = WebMercator.displacedCenter(requestCenter, 7, 72.0, -44.0)
-        val regionalBounds = WebMercator.imageBounds(requestCenter, 5, 512)
-        val detailBounds = WebMercator.imageBounds(requestCenter, 7, 512)
+        val echo = WebMercator.displacedCenter(requestCenter, 7, 36.0, -22.0)
+        val regionalBounds = WebMercator.coordinateImageBounds(requestCenter, 5, 512)
+        val detailBounds = WebMercator.coordinateImageBounds(requestCenter, 7, 512)
 
         fun renderedPoint(bounds: GeoQuad, sourceDx: Double, sourceDy: Double,
             camera: GeoPoint, zoom: Double): Pair<Double, Double> {
@@ -179,7 +179,7 @@ class RadarOverlayRendererTest {
 
     @Test
     fun cameraPanAndZoomProduceExpectedNorthUpRectChanges() {
-        val bounds = WebMercator.imageBounds(GeoPoint(51.5, -0.1), 7, 512)
+        val bounds = WebMercator.coordinateImageBounds(GeoPoint(51.5, -0.1), 7, 512)
         val centered = NorthUpRadarGeoreference.screenRect(
             bounds,
             GeoPoint(51.5, -0.1),

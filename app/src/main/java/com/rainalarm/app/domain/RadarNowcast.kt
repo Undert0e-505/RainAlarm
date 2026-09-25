@@ -25,20 +25,24 @@ object WebMercator {
     const val MAX_LATITUDE = 85.05112878
     private const val TILE_SIZE = 256.0
 
+    data class WorldFractionSpan(val width: Double, val height: Double)
+
     fun imageBounds(
         center: GeoPoint,
         zoom: Int = 7,
         imageSize: Int = 512,
+        sourcePixelRatio: Double = 1.0,
         dxPixels: Double = 0.0,
         dyPixels: Double = 0.0,
     ): GeoQuad {
         require(zoom in 0..22)
         require(imageSize in 1..4096)
+        require(sourcePixelRatio.isFinite() && sourcePixelRatio > 0.0)
         require(center.latitude in -MAX_LATITUDE..MAX_LATITUDE)
         require(center.longitude in -180.0..180.0)
         val world = TILE_SIZE * 2.0.pow(zoom)
         val (centerX, centerY) = project(center, zoom)
-        val half = imageSize / 2.0
+        val half = imageSize / (2.0 * sourcePixelRatio)
         val left = centerX + dxPixels - half
         val right = centerX + dxPixels + half
         val top = (centerY + dyPixels - half).coerceIn(0.0, world)
@@ -49,6 +53,36 @@ object WebMercator {
             bottomRight = unproject(right, bottom, zoom),
             bottomLeft = unproject(left, bottom, zoom),
         )
+    }
+
+    /**
+     * RainViewer's 512px coordinate response is a 2x-density rendering of the same geographic
+     * window as its 256px response. Both therefore span one standard 256px map tile at [zoom].
+     */
+    fun coordinateImageBounds(
+        center: GeoPoint,
+        zoom: Int,
+        imageSize: Int,
+    ): GeoQuad {
+        require(imageSize == 256 || imageSize == 512)
+        return imageBounds(
+            center = center,
+            zoom = zoom,
+            imageSize = imageSize,
+            sourcePixelRatio = imageSize / TILE_SIZE,
+        )
+    }
+
+    fun worldFraction(point: GeoPoint): Pair<Double, Double> =
+        project(point, 0).let { (x, y) -> x / TILE_SIZE to y / TILE_SIZE }
+
+    fun pointAtWorldFraction(x: Double, y: Double): GeoPoint =
+        unproject(x * TILE_SIZE, y * TILE_SIZE, 0)
+
+    fun worldFractionSpan(bounds: GeoQuad): WorldFractionSpan {
+        val (left, top) = worldFraction(bounds.topLeft)
+        val (right, bottom) = worldFraction(bounds.bottomRight)
+        return WorldFractionSpan(right - left, bottom - top)
     }
 
     fun displacedCenter(
@@ -284,6 +318,11 @@ object RadarMotionEstimator {
 enum class RadarResolutionTier(val zoom: Int, val imageSize: Int = 512) {
     REGIONAL(5),
     DETAIL(7),
+    ;
+
+    /** RainViewer's 512px coordinate images are 2x-density versions of a 256px map tile. */
+    val sourcePixelRatio: Double get() = imageSize / 256.0
+    val standardImageSize: Double get() = imageSize / sourcePixelRatio
 }
 
 data class PhysicalRadarMotion(
@@ -311,14 +350,15 @@ data class PhysicalRadarMotion(
             tier: RadarResolutionTier,
             analysisWidth: Int,
             analysisHeight: Int,
+            worldWidthFraction: Double = 1.0 / 2.0.pow(tier.zoom),
+            worldHeightFraction: Double = 1.0 / 2.0.pow(tier.zoom),
         ): PhysicalRadarMotion {
             require(analysisWidth > 0 && analysisHeight > 0)
-            val worldPixels = 256.0 * 2.0.pow(tier.zoom)
+            require(worldWidthFraction.isFinite() && worldWidthFraction > 0.0)
+            require(worldHeightFraction.isFinite() && worldHeightFraction > 0.0)
             return PhysicalRadarMotion(
-                dxWorldFractionPerMinute = estimate.dxPixelsPerMinute *
-                    (tier.imageSize.toDouble() / analysisWidth) / worldPixels,
-                dyWorldFractionPerMinute = estimate.dyPixelsPerMinute *
-                    (tier.imageSize.toDouble() / analysisHeight) / worldPixels,
+                dxWorldFractionPerMinute = estimate.dxPixelsPerMinute * worldWidthFraction / analysisWidth,
+                dyWorldFractionPerMinute = estimate.dyPixelsPerMinute * worldHeightFraction / analysisHeight,
                 confidence = estimate.confidence,
                 pairsUsed = estimate.pairsUsed,
                 sourceTier = tier,
@@ -366,17 +406,18 @@ data class RadarOverlayFramePlan(
 )
 
 object RadarOverlayPlanner {
-    const val DETAIL_CUTOFF_ZOOM = 6.35
-
+    /**
+     * The map always retains the complete regional raster when one was downloaded. The detail
+     * tier is a selected-point analysis asset, not a replacement map layer: selecting it at high
+     * zoom made every other regional segment disappear and panning could not reveal cached data.
+     */
     fun activeTier(
-        mapZoom: Double,
+        @Suppress("UNUSED_PARAMETER") mapZoom: Double,
         regionalAvailable: Boolean,
         detailAvailable: Boolean,
     ): RadarResolutionTier {
         require(regionalAvailable || detailAvailable)
-        return if (mapZoom >= DETAIL_CUTOFF_ZOOM && detailAvailable) {
-            RadarResolutionTier.DETAIL
-        } else if (regionalAvailable) {
+        return if (regionalAvailable) {
             RadarResolutionTier.REGIONAL
         } else {
             RadarResolutionTier.DETAIL

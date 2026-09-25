@@ -15,11 +15,15 @@ internal sealed interface PrimaryRadarAttempt<out T> {
 
 /** Wall-clock budgets for a complete radar session, including any open-provider fallback. */
 internal object RadarLoadDeadline {
-    const val SCREEN_PRIMARY_MILLIS = 60_000L
-    const val SCREEN_TOTAL_MILLIS = 90_000L
-    const val ANALYSIS_PRIMARY_MILLIS = 40_000L
-    const val ANALYSIS_TOTAL_MILLIS = 60_000L
-    const val NOW_TOTAL_MILLIS = 75_000L
+    const val SCREEN_PRIMARY_MILLIS = 50_000L
+    const val SCREEN_OPERA_AFTER_REGIONAL_MILLIS = 30_000L
+    const val SCREEN_OPERA_PRIMARY_MILLIS = 70_000L
+    const val SCREEN_TOTAL_MILLIS = 110_000L
+    const val ANALYSIS_PRIMARY_MILLIS = 35_000L
+    const val ANALYSIS_OPERA_AFTER_REGIONAL_MILLIS = 20_000L
+    const val ANALYSIS_OPERA_PRIMARY_MILLIS = 45_000L
+    const val ANALYSIS_TOTAL_MILLIS = 80_000L
+    const val NOW_TOTAL_MILLIS = 95_000L
 
     fun primary(mode: RadarLoadMode): Long = when (mode) {
         RadarLoadMode.SCREEN_TWO_TIER -> SCREEN_PRIMARY_MILLIS
@@ -29,6 +33,15 @@ internal object RadarLoadDeadline {
     fun total(mode: RadarLoadMode): Long = when (mode) {
         RadarLoadMode.SCREEN_TWO_TIER -> SCREEN_TOTAL_MILLIS
         RadarLoadMode.ALERT_ANALYSIS -> ANALYSIS_TOTAL_MILLIS
+    }
+
+    fun opera(mode: RadarLoadMode, afterRegional: Boolean): Long = when (mode) {
+        RadarLoadMode.SCREEN_TWO_TIER -> if (afterRegional) {
+            SCREEN_OPERA_AFTER_REGIONAL_MILLIS
+        } else SCREEN_OPERA_PRIMARY_MILLIS
+        RadarLoadMode.ALERT_ANALYSIS -> if (afterRegional) {
+            ANALYSIS_OPERA_AFTER_REGIONAL_MILLIS
+        } else ANALYSIS_OPERA_PRIMARY_MILLIS
     }
 
     fun remaining(totalMillis: Long, startNanos: Long, nowNanos: Long): Long =

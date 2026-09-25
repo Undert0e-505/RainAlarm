@@ -11,7 +11,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import com.rainalarm.app.BuildConfig
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -31,6 +33,10 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,11 +48,16 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selectableGroup
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rainalarm.app.data.RadarProviderKind
+import com.rainalarm.app.data.RadarProviderCapabilityResolver
+import com.rainalarm.app.data.RadarProviderCoverageState
+import com.rainalarm.app.data.SavedPlace
+import com.rainalarm.app.domain.GeoPoint
 import com.rainalarm.app.data.RadarPlaybackSpeed
 import com.rainalarm.app.data.RadarMapLayer
 import com.rainalarm.app.data.WindArrowSizePreference
@@ -103,6 +114,9 @@ fun SettingsScreen(
     visibleMetrics: Set<NowWeatherMetric>,
     setMetricVisible: (NowWeatherMetric, Boolean) -> Unit,
     message: String? = null,
+    selectedPlace: SavedPlace? = null,
+    activeProvider: RadarProviderKind? = null,
+    activeProviderCoverage: RadarProviderCoverageState? = null,
 ) {
     val context = LocalContext.current
     var permissionMessage by remember { mutableStateOf<String?>(null) }
@@ -144,22 +158,49 @@ fun SettingsScreen(
             }
         }
         Spacer(Modifier.height(20.dp))
-        Text("RADAR DATA", color = SettingsAccent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Text("PREFERRED RADAR PROVIDER", color = SettingsAccent, fontSize = 12.sp,
+            fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(10.dp))
+        val providerPoint = selectedPlace?.let { GeoPoint(it.latitude, it.longitude) }
+        val providerCapabilities = providerPoint?.let(RadarProviderCapabilityResolver::capabilities)
+            .orEmpty().toMutableMap().also { capabilities ->
+                val provider = activeProvider ?: return@also
+                val current = capabilities[provider] ?: return@also
+                val state = activeProviderCoverage ?: return@also
+                capabilities[provider] = current.copy(state = state)
+            }
+        val providerInUse = activeProvider ?: providerPoint?.let {
+            RadarProviderCapabilityResolver.providersFor(selectedProvider, it).firstOrNull()
+        }
         Card(
             colors = CardDefaults.cardColors(containerColor = SettingsSurface),
             shape = RoundedCornerShape(22.dp),
-            modifier = Modifier.fillMaxWidth().semantics { selectableGroup() },
+            modifier = Modifier.fillMaxWidth(),
         ) {
-            ProviderChoice(
-                title = "MeteoGroup regional",
-                selected = selectedProvider == RadarProviderKind.METEOGROUP_REGIONAL,
+            ProviderPinChoice(
+                title = "MeteoGroup regional (recommended)",
+                provider = RadarProviderKind.METEOGROUP_REGIONAL,
+                pinned = selectedProvider == RadarProviderKind.METEOGROUP_REGIONAL,
+                capability = providerCapabilities[RadarProviderKind.METEOGROUP_REGIONAL]?.state,
+                activeProvider = providerInUse,
                 onClick = { selectProvider(RadarProviderKind.METEOGROUP_REGIONAL) },
             )
             HorizontalDivider(color = SettingsBorder)
-            ProviderChoice(
+            ProviderPinChoice(
+                title = "Open European / OPERA",
+                provider = RadarProviderKind.EUMETNET_OPERA,
+                pinned = selectedProvider == RadarProviderKind.EUMETNET_OPERA,
+                capability = providerCapabilities[RadarProviderKind.EUMETNET_OPERA]?.state,
+                activeProvider = providerInUse,
+                onClick = { selectProvider(RadarProviderKind.EUMETNET_OPERA) },
+            )
+            HorizontalDivider(color = SettingsBorder)
+            ProviderPinChoice(
                 title = "Open radar / RainViewer",
-                selected = selectedProvider == RadarProviderKind.OPEN_RAINVIEWER,
+                provider = RadarProviderKind.OPEN_RAINVIEWER,
+                pinned = selectedProvider == RadarProviderKind.OPEN_RAINVIEWER,
+                capability = providerCapabilities[RadarProviderKind.OPEN_RAINVIEWER]?.state,
+                activeProvider = providerInUse,
                 onClick = { selectProvider(RadarProviderKind.OPEN_RAINVIEWER) },
             )
             if (selectedProvider == RadarProviderKind.OPEN_RAINVIEWER) {
@@ -283,7 +324,7 @@ fun SettingsScreen(
             Column(Modifier.padding(20.dp)) {
                 Text("Independent rain nowcasting", fontWeight = FontWeight.SemiBold)
                 Text(
-                    "Regional radar: MeteoGroup/DTN. Open radar: RainViewer. Wind and selected-place model weather: Open-Meteo (CC BY 4.0). Town search: Open-Meteo/GeoNames. UK postcode lookup: postcodes.io using OS OpenData; contains Ordnance Survey, Crown, Royal Mail and National Statistics database rights. Satellite Lightning and daytime/nighttime Clouds imagery: © EUMETSAT (CC BY 4.0). Clouds show cloud structures or fog / low cloud, not confirmed surface fog. Maps: © OpenStreetMap contributors via OpenFreeMap/OpenMapTiles.",
+                    "Regional radar: MeteoGroup/DTN. Its UK/Ireland nominal coverage geometry uses Met Office radar-site information: Contains public sector information licensed under the Open Government Licence v3.0; Met Éireann radar open data is CC BY 4.0. The fixed envelope is not live radar availability. European open radar: EUMETNET OPERA Open Radar Data (CC BY 4.0). Worldwide open radar: RainViewer. OPERA and RainViewer future frames are app-labelled motion estimates, not provider forecasts. Wind and selected-place model weather: Open-Meteo (CC BY 4.0). Town search: Open-Meteo/GeoNames. Named-place search: Photon using © OpenStreetMap contributors data, with geocoded notable-place fallback from Wikipedia/Wikimedia. UK postcode lookup: postcodes.io using OS OpenData; contains Ordnance Survey, Crown, Royal Mail and National Statistics database rights. Satellite Lightning and daytime/nighttime Clouds imagery: © EUMETSAT (CC BY 4.0). Clouds show cloud structures or fog / low cloud, not confirmed surface fog. Maps: © OpenStreetMap contributors via OpenFreeMap/OpenMapTiles.",
                     color = SettingsSecondary,
                     fontSize = 13.sp,
                     lineHeight = 19.sp,
@@ -294,6 +335,12 @@ fun SettingsScreen(
                     color = SettingsAccent,
                     fontSize = 13.sp,
                     lineHeight = 19.sp,
+                    modifier = Modifier.padding(top = 14.dp),
+                )
+                Text(
+                    "Version ${BuildConfig.VERSION_NAME}",
+                    color = SettingsSecondary,
+                    fontSize = 12.sp,
                     modifier = Modifier.padding(top = 14.dp),
                 )
             }
@@ -362,6 +409,69 @@ private fun <T> AppearanceGrid(columns: List<T?>, selected: T, label: (T) -> Str
 }
 
 private fun Double.formatCoordinate(): String = String.format(java.util.Locale.ROOT, "%.3f", this)
+
+internal object RadarProviderSettingsPolicy {
+    fun detail(
+        pinned: Boolean,
+        capability: RadarProviderCoverageState?,
+        inUse: Boolean,
+    ): String = buildList {
+        if (pinned) add("Pinned default")
+        when (capability) {
+            RadarProviderCoverageState.COVERED -> add("Available here")
+            RadarProviderCoverageState.SUPPORTED -> add("Available here")
+            RadarProviderCoverageState.UNCOVERED -> add("No published coverage here")
+            RadarProviderCoverageState.OUTSIDE_DOMAIN -> add("Outside coverage here")
+            null -> Unit
+        }
+        if (inUse && !pinned) add("In use here")
+    }.joinToString(" · ")
+}
+
+@Composable
+private fun ProviderPinChoice(
+    title: String,
+    provider: RadarProviderKind,
+    pinned: Boolean,
+    capability: RadarProviderCoverageState?,
+    activeProvider: RadarProviderKind?,
+    onClick: () -> Unit,
+) {
+    val detail = RadarProviderSettingsPolicy.detail(
+        pinned, capability, activeProvider == provider,
+    )
+    Row(
+        Modifier.fillMaxWidth()
+            .clickable(role = Role.Button, onClick = { if (!pinned) onClick() })
+            .semantics {
+                selected = pinned
+                contentDescription = buildString {
+                    append(title)
+                    if (detail.isNotBlank()) append(", ").append(detail)
+                    append(if (pinned) ", pinned as preferred radar provider"
+                    else ", set as preferred radar provider")
+                }
+            }
+            .padding(horizontal = 14.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f).padding(end = 8.dp)) {
+            Text(title, fontWeight = FontWeight.SemiBold)
+            if (detail.isNotBlank()) Text(
+                detail,
+                color = SettingsSecondary,
+                fontSize = 12.sp,
+                lineHeight = 17.sp,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+        Icon(
+            if (pinned) Icons.Filled.PushPin else Icons.Outlined.PushPin,
+            contentDescription = null,
+            tint = if (pinned) SettingsAccent else SettingsSecondary,
+        )
+    }
+}
 
 @Composable
 private fun ProviderChoice(

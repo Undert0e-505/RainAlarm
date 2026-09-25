@@ -6,6 +6,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 
@@ -341,6 +343,7 @@ class PlaceAndGeocoderTest {
     fun `place geocoder routes only complete postcode shapes away from Open Meteo`() = runBlocking {
         val townQueries = mutableListOf<String>()
         val postcodeQueries = mutableListOf<String>()
+        val namedQueries = mutableListOf<String>()
         val town = object : GeocodingEndpoint {
             override suspend fun search(query: String, language: String): List<PlaceSearchResult> {
                 townQueries += query
@@ -353,13 +356,233 @@ class PlaceAndGeocoderTest {
                 return listOf(PlaceSearchResult("CM3 4DS", "Danbury", 51.72, 0.56))
             }
         }
-        val geocoder = PlaceGeocoder(town, postcode)
+        val named = object : GeocodingEndpoint {
+            override suspend fun search(query: String, language: String): List<PlaceSearchResult> {
+                namedQueries += query
+                return emptyList()
+            }
+        }
+        val geocoder = PlaceGeocoder(town, postcode, named)
         assertEquals("London", geocoder.search("London", "en").single().name)
         assertEquals("CM3 4DS", geocoder.search("cm34ds", "en").single().name)
         assertEquals(listOf("London"), townQueries)
         assertEquals(listOf("cm34ds"), postcodeQueries)
+        assertEquals(listOf("London"), namedQueries)
         assertTrue(buildGeocodingUrl("London", "en")
             .startsWith("https://geocoding-api.open-meteo.com/v1/search?"))
+    }
+
+    @Test
+    fun `Photon URL and parser return named OSM features including Ragley Hall`() {
+        assertEquals(
+            "https://photon.komoot.io/api?q=Ragley+Estate+Warwickshire&limit=6&lang=en",
+            buildPhotonGeocodingUrl("Ragley Estate Warwickshire", "en"),
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            buildPhotonGeocodingUrl("Ragley", "en", "http://example.invalid/api")
+        }
+        val results = PhotonGeocodingMapper.parse(
+            """
+            {"type":"FeatureCollection","features":[
+              {"type":"Feature","properties":{"osm_type":"W","osm_id":123,
+                "name":"Ragley Hall","county":"Warwickshire","state":"England",
+                "country":"United Kingdom"},
+               "geometry":{"coordinates":[-1.8961030,52.1980316],"type":"Point"}},
+              {"type":"Feature","properties":{"name":"Ragley Park","county":"Warwickshire"},
+               "geometry":{"coordinates":[-1.9001,52.2001],"type":"Point"}},
+              {"type":"Feature","properties":{},
+               "geometry":{"coordinates":[-1.0,52.0],"type":"Point"}}
+            ]}
+            """.trimIndent(),
+        )
+        assertEquals(listOf("Ragley Hall", "Ragley Park"), results.map { it.name })
+        assertEquals("Warwickshire, England, United Kingdom", results.first().detail)
+        assertEquals(52.1980316, results.first().latitude, 0.0000001)
+        assertEquals(-1.8961030, results.first().longitude, 0.0000001)
+    }
+
+    @Test
+    fun `Wikimedia URL normalizes possessives and parser keeps only valid geocoded pages`() {
+        val expected = "https://en.wikipedia.org/w/api.php?action=query&format=json&formatversion=2" +
+            "&generator=search&gsrsearch=ragley+estate&gsrlimit=5&gsrnamespace=0" +
+            "&prop=coordinates%7Cdescription&coprimary=all&redirects=1"
+        assertEquals(expected, buildWikimediaGeocodingUrl("ragley estate's"))
+        assertEquals(expected, buildWikimediaGeocodingUrl("ragley estate’s"))
+        assertEquals("ragley estate", PlaceSearchText.normalize(" Ragley Estate’s "))
+        assertThrows(IllegalArgumentException::class.java) {
+            buildWikimediaGeocodingUrl("Ragley", "http://example.invalid/w/api.php")
+        }
+
+        val results = WikimediaGeocodingMapper.parse(
+            """
+            {"query":{"pages":[
+              {"pageid":123,"title":"Ragley Hall",
+               "description":"Grade I listed historic house in Warwickshire, England",
+               "coordinates":[{"lat":52.1980316,"lon":-1.8961030,"primary":""}]},
+              {"pageid":124,"title":"No coordinates"},
+              {"pageid":125,"title":"Invalid","coordinates":[{"lat":120.0,"lon":0.0}]}
+            ]}}
+            """.trimIndent(),
+        )
+        assertEquals(listOf("Ragley Hall"), results.map { it.name })
+        assertEquals("Grade I listed historic house in Warwickshire, England", results.single().detail)
+        assertEquals(52.1980316, results.single().latitude, 0.0000001)
+        assertEquals(-1.8961030, results.single().longitude, 0.0000001)
+        assertTrue(WikimediaGeocodingMapper.parse("{}").isEmpty())
+    }
+
+    @Test
+    fun `weak possessive search invokes notable fallback and ranks its leading coordinate first`() = runBlocking {
+        val empty = object : GeocodingEndpoint {
+            override suspend fun search(query: String, language: String) = emptyList<PlaceSearchResult>()
+        }
+        val photon = object : GeocodingEndpoint {
+            override suspend fun search(query: String, language: String) = listOf(
+                PlaceSearchResult("Ragley Walk", "London, England", 51.51, -0.12),
+            )
+        }
+        val notableQueries = mutableListOf<String>()
+        val notable = object : GeocodingEndpoint {
+            override suspend fun search(query: String, language: String): List<PlaceSearchResult> {
+                notableQueries += query
+                return listOf(PlaceSearchResult(
+                    "Ragley Hall",
+                    "Grade I listed historic house in Warwickshire, England",
+                    52.1980316,
+                    -1.8961030,
+                ))
+            }
+        }
+        val geocoder = PlaceGeocoder(empty, empty, photon, notable)
+        assertEquals("Ragley Hall", geocoder.search("ragley estate's", "en").first().name)
+        assertEquals("Ragley Hall", geocoder.search("ragley estate’s", "en").first().name)
+        assertEquals(listOf("ragley estate's", "ragley estate’s"), notableQueries)
+        assertFalse(PlaceSearchMerger.hasStrongMatch(
+            "ragley estate's",
+            listOf(PlaceSearchResult("Ragley Walk", "London", 51.51, -0.12)),
+        ))
+        assertTrue(PlaceSearchMerger.hasStrongMatch(
+            "ragley estate’s",
+            listOf(PlaceSearchResult("Ragley Estate", "Warwickshire", 52.2, -1.9)),
+        ))
+    }
+
+    @Test
+    fun `strong primary skips Wikimedia while fallback failure preserves primary results`() = runBlocking {
+        var notableCalls = 0
+        val notableFailure = object : GeocodingEndpoint {
+            override suspend fun search(query: String, language: String): List<PlaceSearchResult> {
+                notableCalls += 1
+                error("Wikimedia unavailable")
+            }
+        }
+        val empty = object : GeocodingEndpoint {
+            override suspend fun search(query: String, language: String) = emptyList<PlaceSearchResult>()
+        }
+        val strongTown = object : GeocodingEndpoint {
+            override suspend fun search(query: String, language: String) = listOf(
+                PlaceSearchResult("London", "England", 51.5, -0.1),
+            )
+        }
+        assertEquals(
+            "London",
+            PlaceGeocoder(strongTown, empty, empty, notableFailure).search("London", "en").single().name,
+        )
+        assertEquals(0, notableCalls)
+
+        val weakPhoton = object : GeocodingEndpoint {
+            override suspend fun search(query: String, language: String) = listOf(
+                PlaceSearchResult("Ragley Walk", "London", 51.51, -0.12),
+            )
+        }
+        assertEquals(
+            "Ragley Walk",
+            PlaceGeocoder(empty, empty, weakPhoton, notableFailure)
+                .search("ragley estate's", "en").single().name,
+        )
+        assertEquals(1, notableCalls)
+    }
+
+    @Test
+    fun `Wikimedia bounds requests and shares possessive-normalized cache entries`() = runBlocking {
+        var requests = 0
+        val geocoder = WikimediaGeocoder(httpClient = GeocodingHttpClient { url, connect, read ->
+            requests += 1
+            assertTrue(url.contains("gsrsearch=ragley+estate"))
+            assertEquals(4_000, connect)
+            assertEquals(6_000, read)
+            GeocodingHttpResponse(
+                200,
+                """{"query":{"pages":[{"title":"Ragley Hall","coordinates":[{"lat":52.1980316,"lon":-1.896103}]}]}}""",
+            )
+        })
+        val straight = async { geocoder.search("ragley estate's", "en") }
+        val curly = async { geocoder.search("ragley estate’s", "cy") }
+        assertEquals("Ragley Hall", straight.await().single().name)
+        assertEquals("Ragley Hall", curly.await().single().name)
+        assertEquals(1, requests)
+    }
+
+    @Test
+    fun `named-place and town results merge while either endpoint may fail`() = runBlocking {
+        val town = object : GeocodingEndpoint {
+            override suspend fun search(query: String, language: String) =
+                listOf(PlaceSearchResult("Alcester", "Warwickshire", 52.216, -1.87))
+        }
+        val named = object : GeocodingEndpoint {
+            override suspend fun search(query: String, language: String) = listOf(
+                PlaceSearchResult("Ragley Hall", "Warwickshire, England", 52.1980316, -1.8961030),
+                PlaceSearchResult("Ragley Park", "Warwickshire, England", 52.2001, -1.9001),
+            )
+        }
+        val postcode = object : GeocodingEndpoint {
+            override suspend fun search(query: String, language: String) = emptyList<PlaceSearchResult>()
+        }
+        val notable = object : GeocodingEndpoint {
+            override suspend fun search(query: String, language: String) = emptyList<PlaceSearchResult>()
+        }
+        val merged = PlaceGeocoder(town, postcode, named, notable)
+            .search("Ragley Estate Warwickshire", "en")
+        assertEquals("Ragley Hall", merged.first().name)
+        assertTrue(merged.any { it.name == "Ragley Park" })
+        assertTrue(merged.any { it.name == "Alcester" })
+
+        val failed = object : GeocodingEndpoint {
+            override suspend fun search(query: String, language: String): List<PlaceSearchResult> =
+                error("endpoint unavailable")
+        }
+        assertEquals(
+            listOf("Ragley Hall", "Ragley Park"),
+            PlaceGeocoder(failed, postcode, named, notable)
+                .search("Ragley Estate Warwickshire", "en").map { it.name },
+        )
+        assertEquals(
+            listOf("Alcester"),
+            PlaceGeocoder(town, postcode, failed, notable)
+                .search("Ragley Estate Warwickshire", "en").map { it.name },
+        )
+        assertTrue(runCatching {
+            PlaceGeocoder(failed, postcode, failed, failed).search("Ragley", "en")
+        }.isFailure)
+    }
+
+    @Test
+    fun `Photon bounds requests and shares cached identical searches`() = runBlocking {
+        var requests = 0
+        val geocoder = PhotonGeocoder(httpClient = GeocodingHttpClient { url, connect, read ->
+            requests += 1
+            assertTrue(url.contains("limit=6"))
+            assertEquals(5_000, connect)
+            assertEquals(7_000, read)
+            GeocodingHttpResponse(
+                200,
+                """{"features":[{"properties":{"name":"Ragley Hall"},"geometry":{"coordinates":[-1.896103,52.1980316]}}]}""",
+            )
+        })
+        (1..3).map { async { geocoder.search("Ragley Estate", "en") } }.awaitAll()
+            .forEach { assertEquals("Ragley Hall", it.single().name) }
+        assertEquals("Ragley Hall", geocoder.search(" ragley estate ", "EN").single().name)
+        assertEquals(1, requests)
     }
 
     @Test

@@ -8,6 +8,34 @@ import org.junit.Test
 
 class RadarNowcastTest {
     @Test
+    fun rainViewerCoordinateSizesShareGeographicBounds() {
+        val center = GeoPoint(56.0, -4.0)
+        val standard = WebMercator.coordinateImageBounds(center, zoom = 5, imageSize = 256)
+        val retina = WebMercator.coordinateImageBounds(center, zoom = 5, imageSize = 512)
+
+        assertEquals(standard.topLeft.latitude, retina.topLeft.latitude, 1e-10)
+        assertEquals(standard.topLeft.longitude, retina.topLeft.longitude, 1e-10)
+        assertEquals(standard.bottomRight.latitude, retina.bottomRight.latitude, 1e-10)
+        assertEquals(standard.bottomRight.longitude, retina.bottomRight.longitude, 1e-10)
+        assertEquals(360.0 / 32.0, retina.topRight.longitude - retina.topLeft.longitude, 1e-10)
+    }
+
+    @Test
+    fun retinaMotionUsesStandardMapPixelScale() {
+        val motion = PhysicalRadarMotion.fromAnalysisPixels(
+            MotionEstimate(1.0, -0.5, 0.8, 2),
+            RadarResolutionTier.DETAIL,
+            analysisWidth = 64,
+            analysisHeight = 64,
+        )
+
+        val pixels = motion.pixelsPerMinute(RadarResolutionTier.DETAIL)
+        // 64 analysis pixels cover one standard 256px tile, regardless of the 512px response.
+        assertEquals(4.0, pixels.first, 1e-12)
+        assertEquals(-2.0, pixels.second, 1e-12)
+    }
+
+    @Test
     fun mercatorBoundsAndDisplacementPreserveDirections() {
         val center = GeoPoint(51.5, -0.1)
         val bounds = WebMercator.imageBounds(center, zoom = 7, imageSize = 512)

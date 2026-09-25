@@ -279,7 +279,7 @@ fun PlacesScreen(
                         }) { Text("Add & select") }
                     }
                 }
-                Text("Towns: Open-Meteo · UK postcodes: postcodes.io",
+                Text("Towns: Open-Meteo · Named places: Photon/OSM + Wikipedia · UK postcodes: postcodes.io",
                     color = PlacesSecondary, fontSize = 10.sp)
             }
         }
