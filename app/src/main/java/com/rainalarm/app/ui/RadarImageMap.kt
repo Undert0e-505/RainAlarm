@@ -32,6 +32,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.rainalarm.app.data.RadarSession
 import com.rainalarm.app.data.RadarCoverageRaster
 import com.rainalarm.app.data.RadarProviderKind
+import com.rainalarm.app.data.CoverageMaskDarknessPreference
 import com.rainalarm.app.data.RegionalRadarArea
 import com.rainalarm.app.data.SavedPlace
 import com.rainalarm.app.data.WindGrid
@@ -235,20 +236,30 @@ internal data class RadarCoverageMask(
 
 /** A geographic unknown-coverage mask used only for evidence-backed nominal coverage. */
 internal object RadarCoverageMaskPolicy {
-    fun palette(style: RadarMapStyle): Pair<Int, Float> = when (style) {
-        RadarMapStyle.DARK -> 0xFF000000.toInt() to 0.36f
-        RadarMapStyle.SLATE -> 0xFF101827.toInt() to 0.30f
-        RadarMapStyle.LIGHT -> 0xFF24313A.toInt() to 0.28f
+    // One normalized user setting drives both vector Meteo envelopes and raster OPERA/
+    // RainViewer unknown fields. Maximums stay translucent so labels and map context survive.
+    fun palette(
+        style: RadarMapStyle,
+        darkness: Float = CoverageMaskDarknessPreference.DEFAULT,
+    ): Pair<Int, Float> {
+        val strength = CoverageMaskDarknessPreference.decode(darkness)
+        val (color, maximumOpacity) = when (style) {
+            RadarMapStyle.DARK -> 0xFF000000.toInt() to 0.90f
+            RadarMapStyle.SLATE -> 0xFF101827.toInt() to 0.84f
+            RadarMapStyle.LIGHT -> 0xFF24313A.toInt() to 0.80f
+        }
+        return color to maximumOpacity * strength
     }
 
     fun mask(
         provider: RadarProviderKind,
         area: RegionalRadarArea?,
         style: RadarMapStyle,
+        darkness: Float = CoverageMaskDarknessPreference.DEFAULT,
     ): RadarCoverageMask? {
         if (provider != RadarProviderKind.METEOGROUP_REGIONAL || area == null) return null
-        // Other regional feed rectangles are image geometry, not evidence of observation reach.
-        // UK/Ireland is the only currently versioned, redistributable nominal network envelope.
+        // Regional feed rectangles are image geometry, not evidence of observation reach. Only
+        // products with separately versioned nominal network envelopes receive a vector mask.
         val coverage = MeteoNominalCoverage.forAreaId(area.id) ?: return null
         val outer = listOf(
             GeoPoint(-WebMercator.MAX_LATITUDE, -180.0),
@@ -257,7 +268,7 @@ internal object RadarCoverageMaskPolicy {
             GeoPoint(WebMercator.MAX_LATITUDE, -180.0),
             GeoPoint(-WebMercator.MAX_LATITUDE, -180.0),
         )
-        val (color, opacity) = palette(style)
+        val (color, opacity) = palette(style, darkness)
         return RadarCoverageMask(outer, coverage, color, opacity)
     }
 
@@ -338,9 +349,15 @@ private class RadarCoverageMaskController {
     private val dynamicRasterResources = mutableListOf<DynamicRasterResource>()
     private var currentKey: String? = null
 
-    fun reconcile(style: Style, session: RadarSession?, mapStyle: RadarMapStyle) {
+    fun reconcile(
+        style: Style,
+        session: RadarSession?,
+        mapStyle: RadarMapStyle,
+        darkness: Float,
+    ) {
+        val safeDarkness = CoverageMaskDarknessPreference.decode(darkness)
         val nextKey = session?.let {
-            "${System.identityHashCode(it)}:${it.providerSelection.active}:$mapStyle"
+            "${System.identityHashCode(it)}:${it.providerSelection.active}:$mapStyle:$safeDarkness"
         }
         if (currentStyle === style && currentKey == nextKey) return
         currentStyle?.let(::remove)
@@ -348,10 +365,12 @@ private class RadarCoverageMaskController {
         currentKey = nextKey
         val selection = session?.providerSelection ?: return
         session.mapCoverage?.let { raster ->
-            addRaster(style, raster, mapStyle)
+            addRaster(style, raster, mapStyle, safeDarkness)
             return
         }
-        val mask = RadarCoverageMaskPolicy.mask(selection.active, session.region, mapStyle) ?: return
+        val mask = RadarCoverageMaskPolicy.mask(
+            selection.active, session.region, mapStyle, safeDarkness,
+        ) ?: return
         addVector(style, mask)
     }
 
@@ -401,9 +420,14 @@ private class RadarCoverageMaskController {
         currentKey = null
     }
 
-    private fun addRaster(style: Style, raster: RadarCoverageRaster, mapStyle: RadarMapStyle) {
+    private fun addRaster(
+        style: Style,
+        raster: RadarCoverageRaster,
+        mapStyle: RadarMapStyle,
+        darkness: Float,
+    ) {
         if (raster.bitmap.isRecycled || raster.bitmap.width <= 0 || raster.bitmap.height <= 0) return
-        val (color, opacity) = RadarCoverageMaskPolicy.palette(mapStyle)
+        val (color, opacity) = RadarCoverageMaskPolicy.palette(mapStyle, darkness)
         val tinted = tintUnknownRaster(raster.bitmap, color)
         try {
             addRasterResource(style, rasterSourceId, rasterLayerId, raster.bounds, tinted, opacity)
@@ -1608,6 +1632,7 @@ internal fun RadarImageMap(
     isPlaying: Boolean = false,
     onRendererStatus: (RadarRendererStatus) -> Unit = {},
     mapStyle: RadarMapStyle = RadarMapStyle.DARK,
+    coverageMaskDarkness: Float = CoverageMaskDarknessPreference.DEFAULT,
     cameraMemory: RadarCameraMemory,
     windGrid: WindGrid? = null,
     windArrowScale: Float = 1f,
@@ -1640,6 +1665,7 @@ internal fun RadarImageMap(
         isPlaying,
         onRendererStatus,
         mapStyle,
+        coverageMaskDarkness,
         cameraMemory,
         windGrid,
         windArrowScale,
@@ -1675,6 +1701,7 @@ private fun RadarImageMapInstance(
     isPlaying: Boolean,
     onRendererStatus: (RadarRendererStatus) -> Unit,
     mapStyle: RadarMapStyle,
+    coverageMaskDarkness: Float,
     cameraMemory: RadarCameraMemory,
     windGrid: WindGrid?,
     windArrowScale: Float,
@@ -1928,7 +1955,9 @@ private fun RadarImageMapInstance(
             baseMarkerView.visibility = View.GONE
             outgoing?.removeFrom(mapContainer)
             outgoing?.dispose()
-            map?.style?.let { coverageMask.reconcile(it, slot.session, mapStyle) }
+            map?.style?.let {
+                coverageMask.reconcile(it, slot.session, mapStyle, coverageMaskDarkness)
+            }
             windView.bringToFront()
             if (mapCover.visibility == View.VISIBLE) mapCover.bringToFront()
         }
@@ -2178,6 +2207,13 @@ private fun RadarImageMapInstance(
                 currentWindRenderObservation(token, count)
             }
             windView.update(displayedWindGrid, windRenderToken, windArrowScale)
+            // Preference-only changes replace the scrim source/layer in-place. They do not
+            // recreate the style, radar session, camera, timeline or ancillary data.
+            map?.style?.let {
+                coverageMask.reconcile(
+                    it, activeRadarSlot?.session, mapStyle, coverageMaskDarkness,
+                )
+            }
         },
         modifier = modifier,
     )
@@ -2200,7 +2236,9 @@ private fun RadarImageMapInstance(
                     if (RadarMapLabelContrastPolicy.paletteFor(mapStyle) != null) {
                         applyMapLabelContrast(it, mapStyle)
                     }
-                    coverageMask.reconcile(it, activeRadarSlot?.session, mapStyle)
+                    coverageMask.reconcile(
+                        it, activeRadarSlot?.session, mapStyle, coverageMaskDarkness,
+                    )
                 }
                 if (active && !teardown.isClosed && mapRevealGate.styleLoaded(styleGeneration)) {
                     satelliteBuffers.onStyleLoaded(

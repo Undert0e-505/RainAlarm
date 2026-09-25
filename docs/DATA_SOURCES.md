@@ -40,26 +40,91 @@ failure stay distinct from hard geographic capability.
   server timestamps and forecast flags, including forecast frames through +60.
 - No credentials or secrets are included. Requests use HTTPS and validate the
   fixed host, relative paths, media types, sizes, and raster dimensions.
-- For the UK/Ireland feed only, the map draws a style-aware translucent scrim
-  outside a versioned nominal radar-range envelope. Offline generation forms
-  geodesic circles for the 16 Met Office/Jersey sites at the documented 255 km
-  useful qualitative range, Dublin at 250.0 km and Shannon at 248.5 km (the
-  maximum corrected-reflectivity ranges encoded by their current CC BY 4.0 ODIM
-  HDF sweeps). Their union is intersected with the exact native projected UK
-  raster mesh and topology-preserving simplified with less than 1 km measured
-  error. The geometry is packaged with the app; map use makes no extra request.
-  It is nominal structural reach, not live availability, and does not model
-  terrain, beam blockage, temporary outage or changing composite inputs.
+- For all five regional feeds, the map draws a style-aware translucent scrim
+  outside a versioned nominal radar-range envelope. The UK runtime coordinate
+  payload remains byte-for-byte unchanged from v0.3.2:
+  it forms geodesic circles for the 16 Met
+  Office/Jersey sites at the documented 255 km useful qualitative range,
+  Dublin at 250.0 km and Shannon at 248.5 km (the maximum corrected-reflectivity
+  ranges encoded by their current CC BY 4.0 ODIM HDF sweeps). Their union is
+  intersected with the exact native projected UK raster mesh and
+  topology-preserving simplified with less than 1 km measured error.
+- The four continental envelopes are explicitly **nominal approximations**.
+  DTN's own WeatherPro documentation says its radar images are supplied by
+  national weather services, but DTN publishes neither a contributing-site list
+  nor a validity mask for any of these legacy composites. Their grayscale JPEG
+  uses black for both dry and unknown pixels, while the velocity JPEG has no
+  reliable validity sentinel. An exact per-frame boundary therefore cannot be
+  recovered without falsely classifying dry weather. No app mask is represented
+  as a DTN-published or live boundary.
+- Netherlands/Benelux (`rad_nl`) uses the eight contributors identified in
+  KNMI's 2025 real-time 3D composite description: Den Helder, Herwijnen,
+  Jabbeke, Houthalen-Helchteren, Wideumont, Borkum, Essen and Neuheilenbach.
+  Dutch 320 km, Belgian 300/200/250 km and German 180 km nominal maximum or
+  volume-scan ranges come from KNMI, RMI and DWD respectively.
+- Germany (`rad_de`) uses DWD's current 17-site operational network at 180 km.
+  DWD distinguishes its terrain-following near-surface precipitation scan
+  (150 km) from the volume scan (up to 180 km), and documents qualitative PG/PM
+  national/international composites as being assembled from local volume-scan
+  products. The app therefore uses 180 km as nominal qualitative-reflectivity
+  reach; it does not imply 180 km near-surface quantitative rainfall coverage.
+- France (`rad_fr`) uses the 26 active metropolitan/Corsican stations from the
+  31 stations listed in Météo-France's 18 March 2025 public-radar specification,
+  cross-checked against the OPERA database snapshot retrieved 2026-09-25. The
+  OPERA `maxrange` field is 256 km for each active station. The five listed
+  stations marked inactive in that snapshot (Noyal-Pontivy, Saint-Rémy,
+  Moucherotte, Vars and Mont Colombis) are deliberately excluded. Switzerland
+  (`rad_ch`) uses the five current sites and 246 km long-range scans published
+  in MeteoSwiss Technical Report 284 (2025).
+- No cross-border sites are inferred for Germany, France or Switzerland because
+  DTN does not publish composite membership. These deliberately narrower
+  national-network approximations may therefore understate a commercial
+  composite that incorporates exchanged neighbour data. Conversely, the
+  nominal maximum ranges do not model quality loss toward the edge.
+- For continental coordinates, active status and `maxrange`, the generator uses
+  the OPERA database fields `location`, `latitude`, `longitude`, `status` and
+  `maxrange` retrieved 2026-09-25. National-service publications establish
+  network membership and, except for France, the range. WGS84 site coordinates
+  are converted into one-degree-step geodesic circles, unioned in an area-local
+  equal-area projection, clipped against the exact 25-point-per-edge native
+  projected-raster mesh used by the renderer, and topology-preserving simplified
+  at 500 m. Generation rejects invalid geometry or measured Hausdorff error above
+  1 km; measured errors are packaged beside each geometry.
+- All five geometries are packaged with the app; map use makes no extra request.
+  They show nominal structural reach, not live availability, and do not model
+  terrain, beam blockage, temporary outage, range-dependent quality or changing
+  composite inputs.
+- Settings > Appearance exposes one persisted `Coverage mask darkness` strength
+  for Meteo vector masks and OPERA/RainViewer raster masks. `No mask` produces
+  zero scrim opacity, while `Dark` remains translucent. The 50% default produces
+  45%, 42% and 40% effective opacity on Dark, Slate and Light maps respectively;
+  the maximum produces 90%, 84% and 80%. Changing the value reconciles only
+  the mask source/layer in the current MapLibre style and does not recreate the
+  radar session, reload data, move the camera or reset the timeline.
 - Meteo JPEG black means both dry and unknown and its velocity JPEG has no
   reliable validity sentinel, so the mask never reacts to echo pixels. The
   interior is unchanged and radar, ancillary weather, marker, controls, notices
-  and attribution stay above the scrim. Other Meteo areas remain unmasked until
-  evidence-backed redistributable geometry exists. OPERA and RainViewer use the
+  and attribution stay above the scrim. OPERA and RainViewer use the
   separate current/published raster-mask rules documented below. A prior valid
   mask remains stable during a same-provider refresh.
 - UK/Jersey source acknowledgement: Contains public sector information licensed
   under the Open Government Licence v3.0. Met Éireann radar open data is
   credited under CC BY 4.0.
+- Netherlands/Benelux geometry provenance (retrieved 2026-09-25):
+  [KNMI contributor map](https://cdn.knmi.nl/system/data_center_publications/files/000/072/323/original/Meteorologica_Juni_2025_Radar.pdf),
+  [KNMI radar range](https://www.knmi.nl/kennis-en-datacentrum/achtergrond/neerslagradar-knmi-uitgebreide-toelichting),
+  [RMI radar ranges](https://www.meteo.be/nl/info/veelgestelde-vragen/radar/waarom-4-radars-in-belgie),
+  [DWD radar range](https://www.dwd.de/DE/presse/publikationen/wetterradar_pdf.pdf?__blob=publicationFile&v=5),
+  [DWD site coordinates](https://www.dwd.de/DE/derdwd/messnetz/atmosphaerenbeobachtung/_functions/HaeufigGesucht/koordinaten-radarverbund.pdf?__blob=publicationFile&v=5), and the
+  [EUMETNET OPERA database snapshot](https://www.eumetnet.eu/wp-content/themes/aeron-child/observations-programme/current-activities/opera/database/OPERA_Database/Data/OPERA_RADARS_DB_25092026.json).
+- Continental-mask common/provider provenance (retrieved 2026-09-25):
+  [DTN WeatherPro national-service radar statement](https://consumer.dtn.com/hc/en-gb/articles/204759702-What-kind-of-data-do-I-see-in-WeatherPro),
+  [DWD current network (RADKLIM Bulletin 04/2024)](https://www.dwd.de/DE/fachnutzer/wasserwirtschaft/radarniederschlag/radklim-bulletin/radklimbulletin2024download.pdf?__blob=publicationFile&v=3),
+  [DWD scan ranges](https://www.dwd.de/DE/presse/publikationen/wetterradar_pdf.pdf?__blob=publicationFile&v=5),
+  [DWD qualitative composite product basis](https://www.dwd.de/DE/leistungen/radarniederschlag/rn_info/download_niederschlagsbestimmung.pdf?__blob=publicationFile&v=4),
+  [Météo-France public radar stations, specification v1.2 dated 18 March 2025](https://donneespubliques.meteofrance.fr/client/document/descriptiftechnique_radar_donneespubliques_v1-2_20250318_404.pdf),
+  [MeteoSwiss current five-site network and 246 km scan range, Technical Report 284](https://www.meteoswiss.admin.ch/dam/jcr%3Abb6c4226-fd02-48df-a63b-cd2485eb1f72/technical-report-284.pdf),
+  and the [current OPERA radar database snapshot](https://www.eumetnet.eu/wp-content/themes/aeron-child/observations-programme/current-activities/opera/database/OPERA_Database/Data/OPERA_RADARS_DB_25092026.json).
 - This is an undocumented availability-dependent application feed. Rain Alarm
   treats coverage, parse, network, or image failures as a reason to try OPERA
   and then RainViewer for that screen or worker session and explains the

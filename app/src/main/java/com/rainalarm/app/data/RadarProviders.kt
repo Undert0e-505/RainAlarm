@@ -157,6 +157,7 @@ class RadarSettingsRepository(private val context: Context) {
     private val graphAppearanceKey = stringPreferencesKey("now_graph_appearance")
     private val mapLayerKey = stringPreferencesKey("map_layer")
     private val windArrowScaleKey = floatPreferencesKey("wind_arrow_scale")
+    private val coverageMaskDarknessKey = floatPreferencesKey("coverage_mask_darkness")
     private val nowMetricsKey = stringPreferencesKey("now_weather_metrics")
     private val showLikelySnowKey = booleanPreferencesKey("rainviewer_show_likely_snow")
 
@@ -195,6 +196,10 @@ class RadarSettingsRepository(private val context: Context) {
     val windArrowScale: Flow<Float> = context.radarSettingsDataStore.data
         .catch { failure -> if (failure is IOException) emit(emptyPreferences()) else throw failure }
         .map { WindArrowSizePreference.decode(it[windArrowScaleKey]) }
+
+    val coverageMaskDarkness: Flow<Float> = context.radarSettingsDataStore.data
+        .catch { failure -> if (failure is IOException) emit(emptyPreferences()) else throw failure }
+        .map { CoverageMaskDarknessPreference.decode(it[coverageMaskDarknessKey]) }
 
     val nowMetrics: Flow<Set<NowWeatherMetric>> = context.radarSettingsDataStore.data
         .catch { failure -> if (failure is IOException) emit(emptyPreferences()) else throw failure }
@@ -244,6 +249,12 @@ class RadarSettingsRepository(private val context: Context) {
     suspend fun setWindArrowScale(scale: Float) {
         context.radarSettingsDataStore.edit {
             it[windArrowScaleKey] = WindArrowSizePreference.decode(scale)
+        }
+    }
+
+    suspend fun setCoverageMaskDarkness(darkness: Float) {
+        context.radarSettingsDataStore.edit {
+            it[coverageMaskDarknessKey] = CoverageMaskDarknessPreference.decode(darkness)
         }
     }
 

@@ -349,7 +349,9 @@ class WeatherUiWiringTest {
         assertTrue(settings.contains("Regional radar: MeteoGroup/DTN."))
         assertTrue(settings.contains("Contains public sector information licensed under the Open Government Licence v3.0"))
         assertTrue(settings.contains("Met Éireann radar open data is CC BY 4.0"))
-        assertTrue(settings.contains("The fixed envelope is not live radar availability."))
+        assertTrue(settings.contains("Fixed nominal coverage envelopes use national radar-network information"))
+        assertTrue(settings.contains("Météo-France and MeteoSwiss, cross-checked with EUMETNET"))
+        assertTrue(settings.contains("approximate structural reach, not DTN-published masks or live availability"))
         assertTrue(settings.contains("European open radar: EUMETNET OPERA Open Radar Data (CC BY 4.0)."))
         assertTrue(settings.contains("Worldwide open radar: RainViewer."))
         assertTrue(settings.contains("Open-Meteo (CC BY 4.0)"))
@@ -816,6 +818,36 @@ class WeatherUiWiringTest {
         assertTrue(repository.contains("mode.takeUnless { it == AppearanceMode.SLATE } ?: AppearanceMode.DARK"))
     }
 
+    @Test fun `coverage mask darkness persists previews live and only reconciles the shared scrim`() {
+        val settings = source("SettingsScreen.kt")
+        val repository = source("../data/RadarProviders.kt")
+        val main = source("../MainActivity.kt")
+        val radarScreen = source("RadarScreen.kt")
+        val map = source("RadarImageMap.kt")
+
+        assertTrue(settings.contains("Coverage mask darkness"))
+        assertTrue(settings.contains("Darkens areas outside known radar coverage for every provider."))
+        assertTrue(settings.contains("CoverageMaskDarknessPreview(mapAppearance, previewDarkness)"))
+        assertTrue(settings.contains("contentDescription = \"Coverage mask darkness preview\""))
+        assertTrue(settings.contains("Text(\"No mask\""))
+        assertTrue(settings.contains("Text(\"Dark (\$maximumOpacityPercent%)\""))
+        assertTrue(settings.contains("steps = 9"))
+        assertTrue(settings.contains("Nine internal stops plus the endpoints gives 0, 10, ... 100%."))
+        assertTrue(settings.contains("selectCoverageMaskDarkness(previewDarkness)"))
+
+        assertTrue(repository.contains("floatPreferencesKey(\"coverage_mask_darkness\")"))
+        assertTrue(repository.contains("CoverageMaskDarknessPreference.decode(it[coverageMaskDarknessKey])"))
+        assertTrue(repository.contains("it[coverageMaskDarknessKey] = CoverageMaskDarknessPreference.decode(darkness)"))
+        assertTrue(main.contains("viewModel.coverageMaskDarkness.collectAsStateWithLifecycle()"))
+        assertTrue(main.contains("selectCoverageMaskDarkness = viewModel::setCoverageMaskDarkness"))
+        assertTrue(radarScreen.contains("coverageMaskDarkness = coverageMaskDarkness"))
+
+        assertTrue(map.contains("val desiredRadarSlot = remember(session)"))
+        assertFalse(map.contains("remember(session, coverageMaskDarkness)"))
+        assertTrue(map.contains("coverageMask.reconcile("))
+        assertTrue(map.contains("do not\n            // recreate the style, radar session, camera, timeline or ancillary data"))
+    }
+
     @Test fun `Slate card palette uses the shared base and dark high contrast scheme`() {
         val appearance = source("RainAlarmAppearance.kt")
         assertTrue(appearance.contains("fun materialScheme(): ColorScheme = if (usesDarkMaterialScheme) darkColorScheme("))
@@ -882,10 +914,11 @@ class WeatherUiWiringTest {
     @Test fun `dynamic provider coverage uses one raster compositor and cleans every resource`() {
         val map = source("RadarImageMap.kt")
         val addRaster = map.substring(
-            map.indexOf("private fun addRaster(style:"),
+            map.indexOf("private fun addRaster("),
             map.indexOf("private fun tintUnknownRaster"),
         )
         assertTrue(addRaster.contains("RadarCoverageRasterBandPolicy.outsideBands"))
+        assertTrue(addRaster.contains("RadarCoverageMaskPolicy.palette(mapStyle, darkness)"))
         assertTrue(addRaster.contains("addRasterResource("))
         assertTrue(addRaster.contains("PropertyFactory.rasterResampling(\"nearest\")"))
         assertFalse(addRaster.contains("addVector("))

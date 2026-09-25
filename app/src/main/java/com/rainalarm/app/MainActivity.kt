@@ -125,6 +125,7 @@ import com.rainalarm.app.data.RadarProviderSelection
 import com.rainalarm.app.data.RadarProviderNoticePolicy
 import com.rainalarm.app.data.RadarProviderNoticeDeduplicator
 import com.rainalarm.app.data.RadarSettingsRepository
+import com.rainalarm.app.data.CoverageMaskDarknessPreference
 import com.rainalarm.app.data.RadarMapLayer
 import com.rainalarm.app.data.RadarLoadDeadline
 import com.rainalarm.app.data.NowWeatherMetric
@@ -405,6 +406,9 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     )
     val windArrowScale = radarSettings.windArrowScale.stateIn(
         viewModelScope, SharingStarted.Eagerly, com.rainalarm.app.data.WindArrowSizePreference.DEFAULT,
+    )
+    val coverageMaskDarkness = radarSettings.coverageMaskDarkness.stateIn(
+        viewModelScope, SharingStarted.Eagerly, CoverageMaskDarknessPreference.DEFAULT,
     )
     val visibleWeatherMetrics = radarSettings.nowMetrics.stateIn(
         viewModelScope, SharingStarted.Eagerly, NowWeatherMetric.entries.toSet(),
@@ -1096,6 +1100,10 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch { radarSettings.setWindArrowScale(scale) }
     }
 
+    fun setCoverageMaskDarkness(darkness: Float) {
+        viewModelScope.launch { radarSettings.setCoverageMaskDarkness(darkness) }
+    }
+
     fun setWeatherMetricVisible(metric: NowWeatherMetric, visible: Boolean) {
         viewModelScope.launch { radarSettings.setNowMetricVisible(metric, visible) }
     }
@@ -1218,6 +1226,7 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
     val graphAppearance by viewModel.graphAppearance.collectAsStateWithLifecycle()
     val enabledMapLayers by viewModel.enabledMapLayers.collectAsStateWithLifecycle()
     val windArrowScale by viewModel.windArrowScale.collectAsStateWithLifecycle()
+    val coverageMaskDarkness by viewModel.coverageMaskDarkness.collectAsStateWithLifecycle()
     val visibleWeatherMetrics by viewModel.visibleWeatherMetrics.collectAsStateWithLifecycle()
     val selectedWeather by viewModel.currentWeather.collectAsStateWithLifecycle()
     val pointRefreshCompletion by viewModel.pointRefreshCompletion.collectAsStateWithLifecycle()
@@ -1307,6 +1316,7 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
                             places = placesState,
                             playbackSpeed = radarPlaybackSpeed,
                             mapStyle = mapAppearance.resolveMapStyle(systemDark),
+                            coverageMaskDarkness = coverageMaskDarkness,
                             saveAndSelect = viewModel::saveAndSelect,
                             locationState = locationState,
                             appForeground = appForeground,
@@ -1366,6 +1376,8 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
                             enabledMapLayers = enabledMapLayers,
                             windArrowScale = windArrowScale,
                             selectWindArrowScale = viewModel::setWindArrowScale,
+                            coverageMaskDarkness = coverageMaskDarkness,
+                            selectCoverageMaskDarkness = viewModel::setCoverageMaskDarkness,
                             savedPlaces = placesState,
                             defaultStartupId = defaultStartupId,
                             setDefaultStartupId = viewModel::setDefaultStartupPlace,

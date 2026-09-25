@@ -15,6 +15,10 @@ import com.rainalarm.app.BuildConfig
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -25,6 +29,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.draw.clip
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -61,12 +66,14 @@ import com.rainalarm.app.domain.GeoPoint
 import com.rainalarm.app.data.RadarPlaybackSpeed
 import com.rainalarm.app.data.RadarMapLayer
 import com.rainalarm.app.data.WindArrowSizePreference
+import com.rainalarm.app.data.CoverageMaskDarknessPreference
 import com.rainalarm.app.data.NowCardAppearance
 import com.rainalarm.app.data.PlaceCollection
 import com.rainalarm.app.data.CURRENT_LOCATION_ID
 import com.rainalarm.app.data.AppearanceMode
 import com.rainalarm.app.data.NowWeatherMetric
 import com.rainalarm.app.alerts.AlertSnapshot
+import kotlin.math.roundToInt
 
 private val SettingsSurface: Color @Composable get() = LocalRainAlarmPalette.current.surface
 private val SettingsSecondary: Color @Composable get() = LocalRainAlarmPalette.current.muted
@@ -105,6 +112,8 @@ fun SettingsScreen(
     enabledMapLayers: Set<RadarMapLayer>,
     windArrowScale: Float,
     selectWindArrowScale: (Float) -> Unit,
+    coverageMaskDarkness: Float,
+    selectCoverageMaskDarkness: (Float) -> Unit,
     savedPlaces: PlaceCollection,
     defaultStartupId: String,
     setDefaultStartupId: (String) -> Unit,
@@ -304,6 +313,46 @@ fun SettingsScreen(
             AppearanceChoice("App", appAppearance, AppearanceGridPolicy.appColumns, selectAppAppearance)
             HorizontalDivider(color = SettingsBorder)
             AppearanceChoice("Map", mapAppearance, AppearanceGridPolicy.mapColumns, selectMapAppearance)
+            HorizontalDivider(color = SettingsBorder)
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                var previewDarkness by remember(coverageMaskDarkness) {
+                    mutableStateOf(CoverageMaskDarknessPreference.decode(coverageMaskDarkness))
+                }
+                val previewStyle = mapAppearance.resolveMapStyle(isSystemInDarkTheme())
+                val maximumOpacityPercent = (RadarCoverageMaskPolicy.palette(
+                    previewStyle, CoverageMaskDarknessPreference.MAX,
+                ).second * 100).roundToInt()
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Coverage mask darkness", fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f))
+                    Text("${(previewDarkness * 100).roundToInt()}%", color = SettingsSecondary,
+                        fontSize = 13.sp)
+                }
+                Text(
+                    "Darkens areas outside known radar coverage for every provider.",
+                    color = SettingsSecondary,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(top = 3.dp),
+                )
+                CoverageMaskDarknessPreview(mapAppearance, previewDarkness)
+                Slider(
+                    value = previewDarkness,
+                    onValueChange = {
+                        previewDarkness = CoverageMaskDarknessPreference.decode(it)
+                        selectCoverageMaskDarkness(previewDarkness)
+                    },
+                    valueRange = CoverageMaskDarknessPreference.MIN..CoverageMaskDarknessPreference.MAX,
+                    // Nine internal stops plus the endpoints gives 0, 10, ... 100%.
+                    steps = 9,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(Modifier.fillMaxWidth()) {
+                    Text("No mask", color = SettingsSecondary, fontSize = 12.sp,
+                        modifier = Modifier.weight(1f))
+                    Text("Dark ($maximumOpacityPercent%)", color = SettingsSecondary,
+                        fontSize = 12.sp)
+                }
+            }
         }
         Spacer(Modifier.height(12.dp))
         Card(colors = CardDefaults.cardColors(containerColor = SettingsSurface),
@@ -324,7 +373,7 @@ fun SettingsScreen(
             Column(Modifier.padding(20.dp)) {
                 Text("Independent rain nowcasting", fontWeight = FontWeight.SemiBold)
                 Text(
-                    "Regional radar: MeteoGroup/DTN. Its UK/Ireland nominal coverage geometry uses Met Office radar-site information: Contains public sector information licensed under the Open Government Licence v3.0; Met Éireann radar open data is CC BY 4.0. The fixed envelope is not live radar availability. European open radar: EUMETNET OPERA Open Radar Data (CC BY 4.0). Worldwide open radar: RainViewer. OPERA and RainViewer future frames are app-labelled motion estimates, not provider forecasts. Wind and selected-place model weather: Open-Meteo (CC BY 4.0). Town search: Open-Meteo/GeoNames. Named-place search: Photon using © OpenStreetMap contributors data, with geocoded notable-place fallback from Wikipedia/Wikimedia. UK postcode lookup: postcodes.io using OS OpenData; contains Ordnance Survey, Crown, Royal Mail and National Statistics database rights. Satellite Lightning and daytime/nighttime Clouds imagery: © EUMETSAT (CC BY 4.0). Clouds show cloud structures or fog / low cloud, not confirmed surface fog. Maps: © OpenStreetMap contributors via OpenFreeMap/OpenMapTiles.",
+                    "Regional radar: MeteoGroup/DTN. Fixed nominal coverage envelopes use national radar-network information from the Met Office and Met Éireann, KNMI, RMI, DWD, Météo-France and MeteoSwiss, cross-checked with EUMETNET. Contains public sector information licensed under the Open Government Licence v3.0; Met Éireann radar open data is CC BY 4.0. These envelopes approximate structural reach, not DTN-published masks or live availability. European open radar: EUMETNET OPERA Open Radar Data (CC BY 4.0). Worldwide open radar: RainViewer. OPERA and RainViewer future frames are app-labelled motion estimates, not provider forecasts. Wind and selected-place model weather: Open-Meteo (CC BY 4.0). Town search: Open-Meteo/GeoNames. Named-place search: Photon using © OpenStreetMap contributors data, with geocoded notable-place fallback from Wikipedia/Wikimedia. UK postcode lookup: postcodes.io using OS OpenData; contains Ordnance Survey, Crown, Royal Mail and National Statistics database rights. Satellite Lightning and daytime/nighttime Clouds imagery: © EUMETSAT (CC BY 4.0). Clouds show cloud structures or fog / low cloud, not confirmed surface fog. Maps: © OpenStreetMap contributors via OpenFreeMap/OpenMapTiles.",
                     color = SettingsSecondary,
                     fontSize = 13.sp,
                     lineHeight = 19.sp,
@@ -375,6 +424,52 @@ private fun WindArrowPreview(scale: Float) {
             cap = StrokeCap.Round)
         drawLine(colour, end, Offset(end.x + half, end.y + back), strokeWidth = stroke,
             cap = StrokeCap.Round)
+    }
+}
+
+@Composable
+private fun CoverageMaskDarknessPreview(mapAppearance: AppearanceMode, darkness: Float) {
+    val style = mapAppearance.resolveMapStyle(isSystemInDarkTheme())
+    val (scrimArgb, opacity) = RadarCoverageMaskPolicy.palette(style, darkness)
+    val (base, mapDetail) = when (style) {
+        com.rainalarm.app.data.RadarMapStyle.DARK -> Color(0xFF222936) to Color(0xFF708096)
+        com.rainalarm.app.data.RadarMapStyle.SLATE -> Color(0xFF45516E) to Color(0xFFA9B4C8)
+        com.rainalarm.app.data.RadarMapStyle.LIGHT -> Color(0xFFE8EDF2) to Color(0xFF8795A3)
+    }
+    val shape = RoundedCornerShape(8.dp)
+    Row(
+        Modifier.fillMaxWidth().padding(top = 9.dp).height(28.dp)
+            .clip(shape).border(1.dp, SettingsBorder, shape)
+            .semantics { contentDescription = "Coverage mask darkness preview" },
+    ) {
+        listOf(false, true).forEach { masked ->
+            Box(Modifier.weight(1f).fillMaxSize().background(base)) {
+                Canvas(Modifier.fillMaxSize()) {
+                    drawLine(
+                        mapDetail,
+                        Offset(0f, size.height * 0.75f),
+                        Offset(size.width, size.height * 0.28f),
+                        strokeWidth = 2f,
+                        cap = StrokeCap.Round,
+                    )
+                    drawLine(
+                        mapDetail.copy(alpha = 0.75f),
+                        Offset(size.width * 0.18f, size.height),
+                        Offset(size.width * 0.64f, 0f),
+                        strokeWidth = 1.5f,
+                        cap = StrokeCap.Round,
+                    )
+                }
+                if (masked && opacity > 0f) Box(
+                    Modifier.fillMaxSize().background(Color(scrimArgb).copy(alpha = opacity)),
+                )
+            }
+        }
+    }
+    Row(Modifier.fillMaxWidth().padding(top = 3.dp)) {
+        Text("Covered", color = SettingsSecondary, fontSize = 11.sp,
+            modifier = Modifier.weight(1f))
+        Text("Outside", color = SettingsSecondary, fontSize = 11.sp)
     }
 }
 
