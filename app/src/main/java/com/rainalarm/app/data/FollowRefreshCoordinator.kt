@@ -118,7 +118,23 @@ class FollowRefreshCoordinator {
         }
     }
 
-    fun pause() = states.clear()
+    /**
+     * Suspend automatic checks without forgetting their publication/backoff clocks. Travel may be
+     * toggled off and on without making an unchanged, already-checked source immediately due
+     * again. A check interrupted by the suspension is retried after the normal first backoff;
+     * newer source metadata observed while suspended still supersedes that schedule on resume.
+     */
+    fun pause(nowEpochSeconds: Long) {
+        states.values.forEach { state ->
+            if (state.inFlight != null) {
+                state.inFlight = null
+                state.nextDueEpochSeconds = maxOf(
+                    state.nextDueEpochSeconds,
+                    nowEpochSeconds + ProviderCadencePolicy.retryBackoffSeconds.first(),
+                )
+            }
+        }
+    }
     fun isInFlight(stream: FollowRefreshStream): Boolean = states[stream]?.inFlight != null
     fun nextDue(stream: FollowRefreshStream): Long? = states[stream]?.nextDueEpochSeconds
 }

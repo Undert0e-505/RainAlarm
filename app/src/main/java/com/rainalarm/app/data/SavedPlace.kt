@@ -2,6 +2,10 @@ package com.rainalarm.app.data
 
 import kotlinx.serialization.Serializable
 import java.util.Locale
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 const val CURRENT_LOCATION_ID = "current-location"
 const val LONDON_DEFAULT_ID = "london-default"
@@ -69,6 +73,43 @@ object LiveLocationSavePolicy {
     }
 }
 
+object PlaceCoordinatePolicy {
+    const val DUPLICATE_DISTANCE_METRES = 100.0
+
+    fun distanceMetres(first: SavedPlace, second: SavedPlace): Double {
+        val radius = 6_371_000.0
+        val lat1 = Math.toRadians(first.latitude)
+        val lat2 = Math.toRadians(second.latitude)
+        val deltaLat = lat2 - lat1
+        val deltaLon = Math.toRadians(second.longitude - first.longitude)
+        val a = sin(deltaLat / 2) * sin(deltaLat / 2) +
+            cos(lat1) * cos(lat2) * sin(deltaLon / 2) * sin(deltaLon / 2)
+        return radius * 2 * atan2(sqrt(a), sqrt(1 - a))
+    }
+
+    fun nearDuplicate(first: SavedPlace, second: SavedPlace): Boolean =
+        !first.isCurrentLocation && !second.isCurrentLocation &&
+            distanceMetres(first, second) <= DUPLICATE_DISTANCE_METRES
+}
+
+/** Resolves the saved row which represents the current live coordinates without leaving live mode. */
+object LiveLocationMatchPolicy {
+    fun matchingPlace(
+        places: List<SavedPlace>,
+        liveSnapshot: SavedPlace?,
+        preferredId: String?,
+    ): SavedPlace? {
+        val snapshot = liveSnapshot ?: return null
+        val matches = places.filter { PlaceCoordinatePolicy.nearDuplicate(it, snapshot) }
+        return matches.firstOrNull { it.id == preferredId } ?: matches.firstOrNull()
+    }
+}
+
+/** Duplicate-save feedback is contextual and deliberately short-lived, never a screen footer. */
+object PlaceDuplicateFeedbackPolicy {
+    const val DURATION_MILLIS = 2_800L
+}
+
 @Serializable
 data class PlaceCollection(
     val version: Int = PLACE_STORE_VERSION,
@@ -95,8 +136,8 @@ object PlaceCollectionRules {
     fun resolveDefaultId(collection: PlaceCollection, requestedId: String?): String {
         val normalized = normalize(collection)
         return when {
-            requestedId == CURRENT_LOCATION_ID -> CURRENT_LOCATION_ID
             requestedId != null && normalized.places.any { it.id == requestedId } -> requestedId
+            normalized.places.any { it.id == normalized.selectedId } -> normalized.selectedId
             normalized.places.any { it.id == DEFAULT_PLACE.id } -> DEFAULT_PLACE.id
             else -> normalized.places.firstOrNull()?.id ?: CURRENT_LOCATION_ID
         }
@@ -157,10 +198,7 @@ object PlaceCollectionRules {
             return if (select) normalized.copy(selectedId = CURRENT_LOCATION_ID) else normalized
         }
         val duplicate = normalized.places.firstOrNull {
-            it.id == incoming.id ||
-                (!incoming.isCurrentLocation &&
-                    kotlin.math.abs(it.latitude - incoming.latitude) < 0.00001 &&
-                    kotlin.math.abs(it.longitude - incoming.longitude) < 0.00001)
+            it.id == incoming.id || PlaceCoordinatePolicy.nearDuplicate(it, incoming)
         }
         val place = if (duplicate == null) incoming else incoming.copy(
             id = duplicate.id,

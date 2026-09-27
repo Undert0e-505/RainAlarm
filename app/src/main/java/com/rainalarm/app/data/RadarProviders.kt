@@ -155,6 +155,15 @@ class RadarSettingsRepository(private val context: Context) {
     private val mapAppearanceKey = stringPreferencesKey("map_appearance")
     private val compassAppearanceKey = stringPreferencesKey("now_compass_appearance")
     private val graphAppearanceKey = stringPreferencesKey("now_graph_appearance")
+    private val automaticAppearanceKey = booleanPreferencesKey("automatic_day_night_appearance")
+    private val dayAppAppearanceKey = stringPreferencesKey("appearance_day_app")
+    private val dayMapAppearanceKey = stringPreferencesKey("appearance_day_map")
+    private val dayCompassAppearanceKey = stringPreferencesKey("appearance_day_compass")
+    private val dayGraphAppearanceKey = stringPreferencesKey("appearance_day_graph")
+    private val nightAppAppearanceKey = stringPreferencesKey("appearance_night_app")
+    private val nightMapAppearanceKey = stringPreferencesKey("appearance_night_map")
+    private val nightCompassAppearanceKey = stringPreferencesKey("appearance_night_compass")
+    private val nightGraphAppearanceKey = stringPreferencesKey("appearance_night_graph")
     private val mapLayerKey = stringPreferencesKey("map_layer")
     private val windArrowScaleKey = floatPreferencesKey("wind_arrow_scale")
     private val coverageMaskDarknessKey = floatPreferencesKey("coverage_mask_darkness")
@@ -188,6 +197,32 @@ class RadarSettingsRepository(private val context: Context) {
     val graphAppearance: Flow<NowCardAppearance> = context.radarSettingsDataStore.data
         .catch { failure -> if (failure is IOException) emit(emptyPreferences()) else throw failure }
         .map { NowCardAppearance.decode(it[graphAppearanceKey]) }
+
+    val automaticAppearance: Flow<AutomaticAppearancePreferences> = context.radarSettingsDataStore.data
+        .catch { failure -> if (failure is IOException) emit(emptyPreferences()) else throw failure }
+        .map { preferences ->
+            val hasManualAppearance = listOf(
+                appAppearanceKey, mapAppearanceKey, compassAppearanceKey, graphAppearanceKey,
+            ).any(preferences::contains)
+            fun fallback(default: AppearanceProfile): AppearanceProfile =
+                if (!hasManualAppearance) default else AppearanceProfilePreference.migrationFallback(
+                    preferences[appAppearanceKey], preferences[mapAppearanceKey],
+                    preferences[compassAppearanceKey], preferences[graphAppearanceKey], default,
+                )
+            AutomaticAppearancePreferences(
+                enabled = preferences[automaticAppearanceKey] ?: false,
+                day = AppearanceProfilePreference.decode(
+                    preferences[dayAppAppearanceKey], preferences[dayMapAppearanceKey],
+                    preferences[dayCompassAppearanceKey], preferences[dayGraphAppearanceKey],
+                    fallback(AppearanceProfile.DAY_DEFAULT),
+                ),
+                night = AppearanceProfilePreference.decode(
+                    preferences[nightAppAppearanceKey], preferences[nightMapAppearanceKey],
+                    preferences[nightCompassAppearanceKey], preferences[nightGraphAppearanceKey],
+                    fallback(AppearanceProfile.NIGHT_DEFAULT),
+                ),
+            )
+        }
 
     val mapLayers: Flow<Set<RadarMapLayer>> = context.radarSettingsDataStore.data
         .catch { failure -> if (failure is IOException) emit(emptyPreferences()) else throw failure }
@@ -237,6 +272,24 @@ class RadarSettingsRepository(private val context: Context) {
         context.radarSettingsDataStore.edit { it[graphAppearanceKey] = mode.name }
     }
 
+    suspend fun setAutomaticAppearanceEnabled(enabled: Boolean) {
+        context.radarSettingsDataStore.edit { it[automaticAppearanceKey] = enabled }
+    }
+
+    suspend fun setAppearanceProfile(phase: AppearancePhase, profile: AppearanceProfile) {
+        context.radarSettingsDataStore.edit { preferences ->
+            val keys = if (phase == AppearancePhase.DAY) {
+                arrayOf(dayAppAppearanceKey, dayMapAppearanceKey, dayCompassAppearanceKey, dayGraphAppearanceKey)
+            } else {
+                arrayOf(nightAppAppearanceKey, nightMapAppearanceKey, nightCompassAppearanceKey, nightGraphAppearanceKey)
+            }
+            preferences[keys[0]] = profile.app.name
+            preferences[keys[1]] = profile.map.name
+            preferences[keys[2]] = profile.compass.name
+            preferences[keys[3]] = profile.graph.name
+        }
+    }
+
     suspend fun setMapLayerEnabled(layer: RadarMapLayer, enabled: Boolean) {
         context.radarSettingsDataStore.edit { preferences ->
             val updated = RadarMapLayerPreference.toggled(
@@ -269,6 +322,7 @@ class RadarSettingsRepository(private val context: Context) {
     suspend fun setShowLikelySnow(enabled: Boolean) {
         context.radarSettingsDataStore.edit { it[showLikelySnowKey] = enabled }
     }
+
 }
 
 object RadarProviderPreference {

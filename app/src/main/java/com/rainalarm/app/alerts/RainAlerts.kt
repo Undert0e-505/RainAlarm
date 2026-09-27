@@ -56,6 +56,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.Date
 import kotlin.math.roundToInt
 import java.util.concurrent.TimeUnit
 
@@ -71,7 +72,8 @@ private const val FORECAST_END_GRACE_SECONDS = 10 * 60L
 data class AlertSnapshot(
     val enabled: Boolean = false,
     val lastCheckedEpochSeconds: Long = 0,
-    val status: String = "Off",
+    /** Localized persisted status; empty only while the repository snapshot is starting. */
+    val status: String = "",
 )
 
 sealed interface RadarAlertEvaluation {
@@ -314,6 +316,38 @@ internal object RainAlertNotificationText {
         } else summary
         return Content(title, summary, detail)
     }
+
+    fun forApproaching(
+        context: Context,
+        placeName: String,
+        approaching: RadarAlertEvaluation.Approaching,
+        evaluatedAtEpochSeconds: Long,
+    ): Content {
+        val start = approaching.expectedStartEpochSeconds
+            ?: evaluatedAtEpochSeconds + approaching.etaStartMinutes * 60L
+        val clock = android.text.format.DateFormat.getTimeFormat(context)
+            .format(Date(start * 1_000L))
+        val title = context.getString(
+            if (approaching.likelySnow) R.string.notification_snow_title
+            else R.string.notification_rain_title,
+            placeName,
+        )
+        val summary = context.resources.getQuantityString(
+            R.plurals.notification_eta_plural,
+            approaching.etaStartMinutes,
+            approaching.etaStartMinutes,
+            clock,
+        )
+        val confirmed = approaching.confirmedDurationMinutes?.takeIf { it > 0 }
+        val peak = approaching.confirmedPeakIntensity?.takeIf { it.isFinite() && it in 0f..1f }
+        val detail = if (confirmed != null && peak != null) context.getString(
+            R.string.notification_detail,
+            summary,
+            confirmed,
+            (peak * 100).roundToInt(),
+        ) else summary
+        return Content(title, summary, detail)
+    }
 }
 
 object RainAlertSelectionGuard {
@@ -339,21 +373,36 @@ class RainAlertPreferences(private val context: Context) {
     fun snapshot(): AlertSnapshot = AlertSnapshot(
         enabled = preferences.getBoolean("enabled", false),
         lastCheckedEpochSeconds = preferences.getLong("last_checked", 0),
-        status = preferences.getString("status", "Off") ?: "Off",
+        status = preferences.getString("status", context.getString(R.string.notification_status_off))
+            ?: context.getString(R.string.notification_status_off),
     )
 
     fun setEnabled(enabled: Boolean) {
         preferences.edit {
             putBoolean("enabled", enabled)
-            putString("status", if (enabled) "Scheduled" else "Off")
+            putString("status", context.getString(
+                if (enabled) R.string.notification_status_scheduled else R.string.notification_status_off,
+            ))
         }
     }
 
     fun markPermissionNeeded() {
         preferences.edit {
             putBoolean("enabled", false)
-            putString("status", "Notification permission needed")
+            putString("status", context.getString(R.string.notification_permission_needed))
         }
+    }
+
+    /** Replace persisted display text after an app-locale change; the next worker check adds detail. */
+    fun relocalizeStatus(notificationPermissionGranted: Boolean) {
+        val enabled = preferences.getBoolean("enabled", false)
+        val status = when {
+            enabled -> R.string.notification_status_scheduled
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !notificationPermissionGranted ->
+                R.string.notification_permission_needed
+            else -> R.string.notification_status_off
+        }
+        preferences.edit { putString("status", context.getString(status)) }
     }
 
     fun memory(placeId: String): AlertMemory {
@@ -465,7 +514,8 @@ class RainApproachingWorker(
             ) != PackageManager.PERMISSION_GRANTED
         ) {
             alertPreferences.setEnabled(false)
-            alertPreferences.record(now.epochSecond, "Off: notification permission is unavailable")
+            alertPreferences.record(now.epochSecond,
+                applicationContext.getString(R.string.notification_status_permission_unavailable))
             return Result.success()
         }
         val placePreferences = PlacePreferences(applicationContext)
@@ -475,7 +525,7 @@ class RainApproachingWorker(
         else originalCollection.selected
         if (place == null) {
             alertPreferences.record(now.epochSecond,
-                "Unavailable: current location needs a fresh foreground fix; saved places work in background")
+                applicationContext.getString(R.string.notification_status_location_unavailable))
             return Result.success()
         }
         var session: com.rainalarm.app.data.RadarSession? = null
@@ -527,22 +577,35 @@ class RainApproachingWorker(
                         notifyApproaching(place, evaluation, evaluatedAt.epochSecond)
                     }
                     if (evaluation.likelySnow) {
-                        "${place.name}: snow likely in ${evaluation.etaStartMinutes} min"
-                    } else "${place.name}: rain may start in ${evaluation.etaStartMinutes} min"
+                        applicationContext.getString(
+                            R.string.notification_status_snow,
+                            place.name,
+                            evaluation.etaStartMinutes,
+                        )
+                    } else applicationContext.getString(
+                        R.string.notification_status_rain,
+                        place.name,
+                        evaluation.etaStartMinutes,
+                    )
                 }
-                RadarAlertEvaluation.WetNow -> "Rain detected at ${place.name} now"
-                RadarAlertEvaluation.Clear -> "${place.name}: dry; no confident rain in the next 60 min"
-                RadarAlertEvaluation.Unknown -> "${place.name}: no confident radar nowcast"
+                RadarAlertEvaluation.WetNow -> applicationContext.getString(
+                    R.string.notification_status_wet, place.name)
+                RadarAlertEvaluation.Clear -> applicationContext.getString(
+                    R.string.notification_status_clear, place.name)
+                RadarAlertEvaluation.Unknown -> applicationContext.getString(
+                    R.string.notification_status_unknown, place.name)
             }
             alertPreferences.record(evaluatedAt.epochSecond, status, selectedId, decision.nextMemory)
             Result.success()
         } catch (_: IOException) {
             if (placePreferences.collection.first().selectedId == selectedId)
-                alertPreferences.record(now.epochSecond, "Unavailable: network error")
+                alertPreferences.record(now.epochSecond,
+                    applicationContext.getString(R.string.notification_status_network))
             Result.retry()
         } catch (_: Exception) {
             if (placePreferences.collection.first().selectedId == selectedId)
-                alertPreferences.record(now.epochSecond, "Unavailable: radar could not be analysed")
+                alertPreferences.record(now.epochSecond,
+                    applicationContext.getString(R.string.notification_status_radar))
             Result.success()
         } finally {
             session?.release()
@@ -551,7 +614,12 @@ class RainApproachingWorker(
 
     private fun notifyApproaching(place: SavedPlace, approaching: RadarAlertEvaluation.Approaching, evaluatedAt: Long) {
         createNotificationChannel(applicationContext)
-        val content = RainAlertNotificationText.forApproaching(place.name, approaching, evaluatedAt)
+        val content = RainAlertNotificationText.forApproaching(
+            applicationContext,
+            place.name,
+            approaching,
+            evaluatedAt,
+        )
         val intent = Intent(applicationContext, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         val pendingIntent = PendingIntent.getActivity(
@@ -598,10 +666,10 @@ fun createNotificationChannel(context: Context) {
     val manager = context.getSystemService(NotificationManager::class.java)
     val channel = NotificationChannel(
         CHANNEL_ID,
-        "Rain approaching",
+        context.getString(R.string.notification_channel_name),
         NotificationManager.IMPORTANCE_DEFAULT,
     ).apply {
-        description = "Low-noise alerts when radar motion suggests rain is approaching"
+        description = context.getString(R.string.notification_channel_description)
     }
     manager.createNotificationChannel(channel)
 }

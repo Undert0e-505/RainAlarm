@@ -58,6 +58,14 @@ internal object RadarMapNoticePolicy {
             maximumNoticeHeightDp + 4
 }
 
+/** A deliberate Travel activation is informational; the mode itself is not a persistent status. */
+internal object TravelActivationNoticePolicy {
+    const val DURATION_MILLIS = 2_000L
+
+    fun isVisible(activationToken: Int, elapsedMillis: Long): Boolean =
+        activationToken > 0 && elapsedMillis in 0 until DURATION_MILLIS
+}
+
 /** Keeps unresolved live-location state separate from a real radar-provider failure. */
 internal object CurrentLocationPresentationPolicy {
     fun retainCurrentSession(
@@ -74,8 +82,11 @@ internal object CurrentLocationPresentationPolicy {
         requestMessage: String?,
     ): RadarRefreshOverlay? = when {
         !currentSelected -> null
-        locating -> WeatherDataStatusPolicy.loading(WeatherDataKind.LOCATION).asOverlay()
-        !requestMessage.isNullOrBlank() || !capabilityMessage.isNullOrBlank() || !hasResolvedPlace ->
+        locating && !hasResolvedPlace ->
+            WeatherDataStatusPolicy.loading(WeatherDataKind.LOCATION).asOverlay()
+        !hasResolvedPlace && (
+            !requestMessage.isNullOrBlank() || !capabilityMessage.isNullOrBlank() || !locating
+        ) ->
             WeatherDataStatusPolicy.unavailable(WeatherDataKind.LOCATION).asOverlay()
         else -> null
     }

@@ -10,11 +10,33 @@ import com.rainalarm.app.data.NowCardAppearance
 import com.rainalarm.app.data.StartupPermissionPolicy
 import com.rainalarm.app.data.StartupPermissionStep
 import com.rainalarm.app.ui.RadarMapAppearance
+import com.rainalarm.app.ui.RainAlarmSwitchGeometry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 class NavigationAndSettingsTest {
+    @Test fun `settings switch thumb stays near full track height with accessible target`() {
+        assertEquals(52, RainAlarmSwitchGeometry.trackWidthDp)
+        assertEquals(32, RainAlarmSwitchGeometry.trackHeightDp)
+        assertEquals(28, RainAlarmSwitchGeometry.thumbDiameterDp)
+        assertEquals(48, RainAlarmSwitchGeometry.touchHeightDp)
+        assertTrue(RainAlarmSwitchGeometry.thumbDiameterDp >=
+            RainAlarmSwitchGeometry.trackHeightDp - 4)
+    }
+    @Test fun `settings switch active track is the exact selected-pin accent`() {
+        val settings = listOf(java.io.File("src/main/java/com/rainalarm/app/ui/SettingsScreen.kt"),
+            java.io.File("app/src/main/java/com/rainalarm/app/ui/SettingsScreen.kt"))
+            .first(java.io.File::isFile).readText()
+        val places = listOf(java.io.File("src/main/java/com/rainalarm/app/ui/PlacesScreen.kt"),
+            java.io.File("app/src/main/java/com/rainalarm/app/ui/PlacesScreen.kt"))
+            .first(java.io.File::isFile).readText()
+        assertTrue(settings.contains("RainAlarmSwitchColorPolicy.activeTrack(SettingsAccent)"))
+        assertTrue(settings.contains("LocalRainAlarmPalette.current.accent"))
+        assertTrue(places.contains("LocalRainAlarmPalette.current.accent"))
+        assertTrue(!settings.contains("SettingsAccent.copy(alpha = 0.72f)"))
+    }
     @Test fun `first run permission prompts are sequential and consumed attempts do not repeat`() {
         assertEquals(StartupPermissionStep.LOCATION,
             StartupPermissionPolicy.next(true, true, false, false))
@@ -30,8 +52,31 @@ class NavigationAndSettingsTest {
     @Test
     fun `settings is a reachable unique navigation destination`() {
         assertTrue(Destination.SETTINGS in Destination.entries)
-        assertEquals(Destination.entries.size, Destination.entries.map { it.label }.distinct().size)
-        assertEquals("Settings", Destination.SETTINGS.label)
+        assertEquals(Destination.entries.size, Destination.entries.map { it.labelRes }.distinct().size)
+        assertEquals(R.string.nav_settings, Destination.SETTINGS.labelRes)
+    }
+
+    @Test fun `Radar pointer drag maps continuously to pager motion and settles adjacently`() {
+        assertEquals(-24f, RadarPagerBridgePolicy.pagerDelta(24f), 0f)
+        assertEquals(18f, RadarPagerBridgePolicy.pagerDelta(-18f), 0f)
+        assertEquals(Destination.NOW.ordinal, RadarPagerBridgePolicy.targetPage(
+            Destination.RADAR.ordinal, Destination.entries.size, -1))
+        assertEquals(Destination.PLACES.ordinal, RadarPagerBridgePolicy.targetPage(
+            Destination.RADAR.ordinal, Destination.entries.size, 1))
+        assertEquals(Destination.RADAR.ordinal, RadarPagerBridgePolicy.targetPage(
+            Destination.RADAR.ordinal, Destination.entries.size, null))
+        assertEquals(0, RadarPagerBridgePolicy.targetPage(0, Destination.entries.size, -1))
+
+        val main = listOf(File("src/main/java/com/rainalarm/app/MainActivity.kt"),
+            File("app/src/main/java/com/rainalarm/app/MainActivity.kt")).first(File::isFile).readText()
+        assertTrue(main.contains("Channel<Float>(Channel.UNLIMITED)"))
+        assertTrue(main.contains("pagerState.scroll {"))
+        assertTrue(main.contains("scrollBy(RadarPagerBridgePolicy.pagerDelta(pointerDelta))"))
+        assertTrue(main.contains("pagerState.animateScrollToPage(target)"))
+        assertTrue(main.contains("else pagerState.scrollToPage(target)"))
+        assertTrue(main.contains("pagerState.settledPage to radarPageTransitionActive"))
+        assertTrue(main.contains("onPageSwipe = ::handleRadarPageSwipe"))
+        assertTrue(main.contains("onPageSwipeBoundsChanged = { radarPageSwipeBounds = it }"))
     }
 
     @Test

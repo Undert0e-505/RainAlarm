@@ -1,10 +1,14 @@
 package com.rainalarm.app.ui
 
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.stringResource
+import com.rainalarm.app.R
 import com.rainalarm.app.data.EumetLayerMetadata
 import com.rainalarm.app.data.RadarMapLayer
 import com.rainalarm.app.data.WindGrid
 import com.rainalarm.app.data.WindGridFailureDiagnostic
 import com.rainalarm.app.data.WindGridNetworkPolicy
+import com.rainalarm.app.domain.cardinalDirection
 
 /** The complete user-facing vocabulary for weather-stream availability. */
 internal enum class WeatherDataKind(val label: String) {
@@ -25,6 +29,43 @@ internal object WeatherDataStatusPolicy {
 
     fun unavailable(kind: WeatherDataKind): String = "${kind.label} unavailable"
 }
+
+/** Localizes the small canonical status vocabulary at its final presentation boundary. */
+@Composable
+internal fun localizedWeatherStatus(value: String): String {
+    WeatherDataKind.entries.forEach { kind ->
+        val localizedKind = stringResource(when (kind) {
+            WeatherDataKind.LOCATION -> R.string.weather_kind_location
+            WeatherDataKind.RADAR -> R.string.weather_kind_radar
+            WeatherDataKind.WIND -> R.string.weather_kind_wind
+            WeatherDataKind.CLOUDS -> R.string.weather_kind_clouds
+            WeatherDataKind.LIGHTNING -> R.string.weather_kind_lightning
+        })
+        val loading = "${kind.label} loading"
+        if (value.startsWith(loading)) {
+            return stringResource(R.string.weather_status_loading, localizedKind,
+                value.removePrefix(loading))
+        }
+        if (value == "${kind.label} unavailable") {
+            return stringResource(R.string.weather_status_unavailable, localizedKind)
+        }
+    }
+    return value
+}
+
+@Composable
+internal fun localizedCardinalDirectionLabel(bearing: Double): String = stringResource(
+    when (cardinalDirection(bearing)) {
+        "N" -> R.string.direction_north_short
+        "NE" -> R.string.direction_northeast_short
+        "E" -> R.string.direction_east_short
+        "SE" -> R.string.direction_southeast_short
+        "S" -> R.string.direction_south_short
+        "SW" -> R.string.direction_southwest_short
+        "W" -> R.string.direction_west_short
+        else -> R.string.direction_northwest_short
+    },
+)
 
 /**
  * One automatic replacement is requested for each stale source identity. A failed replacement

@@ -3,9 +3,14 @@ package com.rainalarm.app.ui
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
+import android.graphics.Rect as AndroidRect
+import android.os.Build
 import android.util.Log
+import android.text.format.DateFormat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -15,6 +20,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -22,10 +29,11 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -47,7 +55,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -59,16 +66,26 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.semantics.contentDescription
@@ -79,8 +96,10 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.sp
 import com.rainalarm.app.LocationUiState
+import com.rainalarm.app.R
 import com.rainalarm.app.FollowUiCapability
 import com.rainalarm.app.PointRefreshCompletion
 import com.rainalarm.app.ProviderMapNoticeEvent
@@ -90,6 +109,11 @@ import com.rainalarm.app.data.RadarSettingsRepository
 import com.rainalarm.app.data.SavedPlace
 import com.rainalarm.app.data.CURRENT_LOCATION_ID
 import com.rainalarm.app.data.PlaceCollection
+import com.rainalarm.app.data.PlaceCollectionRules
+import com.rainalarm.app.data.PlaceCoordinatePolicy
+import com.rainalarm.app.data.PlaceDuplicateFeedbackPolicy
+import com.rainalarm.app.data.PlaceNameSuggestionRepository
+import com.rainalarm.app.data.PlacePickerNamePolicy
 import com.rainalarm.app.data.RadarPlaybackSpeed
 import com.rainalarm.app.data.RadarMapLayer
 import com.rainalarm.app.data.RadarMapStyle
@@ -121,15 +145,23 @@ import com.rainalarm.app.domain.RadarMotionPolicy
 import com.rainalarm.app.domain.RadarTimeline
 import com.rainalarm.app.domain.RadarTimelineBracket
 import com.rainalarm.app.domain.RadarTimelineTicks
-import com.rainalarm.app.domain.cardinalDirection
+import com.rainalarm.app.domain.RadarTimelineLabelLayout
+import com.rainalarm.app.domain.RadarEntryFocusPolicy
+import com.rainalarm.app.domain.RadarEntryFocusActivationPolicy
+import com.rainalarm.app.domain.RadarMarkerFocusAction
+import com.rainalarm.app.domain.RadarMarkerFocusPolicy
+import com.rainalarm.app.domain.RadarMarkerFocusRequest
+import com.rainalarm.app.domain.RadarPageEdge
+import com.rainalarm.app.domain.RadarPageSwipePolicy
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import java.util.Locale
+import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.rememberUpdatedState
 
 private val Surface: Color @Composable get() = LocalRainAlarmPalette.current.surface
@@ -156,6 +188,43 @@ internal object RadarTopControlsPolicy {
     }
     fun statusMaxWidthDp(mapWidthDp: Int): Int =
         (mapWidthDp - statusEndDp - 12).coerceIn(96, 220)
+}
+
+internal object RadarPageSwipeLayoutPolicy {
+    /** Full interactive strip, measured from the physical page edge rather than the map card. */
+    const val widthDp = 64
+    const val leftTopInsetDp = 0
+    const val rightTopInsetDp = RadarTopControlsPolicy.statusTopDp + 28
+    /** Bottom-left cut-out protects the information icon and its 48 dp target plus margin. */
+    const val leftInfoCutoutHeightDp = 64
+    const val exclusionHeightDp = 200
+    const val leftExclusionTopDp = 48
+    const val rightExclusionTopDp = rightTopInsetDp
+
+    fun topInsetDp(direction: Int): Int =
+        if (direction < 0) leftTopInsetDp else rightTopInsetDp
+
+    fun directionForStart(
+        xDp: Float,
+        yDp: Float,
+        screenWidthDp: Float,
+        mapTopDp: Float,
+        mapBottomDp: Float,
+    ): Int = when {
+        xDp in 0f..widthDp.toFloat() &&
+            yDp >= mapTopDp + leftTopInsetDp &&
+            yDp < mapBottomDp - leftInfoCutoutHeightDp -> -1
+        xDp in (screenWidthDp - widthDp)..screenWidthDp &&
+            yDp >= mapTopDp + rightTopInsetDp && yDp < mapBottomDp -> 1
+        else -> 0
+    }
+}
+
+sealed interface RadarPageSwipeEvent {
+    data object Begin : RadarPageSwipeEvent
+    data class Drag(val pointerDeltaPixels: Float) : RadarPageSwipeEvent
+    data class End(val destinationDelta: Int?) : RadarPageSwipeEvent
+    data object Cancel : RadarPageSwipeEvent
 }
 
 internal object SatellitePreparationLabelPolicy {
@@ -190,28 +259,35 @@ internal object RadarPreparationStackPolicy {
         statuses: Map<RadarMapLayer, AncillaryStatus>,
         preparation: Map<RadarMapLayer, SatellitePreparationStatus>,
         location: RadarRefreshOverlay? = null,
-    ): List<RadarRefreshOverlay> = buildList {
-        location?.let(::add)
-        radar?.let(::add)
-        if (RadarMapLayer.WIND in enabledLayers) {
-            val label = when (statuses[RadarMapLayer.WIND]) {
-                AncillaryStatus.Loading, AncillaryStatus.Off, null ->
-                    WeatherDataStatusPolicy.loading(WeatherDataKind.WIND)
-                is AncillaryStatus.Unavailable ->
-                    WeatherDataStatusPolicy.unavailable(WeatherDataKind.WIND)
-                is AncillaryStatus.Wind -> null
-                else -> WeatherDataStatusPolicy.unavailable(WeatherDataKind.WIND)
+        information: RadarRefreshOverlay? = null,
+    ): List<RadarRefreshOverlay> {
+        val operational = buildList {
+            location?.let(::add)
+            radar?.let(::add)
+            if (RadarMapLayer.WIND in enabledLayers) {
+                val label = when (statuses[RadarMapLayer.WIND]) {
+                    AncillaryStatus.Loading, AncillaryStatus.Off, null ->
+                        WeatherDataStatusPolicy.loading(WeatherDataKind.WIND)
+                    is AncillaryStatus.Unavailable ->
+                        WeatherDataStatusPolicy.unavailable(WeatherDataKind.WIND)
+                    is AncillaryStatus.Wind -> null
+                    else -> WeatherDataStatusPolicy.unavailable(WeatherDataKind.WIND)
+                }
+                label?.let { add(RadarRefreshOverlay(it, it)) }
             }
-            label?.let { add(RadarRefreshOverlay(it, it)) }
-        }
-        SatelliteLayerRenderPolicy.renderOrder.forEach { layer ->
-            if (layer !in enabledLayers) return@forEach
-            val label = layerLabel(layer, statuses[layer], preparation[layer])
-            label?.let {
-                add(RadarRefreshOverlay(it, it))
+            SatelliteLayerRenderPolicy.renderOrder.forEach { layer ->
+                if (layer !in enabledLayers) return@forEach
+                val label = layerLabel(layer, statuses[layer], preparation[layer])
+                label?.let {
+                    add(RadarRefreshOverlay(it, it))
+                }
             }
-        }
-    }.distinctBy(RadarRefreshOverlay::label)
+        }.distinctBy(RadarRefreshOverlay::label)
+        // Loading/unavailable states always win the bounded rail. Informational events only use
+        // spare space and their independent timer continues even while they are obscured.
+        return if (information == null || operational.size >= maximumEntries) operational
+        else operational + information
+    }
 
     fun layerLabel(
         layer: RadarMapLayer,
@@ -295,8 +371,9 @@ private fun RadarLayerStatus(
             val speed = wind?.windSpeedKmh
             val from = wind?.windFromDegrees
             if (speed == null || from == null) return
-            "${speed.toInt()} km/h ${cardinalDirection(from)}" to
-                "Selected-place wind from ${cardinalDirection(from)} at ${speed.toInt()} kilometres per hour"
+            val direction = localizedCardinalDirectionLabel(from)
+            stringResource(R.string.wind_value, speed.toInt(), direction) to
+                stringResource(R.string.radar_wind_description, direction, speed.toInt())
         }
         RadarMapLayer.LIGHTNING, RadarMapLayer.FOG -> return
     }
@@ -346,6 +423,11 @@ private fun RadarLayerSegments(
         Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
             RadarMapLayer.overlays.forEach { layer ->
                 val active = layer in enabledMapLayers
+                val layerName = localizedLayerName(layer)
+                val layerDescription = stringResource(R.string.radar_layer_description, layerName)
+                val layerState = stringResource(
+                    if (active) R.string.common_enabled else R.string.common_disabled,
+                )
                 val icon = when (layer) {
                     RadarMapLayer.WIND -> Icons.Default.Air
                     RadarMapLayer.LIGHTNING -> Icons.Default.Bolt
@@ -361,8 +443,8 @@ private fun RadarLayerSegments(
                             onValueChange = { setMapLayerEnabled(layer, it) },
                         )
                         .semantics {
-                            contentDescription = "${layer.label} map layer"
-                            stateDescription = if (active) "Enabled" else "Disabled"
+                            contentDescription = layerDescription
+                            stateDescription = layerState
                         },
                     contentAlignment = Alignment.Center,
                 ) {
@@ -416,6 +498,7 @@ fun LiveRadarScreen(
     liveMapPlace: SavedPlace?,
     places: PlaceCollection,
     playbackSpeed: RadarPlaybackSpeed,
+    requestedProvider: RadarProviderKind,
     mapStyle: RadarMapStyle,
     coverageMaskDarkness: Float,
     saveAndSelect: (SavedPlace) -> Unit,
@@ -425,6 +508,7 @@ fun LiveRadarScreen(
     followCapability: FollowUiCapability,
     liveFixElapsedRealtimeNanos: Long,
     onFollowLiveChange: (Boolean) -> Boolean,
+    activateTravelMode: () -> Boolean,
     currentRecenterTick: Int,
     useCurrentLocation: () -> Unit,
     recenterToCurrentLocation: () -> Unit,
@@ -445,8 +529,62 @@ fun LiveRadarScreen(
     providerNoticeEvent: ProviderMapNoticeEvent? = null,
     onProviderNoticeConsumed: (Long) -> Unit = {},
     onProviderSelection: (SavedPlace, RadarProviderSelection) -> Unit = { _, _ -> },
+    onPageSwipeBoundsChanged: (Rect) -> Unit = {},
+    screenActive: Boolean = true,
+    entryFocusGeneration: Int = 0,
 ) {
     val context = LocalContext.current
+    val platformAnimatorScale = remember(context) {
+        runCatching {
+            android.provider.Settings.Global.getFloat(
+                context.contentResolver,
+                android.provider.Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f,
+            )
+        }.getOrDefault(1f).coerceIn(0f, 10f)
+    }
+    val animationsEnabled = platformAnimatorScale > 0f
+    val entryFocusProgress = remember { Animatable(1f) }
+    val markerFocusProgress = remember { Animatable(1f) }
+    val markerFocusScope = rememberCoroutineScope()
+    var markerFocusToken by remember { mutableIntStateOf(0) }
+    var markerFocusRequest by remember { mutableStateOf<RadarMarkerFocusRequest?>(null) }
+    val entryFocusEnabled = RadarEntryFocusActivationPolicy.shouldAnimate(
+        screenActive = screenActive,
+        entryGeneration = entryFocusGeneration,
+        hasResolvedPlace = place != null,
+        waitingForInitialCurrentFix = place?.isCurrentLocation == true &&
+            locationState is LocationUiState.Locating,
+    )
+    LaunchedEffect(entryFocusGeneration, entryFocusEnabled, animationsEnabled) {
+        if (entryFocusEnabled && animationsEnabled) {
+            entryFocusProgress.snapTo(0f)
+            entryFocusProgress.animateTo(
+                1f,
+                tween(RadarEntryFocusPolicy.DURATION_MILLIS, easing = FastOutSlowInEasing),
+            )
+        } else entryFocusProgress.snapTo(1f)
+    }
+    LaunchedEffect(place?.id, markerFocusRequest?.token, animationsEnabled) {
+        val request = markerFocusRequest ?: return@LaunchedEffect
+        when (RadarMarkerFocusPolicy.resolve(request, place?.id)) {
+            RadarMarkerFocusAction.WAIT -> Unit
+            RadarMarkerFocusAction.CANCEL -> {
+                markerFocusProgress.snapTo(1f)
+                if (markerFocusRequest?.token == request.token) markerFocusRequest = null
+            }
+            RadarMarkerFocusAction.ANIMATE -> {
+                if (animationsEnabled) {
+                    markerFocusProgress.snapTo(0f)
+                    markerFocusProgress.animateTo(
+                        1f,
+                        tween(RadarEntryFocusPolicy.DURATION_MILLIS, easing = FastOutSlowInEasing),
+                    )
+                } else markerFocusProgress.snapTo(1f)
+                if (markerFocusRequest?.token == request.token) markerFocusRequest = null
+            }
+        }
+    }
     val loader = remember { RadarProviderCoordinator(RadarSettingsRepository(context)) }
     val windEnabled = RadarMapLayer.WIND in enabledMapLayers
     var session by remember { mutableStateOf<RadarSession?>(null) }
@@ -457,6 +595,9 @@ fun LiveRadarScreen(
     var lightningRefresh by remember { mutableIntStateOf(0) }
     var cloudsRefresh by remember { mutableIntStateOf(0) }
     var completedRadarReload by remember { mutableIntStateOf(0) }
+    var installedRadarRefresh by remember { mutableIntStateOf(Int.MIN_VALUE) }
+    var installedRadarIdentity by remember { mutableStateOf<RadarRainLoadIdentity?>(null) }
+    var installedRadarAnchor by remember { mutableStateOf<SavedPlace?>(null) }
     var completedLightningRefresh by remember { mutableIntStateOf(0) }
     var completedCloudsRefresh by remember { mutableIntStateOf(0) }
     var completedWindRefresh by remember { mutableIntStateOf(0) }
@@ -487,7 +628,22 @@ fun LiveRadarScreen(
     var longPressed by remember { mutableStateOf<GeoPoint?>(null) }
     var locationMessage by remember { mutableStateOf<String?>(null) }
     var pendingMapRecenter by remember { mutableStateOf(false) }
+    var pendingTravelActivation by remember { mutableStateOf(false) }
     var locationRequestPending by remember { mutableStateOf(false) }
+    var locationOperationGeneration by remember { mutableIntStateOf(0) }
+    var permissionOperationGeneration by remember { mutableStateOf<Int?>(null) }
+    var travelNoticeActivationToken by remember { mutableIntStateOf(0) }
+    var travelNoticeVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(travelNoticeActivationToken) {
+        val token = travelNoticeActivationToken
+        if (token <= 0) return@LaunchedEffect
+        travelNoticeVisible = true
+        delay(TravelActivationNoticePolicy.DURATION_MILLIS)
+        if (travelNoticeActivationToken == token) travelNoticeVisible = false
+    }
+    LaunchedEffect(followLive) {
+        if (!followLive) travelNoticeVisible = false
+    }
     LaunchedEffect(selectedPlaceId, liveMapPlace) {
         if (followLive && !RadarLiveMapPolicy.canFollow(selectedPlaceId, liveMapPlace))
             onFollowLiveChange(false)
@@ -501,21 +657,30 @@ fun LiveRadarScreen(
     DisposableEffect(Unit) {
         onDispose { onFollowLiveChange(false) }
     }
+    val permissionDeniedMessage = stringResource(R.string.places_permission_denied)
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { result ->
-        if (result.values.any { it }) {
-            locationMessage = null
-            if (pendingMapRecenter) recenterToCurrentLocation() else useCurrentLocation()
-        } else {
-            locationMessage = "Location permission was not granted. Selection unchanged."
-            locationRequestPending = false
+        val completedGeneration = permissionOperationGeneration
+        permissionOperationGeneration = null
+        if (completedGeneration == locationOperationGeneration) {
+            if (result.values.any { it }) {
+                locationMessage = null
+                if (pendingTravelActivation) activateTravelMode()
+                else if (pendingMapRecenter) recenterToCurrentLocation() else useCurrentLocation()
+            } else {
+                locationMessage = permissionDeniedMessage
+                locationRequestPending = false
+            }
+            pendingMapRecenter = false
+            pendingTravelActivation = false
         }
-        pendingMapRecenter = false
     }
     val requestCurrentLocation: (Boolean) -> Unit = { recenterMap ->
+        locationOperationGeneration++
         locationMessage = null
-        locationRequestPending = true
+        locationRequestPending = !(selectedPlaceId == CURRENT_LOCATION_ID &&
+            (place != null || liveMapPlace != null))
         pendingMapRecenter = recenterMap
         val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED ||
@@ -524,32 +689,94 @@ fun LiveRadarScreen(
         if (granted) {
             if (recenterMap) recenterToCurrentLocation() else useCurrentLocation()
             pendingMapRecenter = false
-        } else permissionLauncher.launch(
-            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
-        )
+        } else {
+            permissionOperationGeneration = locationOperationGeneration
+            permissionLauncher.launch(
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
+            )
+        }
+    }
+    val requestTravelMode: () -> Unit = {
+        if (followLive) {
+            onFollowLiveChange(false)
+        } else {
+            travelNoticeActivationToken++
+            travelNoticeVisible = true
+            locationMessage = null
+            // Travel is navigation-style following: an existing approximate grant is enough
+            // for ordinary Current, but must still take the platform's precise-upgrade path.
+            val preciseGranted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+            ) == PackageManager.PERMISSION_GRANTED
+            if (preciseGranted) {
+                if (!activateTravelMode()) locationMessage = followCapability.message
+            } else {
+                locationOperationGeneration++
+                pendingTravelActivation = true
+                locationRequestPending = true
+                permissionOperationGeneration = locationOperationGeneration
+                permissionLauncher.launch(arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                ))
+            }
+        }
     }
 
     // Live fixes move the marker immediately, but must not cancel a regional download or
-    // destroy its GL session for every 250 m location update.
-    LaunchedEffect(RadarLiveSessionPolicy.loadIdentity(place), reload, showLikelySnow) {
+    // destroy its GL session for every 250 m location update. Screen visibility is only a gate:
+    // re-entering Radar is not itself a rain-data invalidation.
+    val requestedRadarIdentity = RadarRainSessionLoadPolicy.identity(
+        place, requestedProvider, showLikelySnow,
+    )
+    // Coordinates re-evaluate retained-footprint compatibility, but are deliberately not part of
+    // the acquisition identity. Saved <-> Current and rapid Follow fixes inside that footprint
+    // therefore reuse the installed frames without network work.
+    val radarSelectionCoordinates = place?.let { it.latitude.toBits() to it.longitude.toBits() }
+    LaunchedEffect(screenActive, requestedRadarIdentity, radarSelectionCoordinates, reload) {
+        if (!screenActive) return@LaunchedEffect
         val requestReload = reload
         val keepVisible = when {
-            place != null -> session?.let { RadarLiveSessionPolicy.canReuse(it, place) } == true
-            else -> CurrentLocationPresentationPolicy.retainCurrentSession(
-                currentSelected = selectedPlaceId == CURRENT_LOCATION_ID,
-                hasResolvedPlace = false,
-                sessionBelongsToCurrent = session?.place?.isCurrentLocation == true,
-            )
+            place != null -> session?.let {
+                RadarLiveSessionPolicy.canReuse(
+                    it, place, installedRadarAnchor ?: it.place,
+                )
+            } == true
+            // Selecting Travel can temporarily make Current unresolved. Keep the last valid rain
+            // footprint visible until the first fix decides whether it is actually compatible.
+            else -> selectedPlaceId == CURRENT_LOCATION_ID && session?.isReleased == false
         }
-        if (!keepVisible) session = null
-        refreshing = keepVisible && place != null
-        error = null
-        progress = 0 to 0
+        if (!keepVisible) {
+            session = null
+            installedRadarAnchor = null
+        } else if (place != null) {
+            // Adopt an equivalent Saved <-> Current transition without replacing the immutable
+            // frame/session owner. Subsequent Current fixes can then move throughout its retained
+            // footprint without being compared forever against the old saved coordinate.
+            installedRadarAnchor = place
+        }
         if (place == null) {
+            refreshing = false
             Log.i("RainRadarScreen", "No resolved place; radar load deferred")
             completedRadarReload = requestReload
             return@LaunchedEffect
         }
+        if (!RadarRainSessionLoadPolicy.shouldLoad(
+                screenActive = screenActive,
+                requested = requestedRadarIdentity,
+                installed = installedRadarIdentity,
+                refreshGeneration = requestReload,
+                installedRefreshGeneration = installedRadarRefresh,
+                hasReusableSession = keepVisible,
+            )) {
+            refreshing = false
+            Log.d("RainRadarScreen", "Reusing compatible fresh radar session")
+            return@LaunchedEffect
+        }
+        refreshing = keepVisible
+        error = null
+        progress = 0 to 0
         Log.i("RainRadarScreen", "Starting ${if (place.isCurrentLocation) "current" else "saved"} radar load")
         var candidate: RadarSession? = null
         try {
@@ -565,6 +792,9 @@ fun LiveRadarScreen(
             }
             onProviderSelection(place, loaded.providerSelection)
             session = loaded
+            installedRadarIdentity = requestedRadarIdentity
+            installedRadarRefresh = requestReload
+            installedRadarAnchor = place
             candidate = null
         } catch (cancelled: CancellationException) {
             candidate?.release()
@@ -579,18 +809,18 @@ fun LiveRadarScreen(
             refreshing = false
         }
     }
-    LaunchedEffect(place?.latitude, place?.longitude, session) {
-        val active = session ?: return@LaunchedEffect
-        val selected = place ?: return@LaunchedEffect
-        if (active.place.id == selected.id && !RadarLiveSessionPolicy.canReuse(active, selected)) {
-            Log.i("RainRadarScreen", "Current fix left cached coverage; replacing radar session")
-            reload++
+    LaunchedEffect(selectedPlaceId, place, liveMapPlace, locationState, screenActive) {
+        if (!screenActive) {
+            locationOperationGeneration++
+            permissionOperationGeneration = null
+            locationRequestPending = false
+            pendingMapRecenter = false
+            pendingTravelActivation = false
+            return@LaunchedEffect
         }
-    }
-    LaunchedEffect(locationState) {
         when (locationState) {
             is LocationUiState.Active -> {
-                locationRequestPending = false
+                if (place != null || liveMapPlace != null) locationRequestPending = false
                 locationMessage = locationState.message
             }
             is LocationUiState.Unavailable -> {
@@ -602,8 +832,12 @@ fun LiveRadarScreen(
     }
     LaunchedEffect(selectedPlaceId) {
         if (selectedPlaceId != CURRENT_LOCATION_ID) {
+            locationOperationGeneration++
+            permissionOperationGeneration = null
             locationRequestPending = false
             locationMessage = null
+            pendingMapRecenter = false
+            pendingTravelActivation = false
         }
     }
     val regionLatitude = place?.latitude?.times(10)?.toInt()
@@ -933,7 +1167,7 @@ fun LiveRadarScreen(
 
     LaunchedEffect(automaticRefreshActive) {
         if (!automaticRefreshActive) {
-            refreshCoordinator.pause()
+            refreshCoordinator.pause(Instant.now().epochSecond)
             pendingRadarRefresh = null
             pendingCloudsRefresh = null
             pendingLightningRefresh = null
@@ -990,7 +1224,7 @@ fun LiveRadarScreen(
                 delay(5_000)
             }
         } finally {
-            refreshCoordinator.pause()
+            refreshCoordinator.pause(Instant.now().epochSecond)
         }
     }
 
@@ -1038,20 +1272,16 @@ fun LiveRadarScreen(
         pendingPointRefresh = null
     }
     val currentSelected = selectedPlaceId == CURRENT_LOCATION_ID
-    val displayedMapPlace = place ?: session?.place?.takeIf {
-        CurrentLocationPresentationPolicy.retainCurrentSession(
-            currentSelected = currentSelected,
-            hasResolvedPlace = false,
-            sessionBelongsToCurrent = it.isCurrentLocation,
-        )
-    }
+    val displayedMapPlace = place ?: session?.place?.takeIf { currentSelected }
     val sessionReusable = session != null && displayedMapPlace != null && when {
-        place != null -> RadarLiveSessionPolicy.canReuse(session!!, place)
-        else -> currentSelected && displayedMapPlace.isCurrentLocation
+        place != null -> RadarLiveSessionPolicy.canReuse(
+            session!!, place, installedRadarAnchor ?: session!!.place,
+        )
+        else -> currentSelected
     }
     val showInteractiveMap = RadarBaseMapPresentationPolicy.showInteractiveMap(
         hasResolvedPlace = place != null,
-        hasRetainedCurrentCoordinates = place == null && displayedMapPlace?.isCurrentLocation == true,
+        hasRetainedCurrentCoordinates = place == null && currentSelected && displayedMapPlace != null,
     )
     val locationCapabilityMessage = when (locationState) {
         is LocationUiState.Active -> locationState.message
@@ -1065,6 +1295,10 @@ fun LiveRadarScreen(
         capabilityMessage = locationCapabilityMessage,
         requestMessage = locationMessage,
     )
+    val travelActivationStatus = if (travelNoticeVisible) {
+        val label = stringResource(R.string.radar_travel_mode)
+        RadarRefreshOverlay(label, label)
+    } else null
     val startManualWindRefresh: () -> Unit = {
         val before = windAcquisition
         val after = WindGridAcquisitionReducer.reduce(
@@ -1152,7 +1386,16 @@ fun LiveRadarScreen(
     val providerMapNotice = providerNotice?.let {
         RadarMapNotice(RadarMapNoticeKind.PROVIDER_FALLBACK, it.message)
     }
-    BoxWithConstraints(Modifier.fillMaxSize()) {
+    var radarMapBounds by remember { mutableStateOf(Rect.Zero) }
+    LaunchedEffect(radarMapBounds, screenActive) {
+        // The stationary overlay is owned by the app root, so publish root coordinates. Keeping
+        // these as Radar-local coordinates displaced the hit strips from the visible map whenever
+        // Scaffold/system-bar padding was present.
+        onPageSwipeBoundsChanged(if (screenActive) radarMapBounds else Rect.Zero)
+    }
+    BoxWithConstraints(
+        Modifier.fillMaxSize(),
+    ) {
     val screenWidthDp = maxWidth.value.toInt()
     val screenHeightDp = maxHeight.value.toInt()
     val fontScale = LocalDensity.current.fontScale
@@ -1169,18 +1412,31 @@ fun LiveRadarScreen(
                 IconButton(onClick = recenterToSelectedPlace, enabled = canCenterSelected,
                     modifier = Modifier.size(NowHeaderLayoutPolicy.switchDp.dp)) {
                     Icon(Icons.Default.CenterFocusStrong,
-                        contentDescription = if (canCenterSelected) "Center map on ${place!!.name}"
-                            else "Center map unavailable until the selected location is resolved")
+                        contentDescription = if (canCenterSelected) stringResource(
+                            R.string.radar_center_selected,
+                            place!!.name,
+                        ) else stringResource(R.string.radar_center_unavailable))
                 }
                 Spacer(Modifier.width(NowHeaderLayoutPolicy.gapDp.dp))
-                Text(place?.name ?: "Current location",
+                Text(place?.name ?: stringResource(R.string.current_location),
                     fontSize = NowHeaderLayoutPolicy.titleFontSizeSp(compactTitle).sp,
                     lineHeight = NowHeaderLayoutPolicy.titleLineHeightSp(compactTitle).sp,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-                    modifier = Modifier.widthIn(max = maxTitleWidth).semantics { heading() })
+                    modifier = Modifier.widthIn(max = maxTitleWidth)
+                        .graphicsLayer {
+                            val scale = RadarEntryFocusPolicy.titleScale(entryFocusProgress.value)
+                            scaleX = scale
+                            scaleY = scale
+                        }
+                        .semantics { heading() })
                 Spacer(Modifier.width(NowHeaderLayoutPolicy.gapDp.dp))
-                PlaceSwitcher(places, locationState, selectPlace, { requestCurrentLocation(false) })
+                PlaceSwitcher(
+                    places,
+                    locationState,
+                    selectPlace,
+                    useCurrentLocation = { requestCurrentLocation(false) },
+                )
             }
         }
         Spacer(Modifier.height(6.dp))
@@ -1194,8 +1450,7 @@ fun LiveRadarScreen(
                 followCapability = followCapability,
                 liveFixElapsedRealtimeNanos = liveFixElapsedRealtimeNanos,
                 onFollowLiveChange = { enabled ->
-                    val accepted = onFollowLiveChange(enabled)
-                    if (enabled && !accepted) locationMessage = followCapability.message
+                    if (enabled) requestTravelMode() else onFollowLiveChange(false)
                 },
                 selectedPlaceId = selectedPlaceId,
                 chartTimeRequest = chartTimeRequest,
@@ -1249,6 +1504,7 @@ fun LiveRadarScreen(
                 ancillaryStatuses = renderAncillary,
                 weatherStatuses = weatherAncillary,
                 locationStatus = locationOperationalStatus,
+                travelActivationStatus = travelActivationStatus,
                 currentWeather = currentWeather,
                 onWindViewportChanged = { windViewport = it },
                 onRefresh = performManualRefresh,
@@ -1273,6 +1529,14 @@ fun LiveRadarScreen(
                 refreshProgress = progress,
                 refreshError = error,
                 externalNotice = providerMapNotice,
+                entryFocusGeneration = entryFocusGeneration,
+                entryFocusEnabled = entryFocusEnabled && animationsEnabled,
+                entryFocusDurationMillis = RadarEntryFocusPolicy.mapDurationMillis(platformAnimatorScale),
+                markerScale = maxOf(
+                    RadarEntryFocusPolicy.markerScale(entryFocusProgress.value),
+                    RadarEntryFocusPolicy.markerScale(markerFocusProgress.value),
+                ),
+                onMapBoundsChanged = { radarMapBounds = it },
             )
             else -> RadarLoadingShell(
                 mapStyle = mapStyle,
@@ -1284,37 +1548,97 @@ fun LiveRadarScreen(
                 notice = providerMapNotice,
                 locationStatus = locationOperationalStatus,
                 radarLoading = place != null && error == null,
+                travelMode = followLive,
+                travelActivationStatus = travelActivationStatus,
+                onTravelMode = requestTravelMode,
+                onMapBoundsChanged = { radarMapBounds = it },
             )
         }
     }
+    RadarPageGestureExclusions(radarMapBounds, screenActive)
     }
 
     longPressed?.let { point ->
+        val locale = androidx.compose.ui.platform.LocalConfiguration.current.locales[0]
+        val placeNameRepository = remember { PlaceNameSuggestionRepository() }
+        val suggestedName = remember(point) {
+            PlacePickerNamePolicy.coordinateFallback(point.latitude, point.longitude)
+        }
         var name by remember(point) {
-            mutableStateOf(String.format(Locale.ROOT, "%.4f, %.4f", point.latitude, point.longitude))
+            mutableStateOf(suggestedName)
+        }
+        var nameEdited by remember(point) { mutableStateOf(false) }
+        var nameRequestToken by remember(point) { mutableIntStateOf(1) }
+        var resolvingName by remember(point) { mutableStateOf(true) }
+        var duplicateErrorToken by remember(point) { mutableIntStateOf(0) }
+        LaunchedEffect(point, locale.language, nameRequestToken) {
+            val requestToken = nameRequestToken
+            val resolved = placeNameRepository.suggestedName(
+                point.latitude, point.longitude, locale.language,
+            )
+            if (PlacePickerNamePolicy.shouldApplyResult(
+                    requestToken, nameRequestToken, nameEdited,
+                )) name = resolved
+            if (requestToken == nameRequestToken) resolvingName = false
+        }
+        LaunchedEffect(point, duplicateErrorToken) {
+            if (duplicateErrorToken == 0) return@LaunchedEffect
+            delay(PlaceDuplicateFeedbackPolicy.DURATION_MILLIS)
+            duplicateErrorToken = 0
         }
         AlertDialog(
             onDismissRequest = { longPressed = null },
-            title = { Text("Save this place") },
+            title = { Text(stringResource(R.string.radar_save_place)) },
             text = {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Place name") },
-                    singleLine = true,
-                )
+                Column {
+                    if (resolvingName) Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Text(
+                            stringResource(R.string.picker_resolving_name),
+                            color = Secondary,
+                            modifier = Modifier.padding(start = 8.dp, bottom = 4.dp),
+                        )
+                    }
+                    PlaceNameEditor(
+                        value = name,
+                        onValueChange = {
+                            name = it
+                            nameEdited = true
+                            duplicateErrorToken = 0
+                        },
+                        duplicate = duplicateErrorToken != 0,
+                    )
+                }
             },
             confirmButton = {
                 TextButton(
-                    enabled = name.isNotBlank(),
+                    enabled = PlaceCollectionRules.validName(name),
                     onClick = {
-                        saveAndSelect(SavedPlace(name.trim(), point.latitude, point.longitude))
-                        longPressed = null
+                        val incoming = SavedPlace(name.trim(), point.latitude, point.longitude)
+                        if (places.places.any { PlaceCoordinatePolicy.nearDuplicate(it, incoming) }) {
+                            duplicateErrorToken++
+                        }
+                        else {
+                            val nextToken = markerFocusToken + 1
+                            markerFocusToken = nextToken
+                            markerFocusRequest = RadarMarkerFocusRequest(
+                                token = nextToken,
+                                previousPlaceId = place?.id,
+                                targetPlaceId = incoming.id,
+                            )
+                            markerFocusScope.launch {
+                                markerFocusProgress.snapTo(if (animationsEnabled) 0f else 1f)
+                            }
+                            saveAndSelect(incoming)
+                            longPressed = null
+                        }
                     },
-                ) { Text("Save & select") }
+                ) { Text(stringResource(R.string.radar_save_select)) }
             },
             dismissButton = {
-                TextButton(onClick = { longPressed = null }) { Text("Cancel") }
+                TextButton(onClick = { longPressed = null }) {
+                    Text(stringResource(R.string.common_cancel))
+                }
             },
         )
     }
@@ -1331,32 +1655,55 @@ private fun ColumnScope.RadarLoadingShell(
     notice: RadarMapNotice?,
     locationStatus: RadarRefreshOverlay?,
     radarLoading: Boolean,
+    travelMode: Boolean,
+    travelActivationStatus: RadarRefreshOverlay?,
+    onTravelMode: () -> Unit,
+    onMapBoundsChanged: (Rect) -> Unit,
 ) {
     val shape = RoundedCornerShape(22.dp)
     val status = RadarRefreshOverlayPolicy.initialLoading(progress.first, progress.second)
     val darkMap = mapStyle.darkControls
+    val useLocationDescription = stringResource(R.string.radar_use_location)
+    val locationLoadingDescription = localizedWeatherStatus(
+        WeatherDataStatusPolicy.loading(WeatherDataKind.LOCATION),
+    )
     Card(
         colors = CardDefaults.cardColors(
             containerColor = Color(RadarMapAppearance.loadingBackgroundArgb(mapStyle)),
         ),
         shape = shape,
         modifier = Modifier.fillMaxWidth().weight(1f)
-            .border(1.dp, LocalRainAlarmPalette.current.border, shape),
+            .border(1.dp, LocalRainAlarmPalette.current.border, shape)
+            .onGloballyPositioned { onMapBoundsChanged(it.boundsInRoot()) },
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val mapWidthDp = maxWidth.value.toInt()
-            val operationalEntries = listOfNotNull(
-                locationStatus,
-                status.takeIf { radarLoading },
-            )
+            val operationalEntries = buildList {
+                locationStatus?.let(::add)
+                status.takeIf { radarLoading }?.let(::add)
+                if (size < RadarPreparationStackPolicy.maximumEntries) {
+                    travelActivationStatus?.let(::add)
+                }
+            }
             Row(
                 Modifier.align(Alignment.TopEnd).padding(4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                IconButton(onClick = onTravelMode,
+                    modifier = Modifier.size(RadarTopControlsPolicy.controlSizeDp.dp)) {
+                    Icon(
+                        Icons.Default.Navigation,
+                        contentDescription = stringResource(
+                            if (travelMode) R.string.radar_follow_stop else R.string.radar_follow_start,
+                        ),
+                        tint = if (travelMode) Accent.copy(alpha = 0.85f)
+                            else if (darkMap) Color.White else Color.Black,
+                    )
+                }
                 IconButton(onClick = onRefresh) {
                     Icon(
                         Icons.Default.Refresh,
-                        contentDescription = "Refresh radar and map layer",
+                        contentDescription = stringResource(R.string.radar_refresh),
                         tint = if (darkMap) Color.White else Color.Black,
                     )
                 }
@@ -1366,8 +1713,8 @@ private fun ColumnScope.RadarLoadingShell(
                     modifier = Modifier.size(RadarTopControlsPolicy.controlSizeDp.dp)
                         .clearAndSetSemantics {
                             contentDescription = if (locationState is LocationUiState.Locating && currentSelected)
-                                WeatherDataStatusPolicy.loading(WeatherDataKind.LOCATION)
-                            else "Use current device location"
+                                locationLoadingDescription
+                            else useLocationDescription
                         },
                 ) {
                     if (locationState is LocationUiState.Locating && currentSelected) CircularProgressIndicator(
@@ -1459,8 +1806,10 @@ private fun RadarOperationalStatusStack(
         verticalArrangement = Arrangement.spacedBy(RadarPreparationStackPolicy.rowSpacingDp.dp),
     ) {
         entries.forEach { status ->
+            val localizedLabel = localizedWeatherStatus(status.label)
+            val localizedAccessibilityLabel = localizedWeatherStatus(status.accessibilityLabel)
             Text(
-                status.label,
+                localizedLabel,
                 color = LocalRainAlarmPalette.current.mapLabelText,
                 fontSize = 11.sp,
                 lineHeight = RadarPreparationStackPolicy.rowLineHeightSp.sp,
@@ -1473,7 +1822,7 @@ private fun RadarOperationalStatusStack(
                         RoundedCornerShape(4.dp),
                     )
                     .padding(horizontal = 4.dp, vertical = 2.dp)
-                    .semantics { contentDescription = status.accessibilityLabel },
+                    .semantics { contentDescription = localizedAccessibilityLabel },
             )
         }
     }
@@ -1509,6 +1858,7 @@ private fun ColumnScope.RadarPlayer(
     ancillaryStatuses: Map<RadarMapLayer, AncillaryStatus>,
     weatherStatuses: Map<RadarMapLayer, AncillaryStatus>,
     locationStatus: RadarRefreshOverlay?,
+    travelActivationStatus: RadarRefreshOverlay?,
     currentWeather: CurrentWeather?,
     onWindViewportChanged: (WindViewport) -> Unit,
     onRefresh: () -> Unit,
@@ -1517,9 +1867,16 @@ private fun ColumnScope.RadarPlayer(
     refreshProgress: Pair<Int, Int>,
     refreshError: String?,
     externalNotice: RadarMapNotice?,
+    entryFocusGeneration: Int,
+    entryFocusEnabled: Boolean,
+    entryFocusDurationMillis: Int,
+    markerScale: Float,
+    onMapBoundsChanged: (Rect) -> Unit,
 ) {
+    val context = LocalContext.current
     val darkMap = mapStyle.darkControls
     val secondaryColor = Secondary
+    val timelineDescription = stringResource(R.string.radar_timeline)
     val times = remember(session) { session?.timelineFrames?.map { it.time }.orEmpty() }
     val forecastFlags = remember(session) { session?.timelineFrames?.map { it.forecast }.orEmpty() }
     val hasRadarSession = session != null && times.isNotEmpty()
@@ -1563,11 +1920,12 @@ private fun ColumnScope.RadarPlayer(
         (chartDecision as? RadarChartTimeDecision.Apply)?.cursorSeconds ?: initialCursor,
     ) }
     val playbackRefreshIdentity = RadarPlaybackRefreshPolicy.identity(
-        selectedPlaceId,
+        session,
         session?.providerSelection?.requested,
     )
     var playing by remember(playbackRefreshIdentity) { mutableStateOf(false) }
     var chartTimeMessage by remember(session) { mutableStateOf<String?>(null) }
+    val chartTimeUnavailableMessage = stringResource(R.string.radar_chart_time_unavailable)
     LaunchedEffect(session, chartTimeRequest?.token, chartDecision) {
         val request = chartTimeRequest ?: return@LaunchedEffect
         when (val decision = chartDecision) {
@@ -1575,10 +1933,9 @@ private fun ColumnScope.RadarPlayer(
                 cursor = decision.cursorSeconds
                 playing = false
                 chartTimeMessage = null
-                onChartTimeConsumed(request.token)
             }
             RadarChartTimeDecision.Unavailable -> {
-                chartTimeMessage = "Chart time unavailable in this radar session; showing normal entry time."
+                chartTimeMessage = chartTimeUnavailableMessage
                 onChartTimeConsumed(request.token)
             }
             else -> Unit
@@ -1626,7 +1983,7 @@ private fun ColumnScope.RadarPlayer(
     }
     val label = bracket?.let {
         timelineLabel(times, it, safeCursor, latestOffset, forecastAvailable)
-    } ?: "Radar loading"
+    } ?: stringResource(R.string.radar_loading)
     val refreshOverlay = if (!hasRadarSession && refreshError.isNullOrBlank()) {
         RadarRefreshOverlayPolicy.initialLoading(refreshProgress.first, refreshProgress.second)
     } else RadarRefreshOverlayPolicy.status(
@@ -1635,25 +1992,32 @@ private fun ColumnScope.RadarPlayer(
     )
     val preparationEntries = RadarPreparationStackPolicy.entries(
         refreshOverlay, enabledMapLayers, weatherStatuses, satellitePreparation, locationStatus,
+        travelActivationStatus,
     )
     val mapNotice = RadarMapNoticePolicy.select(
         (rendererStatus as? RadarRendererStatus.Error)?.let {
             RadarMapNotice(
                 RadarMapNoticeKind.RENDERER_FAILURE,
-                "Radar renderer issue · ${it.message}",
+                stringResource(R.string.radar_renderer_unavailable),
             )
         },
-        mapStyleError?.let { RadarMapNotice(RadarMapNoticeKind.MAP_STYLE, it) },
+        mapStyleError?.let {
+            RadarMapNotice(RadarMapNoticeKind.MAP_STYLE, stringResource(R.string.radar_map_unavailable))
+        },
         externalNotice,
         compatibilityNotice?.let {
-            RadarMapNotice(RadarMapNoticeKind.RENDERER_COMPATIBILITY, it)
+            RadarMapNotice(
+                RadarMapNoticeKind.RENDERER_COMPATIBILITY,
+                stringResource(R.string.radar_renderer_recovered),
+            )
         },
         chartTimeMessage?.let { RadarMapNotice(RadarMapNoticeKind.CHART_TIME, it) },
     )
     Card(
         colors = CardDefaults.cardColors(containerColor = Surface),
         shape = RoundedCornerShape(22.dp),
-        modifier = Modifier.fillMaxWidth().weight(1f),
+        modifier = Modifier.fillMaxWidth().weight(1f)
+            .onGloballyPositioned { onMapBoundsChanged(it.boundsInRoot()) },
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val mapWidthDp = maxWidth.value.toInt()
@@ -1699,6 +2063,10 @@ private fun ColumnScope.RadarPlayer(
                 onMapStyleError = { mapStyleError = it },
                 onWindViewportChanged = onWindViewportChanged,
                 onRadarTierChanged = { displayedRadarTier = it },
+                entryFocusGeneration = entryFocusGeneration,
+                entryFocusEnabled = entryFocusEnabled,
+                entryFocusDurationMillis = entryFocusDurationMillis,
+                markerScale = markerScale,
             )
             RadarMapNoticeRail(
                 mapNotice,
@@ -1717,30 +2085,29 @@ private fun ColumnScope.RadarPlayer(
                 modifier = Modifier.align(Alignment.TopStart)
                     .padding(start = 12.dp, top = RadarTopControlsPolicy.timeTopDp.dp)
                     .widthIn(max = RadarTopControlsPolicy.timeLabelMaxWidthDp(
-                        mapWidthDp, selectedPlaceId == CURRENT_LOCATION_ID).dp)
+                        mapWidthDp, true).dp)
                     .background(LocalRainAlarmPalette.current.mapLabelSurface, RoundedCornerShape(4.dp))
                     .padding(horizontal = 4.dp),
             )
             Row(Modifier.align(Alignment.TopEnd).padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (selectedPlaceId == CURRENT_LOCATION_ID) {
-                    IconButton(onClick = { onFollowLiveChange(!followLive) },
-                        enabled = hasFreshLiveFix || followCapability.message != null,
-                        modifier = Modifier.size(RadarTopControlsPolicy.controlSizeDp.dp)) {
-                        Icon(Icons.Default.Navigation,
-                            contentDescription = if (followLive) "Stop following live location" else "Follow live location",
-                            tint = if (followLive) Accent.copy(alpha = 0.85f)
-                                else if (darkMap) Color.White else Color.Black)
-                    }
+                IconButton(onClick = { onFollowLiveChange(!followLive) },
+                    modifier = Modifier.size(RadarTopControlsPolicy.controlSizeDp.dp)) {
+                    Icon(Icons.Default.Navigation,
+                        contentDescription = stringResource(
+                            if (followLive) R.string.radar_follow_stop else R.string.radar_follow_start,
+                        ),
+                        tint = if (followLive) Accent.copy(alpha = 0.85f)
+                            else if (darkMap) Color.White else Color.Black)
                 }
                 IconButton(onClick = onRefresh) {
-                    Icon(Icons.Default.Refresh, contentDescription = "Refresh radar and map layer",
+                    Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.radar_refresh),
                         tint = if (darkMap) Color.White else Color.Black)
                 }
                 IconButton(onClick = onCurrentLocation,
                     enabled = locationState !is LocationUiState.Locating) {
                     if (locationState is LocationUiState.Locating) CircularProgressIndicator(Modifier.size(22.dp),
                         color = if (darkMap) Color.White else Color.Black, strokeWidth = 2.dp)
-                    else Icon(Icons.Default.MyLocation, contentDescription = "Use current device location",
+                    else Icon(Icons.Default.MyLocation, contentDescription = stringResource(R.string.radar_use_location),
                         tint = if (darkMap) Color.White else Color.Black)
                 }
             }
@@ -1770,18 +2137,24 @@ private fun ColumnScope.RadarPlayer(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         IconButton(
-            onClick = { playing = !playing },
+            onClick = {
+                if (!playing) chartTimeRequest?.let { onChartTimeConsumed(it.token) }
+                playing = !playing
+            },
             enabled = hasRadarSession,
             modifier = Modifier.size(48.dp),
         ) {
             Icon(
                 if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
-                contentDescription = if (playing) "Pause radar timeline" else "Play radar timeline",
+                contentDescription = stringResource(
+                    if (playing) R.string.radar_pause else R.string.radar_play,
+                ),
             )
         }
         Slider(
             value = safeCursor,
             onValueChange = {
+                chartTimeRequest?.let { request -> onChartTimeConsumed(request.token) }
                 cursor = it.takeIf { value -> value.isFinite() }
                     ?.coerceIn(0f, endOffset) ?: safeCursor
                 playing = false
@@ -1789,33 +2162,235 @@ private fun ColumnScope.RadarPlayer(
             valueRange = 0f..endOffset,
             enabled = hasRadarSession,
             modifier = Modifier.weight(1f).semantics {
-                contentDescription = "Radar timeline"
+                contentDescription = timelineDescription
                 stateDescription = label
             },
         )
     }
     if (hasRadarSession && endOffset > 0f) {
-        val ticks = remember(session, endOffset) {
-            RadarTimelineTicks.between(times.first(), times.first() + endOffset.toLong(), ZoneId.systemDefault())
+        val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+        val use24Hour = DateFormat.is24HourFormat(context)
+        val locale = configuration.locales[0]
+        val ticks = remember(session, endOffset, use24Hour, locale) {
+            RadarTimelineTicks.between(
+                times.first(),
+                times.first() + endOffset.toLong(),
+                ZoneId.systemDefault(),
+                use24Hour,
+                locale,
+            )
         }
         // Match the 48dp play target, 6dp row gap and Slider's 10dp thumb inset.
-        BoxWithConstraints(Modifier.fillMaxWidth().height(21.dp).padding(start = 54.dp)) {
-            Canvas(Modifier.fillMaxSize()) {
-                ticks.forEach { tick ->
-                    val x = 10.dp.toPx() + (size.width - 20.dp.toPx()) * tick.fraction
-                    drawLine(secondaryColor, Offset(x, 0f), Offset(x, 4.dp.toPx()), 1.dp.toPx())
-                }
-            }
-            ticks.forEach { tick ->
-                val x = (10.dp + (maxWidth - 20.dp) * tick.fraction - 19.dp)
-                    .coerceIn(0.dp, (maxWidth - 38.dp).coerceAtLeast(0.dp))
-                Text(tick.label, color = Secondary, fontSize = 9.sp,
-                    modifier = Modifier.offset(x = x, y = 4.dp).width(38.dp), maxLines = 1)
-            }
-        }
+        RadarTimelineTickRow(
+            ticks = ticks,
+            color = secondaryColor,
+            modifier = Modifier.fillMaxWidth().height(21.dp).padding(start = 54.dp),
+        )
     } else Spacer(Modifier.fillMaxWidth().height(21.dp))
 }
 
+@Composable
+private fun RadarTimelineTickRow(
+    ticks: List<com.rainalarm.app.domain.RadarTimeTick>,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    val density = LocalDensity.current
+    Layout(
+        modifier = modifier,
+        content = {
+            ticks.forEach {
+                Spacer(Modifier.width(1.dp).height(4.dp).background(color))
+            }
+            ticks.forEach { tick ->
+                Text(
+                    tick.label,
+                    color = color,
+                    fontSize = 11.sp,
+                    lineHeight = 13.sp,
+                    fontWeight = FontWeight.Normal,
+                    maxLines = 1,
+                    softWrap = false,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        },
+    ) { measurables, constraints ->
+        val count = ticks.size
+        val height = constraints.maxHeight.coerceAtLeast(1)
+        val loose = constraints.copy(minWidth = 0, minHeight = 0)
+        val tickPlaceables = measurables.take(count).map { it.measure(loose) }
+        val labelPlaceables = measurables.drop(count).map { it.measure(loose) }
+        val placements = RadarTimelineLabelLayout.arrange(
+            fractions = ticks.map { it.fraction },
+            labelWidthsPx = labelPlaceables.map { it.width },
+            widthPx = constraints.maxWidth,
+            innerInsetPx = with(density) { 10.dp.toPx() },
+            gapPx = with(density) { 5.dp.toPx() },
+        )
+        layout(constraints.maxWidth, height) {
+            placements.forEachIndexed { index, placement ->
+                val tick = tickPlaceables[index]
+                tick.placeRelative((placement.anchorPx - tick.width / 2f).toInt(), 0)
+                if (placement.visible) {
+                    val label = labelPlaceables[index]
+                    label.placeRelative(
+                        (placement.anchorPx - label.width / 2f).toInt(),
+                        with(density) { 4.dp.roundToPx() },
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Installed on the stationary app-page ancestor (not the horizontally moving Radar pager page),
+ * so a pointer that starts in a gutter remains owned after the page follows it across the screen.
+ * It does not consume a tap or map gesture until the established policy claims a clearly
+ * horizontal single-pointer drag.
+ */
+internal fun Modifier.radarPageSwipeInput(
+    edge: RadarPageEdge,
+    density: Density,
+    onPageSwipe: (RadarPageSwipeEvent) -> Unit,
+): Modifier = pointerInput(edge, density.density, onPageSwipe) {
+    awaitEachGesture {
+        val down = awaitFirstDown(
+            requireUnconsumed = false,
+            pass = PointerEventPass.Initial,
+        )
+        var accumulatedX = 0f
+        var accumulatedY = 0f
+        var multiTouch = false
+        var claimed = false
+        var finished = false
+        var lastUptimeMillis = down.uptimeMillis
+        try {
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                if (event.changes.count { it.pressed } > 1) {
+                    multiTouch = true
+                    if (claimed) {
+                        finished = true
+                        onPageSwipe(RadarPageSwipeEvent.Cancel)
+                    }
+                    break
+                }
+                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                val amount = change.positionChange()
+                accumulatedX += amount.x
+                accumulatedY += amount.y
+                lastUptimeMillis = change.uptimeMillis
+                if (!claimed && RadarPageSwipePolicy.canClaim(
+                        edge,
+                        with(density) { accumulatedX.toDp().value },
+                        with(density) { accumulatedY.toDp().value },
+                        multiTouch,
+                    )
+                ) {
+                    claimed = true
+                    onPageSwipe(RadarPageSwipeEvent.Begin)
+                    onPageSwipe(RadarPageSwipeEvent.Drag(accumulatedX))
+                } else if (claimed) {
+                    onPageSwipe(RadarPageSwipeEvent.Drag(amount.x))
+                }
+                if (claimed) change.consume()
+                if (!change.pressed) break
+            }
+            if (claimed) {
+                val delta = RadarPageSwipePolicy.destinationDelta(
+                    edge,
+                    with(density) { accumulatedX.toDp().value },
+                    with(density) { accumulatedY.toDp().value },
+                    multiTouch = multiTouch,
+                    durationMillis = (lastUptimeMillis - down.uptimeMillis).coerceAtLeast(1L),
+                )
+                finished = true
+                onPageSwipe(RadarPageSwipeEvent.End(delta))
+            }
+        } finally {
+            if (claimed && !finished) onPageSwipe(RadarPageSwipeEvent.Cancel)
+        }
+    }
+}
+
+/**
+ * Stationary DOWN-only gutter targets. The target composable remains fixed while the pager content
+ * follows the finger, so a claimed pointer keeps its original hit path all the way to UP/CANCEL.
+ * The centre map is never covered, and the vertical geometry leaves every interactive map control
+ * plus the bottom-left attribution/info target outside these siblings.
+ */
+@Composable
+internal fun RadarPageSwipeOverlay(
+    mapBounds: Rect,
+    enabled: Boolean,
+    onPageSwipe: (RadarPageSwipeEvent) -> Unit,
+) {
+    if (!enabled || mapBounds == Rect.Zero) return
+    val density = LocalDensity.current
+    val mapTopDp = with(density) { mapBounds.top.toDp() }
+    val mapHeightDp = with(density) { mapBounds.height.toDp() }
+    val leftHeight = mapHeightDp - RadarPageSwipeLayoutPolicy.leftInfoCutoutHeightDp.dp
+    val rightHeight = mapHeightDp - RadarPageSwipeLayoutPolicy.rightTopInsetDp.dp
+    if (leftHeight <= 0.dp || rightHeight <= 0.dp) return
+    Box(Modifier.fillMaxSize()) {
+        Box(
+            Modifier.offset(y = mapTopDp)
+                .width(RadarPageSwipeLayoutPolicy.widthDp.dp)
+                .height(leftHeight)
+                .radarPageSwipeInput(RadarPageEdge.PREVIOUS, density, onPageSwipe),
+        )
+        Box(
+            Modifier.align(Alignment.TopEnd)
+                .offset(y = mapTopDp + RadarPageSwipeLayoutPolicy.rightTopInsetDp.dp)
+                .width(RadarPageSwipeLayoutPolicy.widthDp.dp)
+                .height(rightHeight)
+                .radarPageSwipeInput(RadarPageEdge.NEXT, density, onPageSwipe),
+        )
+    }
+}
+
+/**
+ * Android accepts only 200 dp of protected edge per side; hit regions remain taller than these.
+ *
+ * Compose owns and periodically rewrites the AndroidComposeView exclusion list. Register these two
+ * rectangles on the decor root instead so retained-pager transitions cannot silently clear them.
+ * They are installed only while Radar is the active destination and are removed on every exit.
+ */
+@Composable
+private fun RadarPageGestureExclusions(mapBounds: Rect, enabled: Boolean) {
+    val composeView = LocalView.current
+    val rootView = composeView.rootView
+    val density = LocalDensity.current
+    val width = with(density) { RadarPageSwipeLayoutPolicy.widthDp.dp.roundToPx() }
+    val height = with(density) { RadarPageSwipeLayoutPolicy.exclusionHeightDp.dp.roundToPx() }
+    val composeLocation = remember(composeView, mapBounds) { IntArray(2) }.also {
+        composeView.getLocationInWindow(it)
+    }
+    val leftTop = composeLocation[1] + mapBounds.top.roundToInt() + with(density) {
+        RadarPageSwipeLayoutPolicy.leftExclusionTopDp.dp.roundToPx()
+    }
+    val rightTop = composeLocation[1] + mapBounds.top.roundToInt() + with(density) {
+        RadarPageSwipeLayoutPolicy.rightExclusionTopDp.dp.roundToPx()
+    }
+    val active = enabled && mapBounds != Rect.Zero
+    DisposableEffect(rootView, active, width, height, leftTop, rightTop) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && active) {
+            rootView.systemGestureExclusionRects = listOf(
+                AndroidRect(0, leftTop, width, leftTop + height),
+                AndroidRect(rootView.width - width, rightTop, rootView.width, rightTop + height),
+            )
+        }
+        onDispose {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                rootView.systemGestureExclusionRects = emptyList()
+            }
+        }
+    }
+}
+
+@Composable
 private fun timelineLabel(
     times: List<Long>,
     bracket: RadarTimelineBracket,
@@ -1824,20 +2399,34 @@ private fun timelineLabel(
     forecastAvailable: Boolean,
 ): String {
     val instant = Instant.ofEpochSecond((times.first() + cursor).toLong())
-    val time = DateTimeFormatter.ofPattern("HH:mm").format(instant.atZone(ZoneId.systemDefault()))
+    val context = LocalContext.current
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val locale = configuration.locales[0]
+    val time = DateTimeFormatter.ofPattern(
+        if (DateFormat.is24HourFormat(context)) "HH:mm" else "h:mm a",
+        locale,
+    ).format(instant.atZone(ZoneId.systemDefault()))
     return when {
-        cursor == latestOffset -> "Latest radar · ${time}"
+        cursor == latestOffset -> stringResource(R.string.radar_latest_time, time)
         bracket.isForecast && forecastAvailable ->
             if (
                 cursor <= (times.last() - times.first()).toFloat() &&
                 latestOffset < (times.last() - times.first()).toFloat()
             ) {
-                "Forecast · ${time}"
+                stringResource(R.string.radar_forecast_time, time)
             } else {
-                "Estimate · ${time}"
+                stringResource(R.string.radar_estimate_time, time)
             }
         bracket.isForecast ->
-            "Forecast unavailable · ${time}"
-        else -> "Observed · ${time}"
+            stringResource(R.string.radar_forecast_unavailable_time, time)
+        else -> stringResource(R.string.radar_observed_time, time)
     }
 }
+
+@Composable
+private fun localizedLayerName(layer: RadarMapLayer): String = stringResource(when (layer) {
+    RadarMapLayer.WIND -> R.string.layer_wind
+    RadarMapLayer.LIGHTNING -> R.string.layer_lightning
+    RadarMapLayer.FOG -> R.string.layer_clouds
+    RadarMapLayer.OFF -> R.string.common_disabled
+})

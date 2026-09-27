@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="places_search_hint">Zoek een gemeente, plaats of postcode</string>
+    <string name="settings_subtitle">Stel de radar naar wens in</string>
+</resources>

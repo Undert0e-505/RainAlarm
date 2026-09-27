@@ -425,12 +425,30 @@ class WeatherDataStatusPolicyTest {
             capabilityMessage = "settings disabled",
             requestMessage = null,
         )?.label)
+        assertEquals(null, CurrentLocationPresentationPolicy.operationalStatus(
+            currentSelected = true,
+            hasResolvedPlace = true,
+            locating = true,
+            capabilityMessage = "waiting for a more accurate fix",
+            requestMessage = null,
+        ))
+        assertEquals(null, CurrentLocationPresentationPolicy.operationalStatus(
+            currentSelected = false,
+            hasResolvedPlace = true,
+            locating = true,
+            capabilityMessage = null,
+            requestMessage = null,
+        ))
         val radar = listOf(
             File("src/main/java/com/rainalarm/app/ui/RadarScreen.kt"),
             File("app/src/main/java/com/rainalarm/app/ui/RadarScreen.kt"),
         ).first(File::isFile).readText()
         assertTrue(radar.contains("locationRequestPending = true"))
         assertTrue(radar.contains("locating = locationRequestPending ||"))
+        assertTrue(radar.contains("permissionOperationGeneration == locationOperationGeneration") ||
+            radar.contains("completedGeneration == locationOperationGeneration"))
+        assertTrue(radar.contains("if (place != null || liveMapPlace != null) locationRequestPending = false"))
+        assertTrue(radar.contains("if (!screenActive) {"))
     }
 
     @Test fun `weather queue never exposes diagnostic status jargon`() {

@@ -7,7 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
-import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
@@ -36,6 +36,8 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -64,6 +66,10 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.content.ContextCompat
+import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.os.LocaleListCompat
+import androidx.annotation.StringRes
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -71,16 +77,23 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -101,10 +114,14 @@ import com.rainalarm.app.data.PlaceCollectionRules
 import com.rainalarm.app.data.StartupPermissionPreferences
 import com.rainalarm.app.data.StartupPermissionPolicy
 import com.rainalarm.app.data.StartupPermissionStep
+import com.rainalarm.app.data.AppLanguagePolicy
+import com.rainalarm.app.data.LanguageChoiceGatePolicy
+import com.rainalarm.app.data.LanguageChoicePreferences
 import com.rainalarm.app.data.PlatformLocationClient
 import com.rainalarm.app.data.LiveLocationPolicy
 import com.rainalarm.app.data.ForegroundLocationSnapshot
 import com.rainalarm.app.data.FollowCapabilityPolicy
+import com.rainalarm.app.data.FollowCapabilityReason
 import com.rainalarm.app.data.LocationEngineEvent
 import com.rainalarm.app.data.LocationFixDecision
 import com.rainalarm.app.data.LocationFixQuality
@@ -120,9 +137,15 @@ import com.rainalarm.app.data.LocationNameResolver
 import com.rainalarm.app.data.SavedPlace
 import com.rainalarm.app.data.RadarPlaybackSpeed
 import com.rainalarm.app.data.AppearanceMode
+import com.rainalarm.app.data.AppearancePhase
+import com.rainalarm.app.data.AppearanceProfile
+import com.rainalarm.app.data.AutomaticAppearancePolicy
+import com.rainalarm.app.data.AutomaticAppearancePreferences
+import com.rainalarm.app.data.ResolvedAppearance
 import com.rainalarm.app.data.RadarProviderKind
 import com.rainalarm.app.data.RadarProviderSelection
-import com.rainalarm.app.data.RadarProviderNoticePolicy
+import com.rainalarm.app.data.RadarProviderCoverageState
+import com.rainalarm.app.data.RadarProviderCapabilityResolver
 import com.rainalarm.app.data.RadarProviderNoticeDeduplicator
 import com.rainalarm.app.data.RadarSettingsRepository
 import com.rainalarm.app.data.CoverageMaskDarknessPreference
@@ -136,10 +159,14 @@ import com.rainalarm.app.domain.RadarCameraMemory
 import com.rainalarm.app.ui.LiveRadarScreen
 import com.rainalarm.app.ui.RadarChartTimeRequest
 import com.rainalarm.app.ui.RadarChartTimeLink
+import com.rainalarm.app.ui.RadarPageSwipeEvent
+import com.rainalarm.app.ui.RadarPageSwipeOverlay
 import com.rainalarm.app.ui.SatelliteAmbientCache
 import com.rainalarm.app.ui.CurrentLocationPresentationPolicy
 import com.rainalarm.app.ui.PlacesScreen
+import com.rainalarm.app.ui.PlaceMapPicker
 import com.rainalarm.app.ui.SettingsScreen
+import com.rainalarm.app.ui.LanguageSelectorDialog
 import com.rainalarm.app.ui.LocalRainAlarmPalette
 import com.rainalarm.app.ui.DarkRainPalette
 import com.rainalarm.app.ui.LightRainPalette
@@ -170,6 +197,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -183,6 +211,15 @@ private val Border: Color @Composable get() = LocalRainAlarmPalette.current.bord
 private val Danger: Color @Composable get() = LocalRainAlarmPalette.current.danger
 private const val CURRENT_LOCATION_TAG = "RainCurrentLocation"
 private const val POST_NOTIFICATIONS_PERMISSION = "android.permission.POST_NOTIFICATIONS"
+
+internal object RadarPagerBridgePolicy {
+    fun pagerDelta(pointerDeltaPixels: Float): Float = -pointerDeltaPixels
+
+    fun targetPage(originPage: Int, pageCount: Int, destinationDelta: Int?): Int {
+        if (pageCount <= 0) return 0
+        return (originPage + (destinationDelta ?: 0)).coerceIn(0, pageCount - 1)
+    }
+}
 
 /**
  * Provider taps update Settings immediately, but expensive selected-place radar analysis waits
@@ -209,7 +246,7 @@ object RadarProviderSwitchPolicy {
     ): Boolean = requested != persisted
 }
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Configure MapLibre's supported on-disk cache before any style or tile source opens it.
@@ -217,16 +254,75 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             val appViewModel: RainAlarmViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
-            val appearance by appViewModel.appAppearance.collectAsStateWithLifecycle()
+            val manualApp by appViewModel.appAppearance.collectAsStateWithLifecycle()
+            val manualMap by appViewModel.mapAppearance.collectAsStateWithLifecycle()
+            val manualCompass by appViewModel.compassAppearance.collectAsStateWithLifecycle()
+            val manualGraph by appViewModel.graphAppearance.collectAsStateWithLifecycle()
+            val automatic by appViewModel.automaticAppearance.collectAsStateWithLifecycle()
+            val weatherPair by appViewModel.currentWeather.collectAsStateWithLifecycle()
+            val appearancePlace by appViewModel.selectedPlace.collectAsStateWithLifecycle()
+            val appearancePlaces by appViewModel.placesState.collectAsStateWithLifecycle()
+            var appearanceClock by remember { mutableStateOf(java.time.Instant.now().epochSecond) }
             val systemDark = isSystemInDarkTheme()
-            val dark = appearance.isDark(systemDark)
+            // Solar events are day-scoped cached facts and remain valid after current conditions
+            // age out; do not create a second endpoint or throw them away at the weather TTL.
+            val currentWeatherCandidate = weatherPair?.takeIf { pair ->
+                appearancePlace?.let(::forecastSelectionKey) == pair.first
+            }?.second
+            var retainedSolarWeather by remember {
+                mutableStateOf<Pair<String, CurrentWeather>?>(null)
+            }
+            LaunchedEffect(appearancePlaces.selectedId, currentWeatherCandidate) {
+                if (currentWeatherCandidate != null) {
+                    retainedSolarWeather = appearancePlaces.selectedId to currentWeatherCandidate
+                } else if (retainedSolarWeather?.first != appearancePlaces.selectedId) {
+                    retainedSolarWeather = null
+                }
+            }
+            val appearanceWeather = currentWeatherCandidate
+                ?: retainedSolarWeather?.takeIf { it.first == appearancePlaces.selectedId }?.second
+            // The boundary timer is intentionally dormant while Auto is off. Rebase its clock
+            // when Auto is enabled, the selected location changes, or its cached solar facts are
+            // replaced so a long-running process never resolves a new profile using launch time.
+            LaunchedEffect(
+                automatic.enabled,
+                appearancePlaces.selectedId,
+                appearanceWeather?.sunriseEpochSeconds,
+                appearanceWeather?.sunsetEpochSeconds,
+                appearanceWeather?.timeZone,
+            ) {
+                appearanceClock = java.time.Instant.now().epochSecond
+            }
+            val resolved = AutomaticAppearancePolicy.resolve(
+                automatic = automatic,
+                manualApp = manualApp,
+                manualMap = manualMap,
+                manualCompass = manualCompass,
+                manualGraph = manualGraph,
+                nowEpochSeconds = appearanceClock,
+                weather = appearanceWeather,
+                systemDark = systemDark,
+            )
+            val nextAppearanceEvaluation = AutomaticAppearancePolicy.nextEvaluation(
+                appearanceClock,
+                appearanceWeather,
+            )
+            LaunchedEffect(nextAppearanceEvaluation, automatic.enabled) {
+                if (!automatic.enabled) return@LaunchedEffect
+                val next = nextAppearanceEvaluation ?: return@LaunchedEffect
+                val delayMillis = ((next - java.time.Instant.now().epochSecond + 1L)
+                    .coerceAtLeast(1L) * 1_000L)
+                delay(delayMillis)
+                appearanceClock = java.time.Instant.now().epochSecond
+            }
+            val dark = resolved.app.isDark(systemDark)
             SideEffect {
                 WindowInsetsControllerCompat(window, window.decorView).apply {
                     isAppearanceLightStatusBars = !dark
                     isAppearanceLightNavigationBars = !dark
                 }
             }
-            RainAlarmTheme(dark) { RainAlarmApp(appViewModel) }
+            RainAlarmTheme(dark) { RainAlarmApp(appViewModel, resolved) }
         }
     }
 }
@@ -297,6 +393,7 @@ data class ProviderMapNoticeEvent(
 
 @android.annotation.SuppressLint("LogNotTimber") // Local adb diagnostics must work without a logging dependency.
 class RainAlarmViewModel(application: Application) : AndroidViewModel(application) {
+    private fun uiString(id: Int): String = getApplication<Application>().getString(id)
     private val _providerSelectionContext = MutableStateFlow<ProviderSelectionContext?>(null)
     private val _providerMapNotice = MutableStateFlow<ProviderMapNoticeEvent?>(null)
     private var providerMapNoticeSerial = 0L
@@ -310,6 +407,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     private val alertScheduler = RainAlertScheduler(application)
     private val alertPreferences = RainAlertPreferences(application)
     private val startupPermissions = StartupPermissionPreferences(application)
+    private val languageChoices = LanguageChoicePreferences(application)
     private val radarSettings = RadarSettingsRepository(application)
     private val _state = MutableStateFlow<ForecastUiState>(ForecastUiState.Loading)
     val state: StateFlow<ForecastUiState> = _state.asStateFlow()
@@ -331,6 +429,8 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     )
     private val _startupReady = MutableStateFlow(false)
     val startupReady: StateFlow<Boolean> = _startupReady.asStateFlow()
+    private val _languageChoiceCompleted = MutableStateFlow<Boolean?>(null)
+    val languageChoiceCompleted: StateFlow<Boolean?> = _languageChoiceCompleted.asStateFlow()
     private val _livePlace = MutableStateFlow<SavedPlace?>(null)
     // Foreground-only marker position; small fixes do not invalidate point forecasts.
     private val _liveMapPlace = MutableStateFlow<SavedPlace?>(null)
@@ -345,6 +445,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     val foreground: StateFlow<Boolean> = _foreground.asStateFlow()
     private val _followRequested = MutableStateFlow(false)
     val followRequested: StateFlow<Boolean> = _followRequested.asStateFlow()
+    private var travelActivationPending = false
     private val _followCapability = MutableStateFlow(FollowUiCapability(false))
     val followCapability: StateFlow<FollowUiCapability> = _followCapability.asStateFlow()
     val selectedPlace = combine(placesState, _livePlace, _startupReady) { collection, live, ready ->
@@ -401,6 +502,9 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     val graphAppearance = radarSettings.graphAppearance.stateIn(
         viewModelScope, SharingStarted.Eagerly, com.rainalarm.app.data.NowCardAppearance.FOLLOW_APP,
     )
+    val automaticAppearance = radarSettings.automaticAppearance.stateIn(
+        viewModelScope, SharingStarted.Eagerly, AutomaticAppearancePreferences(),
+    )
     val enabledMapLayers = radarSettings.mapLayers.stateIn(
         viewModelScope, SharingStarted.Eagerly, emptySet(),
     )
@@ -431,11 +535,15 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     init {
         viewModelScope.launch {
             val freshInstall = places.ensureMigrated()
+            _languageChoiceCompleted.value = languageChoices.initialize(freshInstall)
             val explicitAlerts = alertPreferences.snapshot().enabled
                 .takeIf { alertPreferences.hasExplicitEnabledChoice() }
             val wantsAlerts = explicitAlerts != false
             if (freshInstall) startupPermissions.initializeFreshInstall(wantsAlerts)
-            places.applyStartupDefault()
+            // On first use, keep the deliberate virtual Current-location selection so the
+            // language/onboarding flow can obtain a real fix. Saved startup applies from the
+            // next cold start onward, without turning Current location into a startup pin.
+            if (!freshInstall) places.applyStartupDefault()
             when (AlertStartupPolicy.decide(explicitAlerts, notificationPermissionGranted(),
                 startupPermissions.notificationAttempted())) {
                 AlertStartupAction.SCHEDULE -> alertScheduler.ensureScheduledOnStartup()
@@ -467,7 +575,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
                     clearLiveLocation()
                     _locationState.value = if (currentSelected) {
                         LocationUiState.Unavailable(
-                            "Live location is available only while the app is in the foreground.",
+                            uiString(R.string.radar_location_unavailable),
                         )
                     } else LocationUiState.Idle
                     return@collectLatest
@@ -478,7 +586,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
                     _followRequested.value = false
                     clearLiveLocation()
                     _locationState.value = LocationUiState.Unavailable(
-                        "Location permission is unavailable. Select a saved place or grant foreground location.",
+                        uiString(R.string.location_permission_unavailable),
                     )
                     return@collectLatest
                 }
@@ -500,14 +608,14 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
                                 ) {
                                     _followRequested.value = false
                                     updateLocationProblem(
-                                        "Accurate location signal was lost. Follow paused.",
+                                        uiString(R.string.radar_location_unavailable),
                                         retainRecentFix = false,
                                     )
                                     return@launch
                                 }
                                 if (ageMillis > NavigationFixAdjudicationPolicy.maximumCandidateAgeMillis) {
                                     updateLocationProblem(
-                                        "No fresh device fix is available yet.",
+                                        uiString(R.string.radar_location_loading),
                                         retainRecentFix = false,
                                     )
                                 }
@@ -537,7 +645,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
                     throw cancelled
                 } catch (_: Exception) {
                     Log.w(CURRENT_LOCATION_TAG, "Foreground location updates unavailable")
-                    updateLocationProblem("Live location updates are unavailable.", retainRecentFix = true)
+                    updateLocationProblem(uiString(R.string.radar_location_unavailable), retainRecentFix = true)
                 }
             }
         }
@@ -570,6 +678,29 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun completeLanguageChoice() {
+        languageChoices.complete()
+        _languageChoiceCompleted.value = true
+    }
+
+    /** Rebind the few retained/persisted presentation strings after AppCompat changes locale. */
+    fun relocalizeUiAfterLocaleChange() {
+        alertPreferences.relocalizeStatus(notificationPermissionGranted())
+        _settingsMessage.value = null
+        _providerMapNotice.value = null
+        if (_state.value is ForecastUiState.Error) {
+            _state.value = ForecastUiState.Error(uiString(R.string.forecast_unavailable))
+        }
+        if (_locationState.value is LocationUiState.Unavailable) {
+            _locationState.value = LocationUiState.Unavailable(
+                uiString(
+                    if (locationClient.hasForegroundPermission()) R.string.radar_location_unavailable
+                    else R.string.location_permission_unavailable,
+                ),
+            )
+        }
+    }
+
     private fun notificationPermissionGranted(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
             ContextCompat.checkSelfPermission(getApplication(), POST_NOTIFICATIONS_PERMISSION) ==
@@ -578,7 +709,16 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     fun reportProviderSelection(place: SavedPlace, selection: RadarProviderSelection) {
         val placeKey = forecastSelectionKey(place)
         _providerSelectionContext.value = ProviderSelectionContext(placeKey, selection)
-        val message = RadarProviderNoticePolicy.message(selection)
+        val message = when {
+            selection.coverageState == RadarProviderCoverageState.UNCOVERED ->
+                uiString(R.string.radar_unavailable_here)
+            selection.requested != selection.active -> getApplication<Application>().getString(
+                R.string.radar_provider_fallback,
+                RadarProviderCapabilityResolver.displayName(selection.requested),
+                RadarProviderCapabilityResolver.displayName(selection.active),
+            )
+            else -> null
+        }
         // The logical current-location row keeps one identity as its coordinates move. A real
         // active-provider transition changes the selection portion; ordinary GPS fixes do not
         // repeatedly announce the same fallback.
@@ -596,7 +736,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     fun onStartupLocationPermissionResult(granted: Boolean) {
         if (granted) useCurrentLocation()
         else _locationState.value = LocationUiState.Unavailable(
-            "Location permission was not granted. Current location is unavailable; choose a saved place or retry.",
+            uiString(R.string.location_permission_unavailable),
         )
     }
 
@@ -622,7 +762,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
                 useCurrentLocation()
                 return
             }
-            _refreshStatus.value = NowRefreshStatus.Failed("A fresh current-location fix or saved place is required.")
+            _refreshStatus.value = NowRefreshStatus.Failed(uiString(R.string.radar_location_unavailable))
             return
         }
         _refreshStatus.value = NowRefreshStatus.Refreshing
@@ -715,11 +855,11 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
                 })
             } catch (_: TimeoutCancellationException) {
                 currentCoroutineContext().ensureActive()
-                ForecastUiState.Error("Forecast took too long. Tap refresh to try again.")
+                ForecastUiState.Error(uiString(R.string.forecast_unavailable))
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
-                ForecastUiState.Error(failure.message ?: "Forecast failed")
+                ForecastUiState.Error(failure.message ?: uiString(R.string.forecast_unavailable))
             }
             currentCoroutineContext().ensureActive()
             if (generation != forecastLoadGeneration || pendingRadarProvider.value != null ||
@@ -766,12 +906,25 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun locationQualityMessage(quality: LocationFixQuality): String? = when (quality) {
         LocationFixQuality.ACCURATE -> null
-        LocationFixQuality.WEAK -> "Location accuracy is temporarily weak."
-        LocationFixQuality.PROVISIONAL -> "Using a provisional location while a more accurate fix is acquired."
-        LocationFixQuality.APPROXIMATE -> "Using approximate location. Enable precise location for Follow."
+        LocationFixQuality.WEAK -> uiString(R.string.location_weak)
+        LocationFixQuality.PROVISIONAL -> uiString(R.string.location_provisional)
+        LocationFixQuality.APPROXIMATE -> uiString(R.string.location_approximate)
     }
 
+    private fun travelCapabilityMessage(
+        precisePermission: Boolean,
+        quality: LocationFixQuality?,
+    ): String = uiString(when (FollowCapabilityPolicy.unavailableReason(
+        precisePermission,
+        quality,
+    )) {
+        FollowCapabilityReason.PRECISE_PERMISSION -> R.string.travel_precise_required
+        FollowCapabilityReason.WAITING_FOR_FIX -> R.string.travel_fix_required
+        FollowCapabilityReason.WEAK_ACCURACY -> R.string.travel_accuracy_weak
+    })
+
     private fun updateLocationProblem(message: String, retainRecentFix: Boolean) {
+        travelActivationPending = false
         val recent = lastAcceptedNavigationFix?.takeIf {
             NavigationFixAdjudicationPolicy.withinWeakSignalGrace(
                 it,
@@ -816,11 +969,15 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         val canFollow = FollowCapabilityPolicy.canFollow(locationClient.hasPrecisePermission(), quality)
         _followCapability.value = FollowUiCapability(
             allowed = canFollow,
-            message = if (canFollow) null else FollowCapabilityPolicy.unavailableMessage(
+            message = if (canFollow) null else travelCapabilityMessage(
                 locationClient.hasPrecisePermission(), quality,
             ),
         )
         if (_followRequested.value && !canFollow) _followRequested.value = false
+        if (travelActivationPending && canFollow) {
+            travelActivationPending = false
+            _followRequested.value = true
+        }
         if (recenterAfterNextFix) {
             recenterAfterNextFix = false
             _currentRecenterTick.value++
@@ -885,16 +1042,33 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setFollowRequested(enabled: Boolean): Boolean {
         if (!enabled) {
+            travelActivationPending = false
             _followRequested.value = false
             return true
         }
         val capability = _followCapability.value
         if (placesState.value.selectedId != CURRENT_LOCATION_ID || !_foreground.value || !capability.allowed) {
-            val message = capability.message ?: "Wait for an accurate current-location fix before starting Follow."
+            val message = capability.message ?: uiString(R.string.radar_location_loading)
             updateLocationProblem(message, retainRecentFix = true)
             return false
         }
         _followRequested.value = true
+        return true
+    }
+
+    /** One user intent: select live Current, obtain a precise fix, recenter and follow. */
+    fun activateTravelMode(): Boolean {
+        if (!locationClient.hasForegroundPermission()) return false
+        travelActivationPending = true
+        val currentReady = placesState.value.selectedId == CURRENT_LOCATION_ID &&
+            _followCapability.value.allowed && _livePlace.value != null
+        if (currentReady) {
+            travelActivationPending = false
+            _followRequested.value = true
+            _currentRecenterTick.value++
+        } else {
+            requestCurrentLocation(recenterMap = true)
+        }
         return true
     }
 
@@ -917,7 +1091,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         if (!transition.allowed) {
             Log.w(CURRENT_LOCATION_TAG, "Current selection denied: no foreground permission")
             _locationState.value = LocationUiState.Unavailable(
-                "Location permission is unavailable. Your selected place is unchanged.",
+                uiString(R.string.location_permission_unavailable),
             )
             return
         }
@@ -926,9 +1100,11 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
             LiveLocationPolicy.isFresh(lastLiveFixTimeMillis, System.currentTimeMillis()) &&
             _livePlace.value != null
         if (preserveFix && recenterMap) _currentRecenterTick.value++
-        if (!preserveFix) clearLiveLocation()
+        if (!preserveFix) {
+            clearLiveLocation()
+            _locationState.value = LocationUiState.Locating
+        }
         recenterAfterNextFix = recenterMap
-        _locationState.value = LocationUiState.Locating
         Log.i(CURRENT_LOCATION_TAG, "Selecting virtual Current and requesting a fresh fix")
         pendingPlaceSelectionId = CURRENT_LOCATION_ID
         _currentLocationRequest.value = transition.requestGeneration
@@ -959,6 +1135,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     fun selectPlace(id: String) {
         pendingPlaceSelectionId = id.takeIf { it != placesState.value.selectedId }
         if (id != CURRENT_LOCATION_ID) {
+            travelActivationPending = false
             currentSelectionJob?.cancel()
             placeNameJob?.cancel()
         }
@@ -1046,7 +1223,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
                 if (pendingRadarProvider.value == provider) {
                     pendingRadarProvider.value = null
                     forecastRefreshVersion.value++
-                    _settingsMessage.value = "Couldn't save the radar provider. Please try again."
+                    _settingsMessage.value = uiString(R.string.settings_save_failed)
                 }
             }
         }
@@ -1056,7 +1233,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             runCatching { radarSettings.setShowLikelySnow(enabled) }
                 .onSuccess { _settingsMessage.value = null }
-                .onFailure { _settingsMessage.value = "Couldn't save the snow display setting." }
+                .onFailure { _settingsMessage.value = uiString(R.string.settings_save_failed) }
         }
     }
 
@@ -1064,7 +1241,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             runCatching { radarSettings.setPlaybackSpeed(speed) }
                 .onSuccess { _settingsMessage.value = null }
-                .onFailure { _settingsMessage.value = "Couldn't save animation speed. Please try again." }
+                .onFailure { _settingsMessage.value = uiString(R.string.settings_save_failed) }
         }
     }
 
@@ -1072,7 +1249,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             try { radarSettings.setAppAppearance(mode); _settingsMessage.value = null }
             catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { _settingsMessage.value = "Couldn't save app appearance." }
+            catch (_: Exception) { _settingsMessage.value = uiString(R.string.settings_save_failed) }
         }
     }
 
@@ -1080,7 +1257,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             try { radarSettings.setMapAppearance(mode); _settingsMessage.value = null }
             catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { _settingsMessage.value = "Couldn't save map appearance." }
+            catch (_: Exception) { _settingsMessage.value = uiString(R.string.settings_save_failed) }
         }
     }
 
@@ -1090,6 +1267,14 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setGraphAppearance(mode: com.rainalarm.app.data.NowCardAppearance) {
         viewModelScope.launch { radarSettings.setGraphAppearance(mode) }
+    }
+
+    fun setAutomaticAppearanceEnabled(enabled: Boolean) {
+        viewModelScope.launch { radarSettings.setAutomaticAppearanceEnabled(enabled) }
+    }
+
+    fun setAppearanceProfile(phase: AppearancePhase, profile: AppearanceProfile) {
+        viewModelScope.launch { radarSettings.setAppearanceProfile(phase, profile) }
     }
 
     fun setMapLayerEnabled(layer: RadarMapLayer, enabled: Boolean) {
@@ -1109,11 +1294,11 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     }
 }
 
-internal enum class Destination(val label: String) {
-    NOW("Now"),
-    RADAR("Radar"),
-    PLACES("Places"),
-    SETTINGS("Settings"),
+internal enum class Destination(@StringRes val labelRes: Int) {
+    NOW(R.string.nav_now),
+    RADAR(R.string.nav_radar),
+    PLACES(R.string.nav_places),
+    SETTINGS(R.string.nav_settings),
 }
 
 private val Destination.icon: ImageVector
@@ -1125,11 +1310,38 @@ private val Destination.icon: ImageVector
     }
 
 @Composable
-private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) {
+private fun RainAlarmApp(
+    viewModel: RainAlarmViewModel = androidx.lifecycle.viewmodel.compose.viewModel(),
+    resolvedAppearance: ResolvedAppearance,
+) {
     val context = LocalContext.current
+    val appLocaleTags = LocalConfiguration.current.locales.toLanguageTags()
     val startupPermissions = remember(context) { StartupPermissionPreferences(context) }
     val startupReady by viewModel.startupReady.collectAsStateWithLifecycle()
+    val languageChoiceCompleted by viewModel.languageChoiceCompleted.collectAsStateWithLifecycle()
     var startupPromptInFlight by rememberSaveable { mutableStateOf(false) }
+    var languageDialogOpen by rememberSaveable { mutableStateOf(false) }
+    var languageDialogRequired by rememberSaveable { mutableStateOf(false) }
+    // Do not save this across AppCompat's locale recreation: the new Activity is precisely
+    // where permission onboarding may safely continue. Same-locale confirmation clears it
+    // through the short fallback below.
+    var localeApplyInFlight by remember { mutableStateOf(false) }
+    var activeLanguageTag by remember {
+        mutableStateOf(
+            AppLanguagePolicy.normalizedTag(
+                AppCompatDelegate.getApplicationLocales().toLanguageTags(),
+            ),
+        )
+    }
+    LaunchedEffect(appLocaleTags) {
+        viewModel.relocalizeUiAfterLocaleChange()
+    }
+    LaunchedEffect(startupReady, languageChoiceCompleted) {
+        if (LanguageChoiceGatePolicy.showChoice(startupReady, languageChoiceCompleted)) {
+            languageDialogRequired = true
+            languageDialogOpen = true
+        }
+    }
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { result ->
@@ -1142,8 +1354,17 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
         viewModel.onStartupNotificationPermissionResult(granted)
         startupPromptInFlight = false
     }
-    LaunchedEffect(startupReady, startupPromptInFlight) {
-        if (!startupReady || startupPromptInFlight) return@LaunchedEffect
+    LaunchedEffect(
+        startupReady,
+        startupPromptInFlight,
+        languageChoiceCompleted,
+        localeApplyInFlight,
+    ) {
+        // Language is the first-use gate: platform permission prompts must never race it or
+        // become visible behind its dialog while AppCompat recreates this Activity.
+        if (!startupReady || startupPromptInFlight || languageChoiceCompleted != true ||
+            localeApplyInFlight
+        ) return@LaunchedEffect
         val locationGranted = listOf(Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION).any {
             ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
@@ -1182,20 +1403,64 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
             viewModel.setForeground(false)
         }
     }
-    var destination by remember { mutableStateOf(Destination.NOW) }
+    var destination by rememberSaveable { mutableStateOf(Destination.NOW) }
+    val pagerState = rememberPagerState(initialPage = destination.ordinal) {
+        Destination.entries.size
+    }
+    val navigationScope = rememberCoroutineScope()
+    val pagerAnimationsEnabled = remember(context) {
+        runCatching {
+            android.provider.Settings.Global.getFloat(
+                context.contentResolver,
+                android.provider.Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f,
+            )
+        }.getOrDefault(1f) > 0f
+    }
+    var radarPageDragChannel by remember { mutableStateOf<Channel<Float>?>(null) }
+    var radarPageDragJob by remember { mutableStateOf<Job?>(null) }
+    var radarPageSettleJob by remember { mutableStateOf<Job?>(null) }
+    var radarPageTransitionActive by remember { mutableStateOf(false) }
+    var radarPageSwipeBounds by remember { mutableStateOf(Rect.Zero) }
     var nowVisitGeneration by remember { mutableIntStateOf(0) }
+    var radarEntryGeneration by remember { mutableIntStateOf(0) }
     var chartRequestSerial by remember { mutableIntStateOf(0) }
     var pendingChartTime by remember { mutableStateOf<RadarChartTimeRequest?>(null) }
+    var placePickerVisible by rememberSaveable { mutableStateOf(false) }
+    BackHandler(enabled = placePickerVisible) { placePickerVisible = false }
+    fun cancelRadarPageTransition() {
+        radarPageDragChannel?.close()
+        radarPageDragChannel = null
+        radarPageDragJob?.cancel()
+        radarPageDragJob = null
+        radarPageSettleJob?.cancel()
+        radarPageSettleJob = null
+        radarPageTransitionActive = false
+    }
     fun navigateTo(next: Destination) {
+        if (radarPageTransitionActive) cancelRadarPageTransition()
         val previous = destination
         if (previous == next) return
         if (RadarChartTimeLink.shouldDiscard(pendingChartTime, pendingChartTime?.selectedPlaceId.orEmpty(),
                 previous == Destination.RADAR && next != Destination.RADAR)) pendingChartTime = null
+        if (next == Destination.RADAR) radarEntryGeneration++
         destination = next
+        if (pagerState.currentPage != next.ordinal) {
+            navigationScope.launch { pagerState.animateScrollToPage(next.ordinal) }
+        }
         if (NowEntryRefreshPolicy.entersNow(previous, next)) {
             nowVisitGeneration++
             viewModel.refreshOnNowEntry()
         }
+    }
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.settledPage to radarPageTransitionActive }
+            .distinctUntilChanged().collect { (page, radarTransition) ->
+                if (!radarTransition) {
+                    val next = Destination.entries[page]
+                    if (destination != next) navigateTo(next)
+                }
+            }
     }
     val state by viewModel.state.collectAsStateWithLifecycle()
     val refreshStatus by viewModel.refreshStatus.collectAsStateWithLifecycle()
@@ -1224,6 +1489,7 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
     val mapAppearance by viewModel.mapAppearance.collectAsStateWithLifecycle()
     val compassAppearance by viewModel.compassAppearance.collectAsStateWithLifecycle()
     val graphAppearance by viewModel.graphAppearance.collectAsStateWithLifecycle()
+    val automaticAppearance by viewModel.automaticAppearance.collectAsStateWithLifecycle()
     val enabledMapLayers by viewModel.enabledMapLayers.collectAsStateWithLifecycle()
     val windArrowScale by viewModel.windArrowScale.collectAsStateWithLifecycle()
     val coverageMaskDarkness by viewModel.coverageMaskDarkness.collectAsStateWithLifecycle()
@@ -1249,8 +1515,101 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
     }
     val systemDark = isSystemInDarkTheme()
     val settingsMessage by viewModel.settingsMessage.collectAsStateWithLifecycle()
+    val activeLanguageName = activeLanguageTag?.let { AppLanguagePolicy.option(it).nativeName }
+        ?: androidx.compose.ui.res.stringResource(R.string.language_device_default)
+    fun showLanguageSelector() {
+        languageDialogRequired = false
+        languageDialogOpen = true
+    }
+    fun applyLanguage(tag: String?) {
+        val normalized = AppLanguagePolicy.normalizedTag(tag)
+        val previous = AppLanguagePolicy.normalizedTag(
+            AppCompatDelegate.getApplicationLocales().toLanguageTags(),
+        )
+        localeApplyInFlight = true
+        languageDialogOpen = false
+        languageDialogRequired = false
+        activeLanguageTag = normalized
+        viewModel.completeLanguageChoice()
+        if (normalized != previous) {
+            AppCompatDelegate.setApplicationLocales(
+                normalized?.let(LocaleListCompat::forLanguageTags) ?: LocaleListCompat.getEmptyLocaleList(),
+            )
+        }
+        navigationScope.launch {
+            // AppCompat recreates for an actual change. The fallback also makes confirming an
+            // already-active language continue onboarding without depending on recreation.
+            delay(300)
+            localeApplyInFlight = false
+        }
+    }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= 720.dp
+        fun handleRadarPageSwipe(event: RadarPageSwipeEvent) {
+            when (event) {
+                RadarPageSwipeEvent.Begin -> {
+                    if (wide || destination != Destination.RADAR ||
+                        pagerState.settledPage != Destination.RADAR.ordinal
+                    ) return
+                    cancelRadarPageTransition()
+                    radarPageTransitionActive = true
+                    val channel = Channel<Float>(Channel.UNLIMITED)
+                    radarPageDragChannel = channel
+                    radarPageDragJob = navigationScope.launch {
+                        pagerState.scroll {
+                            for (pointerDelta in channel) {
+                                scrollBy(RadarPagerBridgePolicy.pagerDelta(pointerDelta))
+                            }
+                        }
+                    }
+                }
+                is RadarPageSwipeEvent.Drag -> {
+                    if (radarPageTransitionActive) {
+                        radarPageDragChannel?.trySend(event.pointerDeltaPixels)
+                    }
+                }
+                is RadarPageSwipeEvent.End, RadarPageSwipeEvent.Cancel -> {
+                    if (!radarPageTransitionActive) return
+                    val destinationDelta = (event as? RadarPageSwipeEvent.End)?.destinationDelta
+                    val channel = radarPageDragChannel
+                    val dragJob = radarPageDragJob
+                    radarPageDragChannel = null
+                    radarPageDragJob = null
+                    channel?.close()
+                    radarPageSettleJob?.cancel()
+                    radarPageSettleJob = navigationScope.launch {
+                        try {
+                            dragJob?.join()
+                            val target = RadarPagerBridgePolicy.targetPage(
+                                Destination.RADAR.ordinal,
+                                Destination.entries.size,
+                                destinationDelta,
+                            )
+                            if (pagerAnimationsEnabled) pagerState.animateScrollToPage(target)
+                            else pagerState.scrollToPage(target)
+                        } finally {
+                            radarPageSettleJob = null
+                            radarPageTransitionActive = false
+                        }
+                    }
+                }
+            }
+        }
+        Box(
+            Modifier.fillMaxSize(),
+        ) {
+        if (placePickerVisible) {
+            PlaceMapPicker(
+                initial = selectedPlace,
+                existingPlaces = placesState.places,
+                mapStyle = resolvedAppearance.map.resolveMapStyle(systemDark),
+                onCancel = { placePickerVisible = false },
+                onConfirm = {
+                    viewModel.saveAndSelect(it)
+                    placePickerVisible = false
+                },
+            )
+        } else {
         Scaffold(
             containerColor = Background,
             contentColor = TextPrimary,
@@ -1263,7 +1622,7 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
                                 selected = destination == item,
                                 onClick = { navigateTo(item) },
                                 icon = { Icon(item.icon, contentDescription = null, modifier = Modifier.size(29.dp)) },
-                                label = { Text(item.label) },
+                                label = { Text(androidx.compose.ui.res.stringResource(item.labelRes)) },
                             )
                         }
                     }
@@ -1279,25 +1638,76 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
                                 selected = destination == item,
                                 onClick = { navigateTo(item) },
                                 icon = { Icon(item.icon, contentDescription = null) },
-                                label = { Text(item.label) },
+                                label = { Text(androidx.compose.ui.res.stringResource(item.labelRes)) },
                             )
                         }
                     }
                 }
-                AnimatedContent(
-                    targetState = destination,
-                    transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(120)) },
-                    label = "screen",
-                    modifier = Modifier.fillMaxSize(),
-                ) { screen ->
+                val previousDestination = Destination.entries.getOrNull(destination.ordinal - 1)
+                val nextDestination = Destination.entries.getOrNull(destination.ordinal + 1)
+                val previousActionLabel = previousDestination?.let { previous ->
+                    androidx.compose.ui.res.stringResource(
+                        R.string.navigation_previous_page,
+                        androidx.compose.ui.res.stringResource(previous.labelRes),
+                    )
+                }
+                val nextActionLabel = nextDestination?.let { next ->
+                    androidx.compose.ui.res.stringResource(
+                        R.string.navigation_next_page,
+                        androidx.compose.ui.res.stringResource(next.labelRes),
+                    )
+                }
+                val pageStateDescription = androidx.compose.ui.res.stringResource(
+                    R.string.navigation_page_position,
+                    androidx.compose.ui.res.stringResource(destination.labelRes),
+                    destination.ordinal + 1,
+                    Destination.entries.size,
+                )
+                val navigationAccessibilityActions = buildList {
+                    previousDestination?.let { previous ->
+                        add(
+                            CustomAccessibilityAction(
+                                label = requireNotNull(previousActionLabel),
+                            ) {
+                                navigateTo(previous)
+                                true
+                            },
+                        )
+                    }
+                    nextDestination?.let { next ->
+                        add(
+                            CustomAccessibilityAction(
+                                label = requireNotNull(nextActionLabel),
+                            ) {
+                                navigateTo(next)
+                                true
+                            },
+                        )
+                    }
+                }
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier.fillMaxSize().semantics {
+                        stateDescription = pageStateDescription
+                        customActions = navigationAccessibilityActions
+                    },
+                    // Disable the pager for the whole time Radar is the selected destination.
+                    // Looking only at currentPage can flip this flag half-way through a swipe
+                    // into Radar and leave the pager in an indeterminate drag state.
+                    userScrollEnabled = !wide && destination != Destination.RADAR,
+                    beyondViewportPageCount = Destination.entries.lastIndex,
+                    key = { Destination.entries[it].name },
+                ) { page ->
+                    val screen = Destination.entries[page]
                     when (screen) {
                         Destination.NOW -> com.rainalarm.app.ui.NowScreen(
                             state, viewModel::refresh,
-                            selectedPlace?.name ?: if (placesState.selectedId == CURRENT_LOCATION_ID) "Current location" else null,
+                            selectedPlace?.name ?: if (placesState.selectedId == CURRENT_LOCATION_ID)
+                                androidx.compose.ui.res.stringResource(R.string.current_location) else null,
                             placesState, locationState, viewModel::selectPlace, viewModel::useCurrentLocation,
                             currentWeather, visibleWeatherMetrics,
-                            compassAppearance = compassAppearance,
-                            graphAppearance = graphAppearance,
+                            compassAppearance = resolvedAppearance.compass,
+                            graphAppearance = resolvedAppearance.graph,
                             refreshStatus = refreshStatus,
                             visitGeneration = nowVisitGeneration,
                             selectedLocationKey = selectedPlace?.let(::forecastSelectionKey),
@@ -1315,7 +1725,8 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
                             liveMapPlace = liveMapPlace,
                             places = placesState,
                             playbackSpeed = radarPlaybackSpeed,
-                            mapStyle = mapAppearance.resolveMapStyle(systemDark),
+                            requestedProvider = radarProvider,
+                            mapStyle = resolvedAppearance.map.resolveMapStyle(systemDark),
                             coverageMaskDarkness = coverageMaskDarkness,
                             saveAndSelect = viewModel::saveAndSelect,
                             locationState = locationState,
@@ -1324,6 +1735,7 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
                             followCapability = followCapability,
                             liveFixElapsedRealtimeNanos = liveFixElapsedRealtimeNanos,
                             onFollowLiveChange = viewModel::setFollowRequested,
+                            activateTravelMode = viewModel::activateTravelMode,
                             currentRecenterTick = currentRecenterTick,
                             useCurrentLocation = viewModel::useCurrentLocation,
                             recenterToCurrentLocation = viewModel::recenterToCurrentLocation,
@@ -1346,17 +1758,23 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
                             providerNoticeEvent = providerMapNotice,
                             onProviderNoticeConsumed = viewModel::consumeProviderMapNotice,
                             onProviderSelection = viewModel::reportProviderSelection,
+                            onPageSwipeBoundsChanged = { radarPageSwipeBounds = it },
+                            screenActive = destination == Destination.RADAR,
+                            entryFocusGeneration = radarEntryGeneration,
                         )
                         Destination.PLACES -> PlacesScreen(
                             collection = placesState,
+                            defaultStartupId = defaultStartupId,
                             locationState = locationState,
                             useCurrentLocation = viewModel::useCurrentLocation,
                             saveAndSelect = viewModel::saveAndSelect,
                             selectPlace = viewModel::selectPlace,
                             deletePlace = viewModel::deletePlace,
-                            setPinned = viewModel::setPinned,
+                            setDefaultStartupId = viewModel::setDefaultStartupPlace,
                             renamePlace = viewModel::renamePlace,
                             reorderPlaces = viewModel::reorderPlaces,
+                            chooseOnMap = { placePickerVisible = true },
+                            screenActive = destination == Destination.PLACES,
                         )
                         Destination.SETTINGS -> SettingsScreen(
                             selectedProvider = radarProvider,
@@ -1373,14 +1791,17 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
                             selectCompassAppearance = viewModel::setCompassAppearance,
                             graphAppearance = graphAppearance,
                             selectGraphAppearance = viewModel::setGraphAppearance,
+                            automaticAppearance = automaticAppearance,
+                            activeAppearancePhase = resolvedAppearance.phase,
+                            nextAppearanceSwitchEpochSeconds = resolvedAppearance.nextSwitchEpochSeconds,
+                            setAutomaticAppearanceEnabled = viewModel::setAutomaticAppearanceEnabled,
+                            setAppearanceProfile = viewModel::setAppearanceProfile,
+                            resolvedMapAppearance = resolvedAppearance.map,
                             enabledMapLayers = enabledMapLayers,
                             windArrowScale = windArrowScale,
                             selectWindArrowScale = viewModel::setWindArrowScale,
                             coverageMaskDarkness = coverageMaskDarkness,
                             selectCoverageMaskDarkness = viewModel::setCoverageMaskDarkness,
-                            savedPlaces = placesState,
-                            defaultStartupId = defaultStartupId,
-                            setDefaultStartupId = viewModel::setDefaultStartupPlace,
                             alertSnapshot = alertState,
                             enableAlerts = viewModel::enableAlerts,
                             disableAlerts = viewModel::disableAlerts,
@@ -1390,172 +1811,29 @@ private fun RainAlarmApp(viewModel: RainAlarmViewModel = androidx.lifecycle.view
                             selectedPlace = selectedPlace,
                             activeProvider = activeRadarSelection?.active,
                             activeProviderCoverage = activeRadarSelection?.coverageState,
+                            activeLanguageName = activeLanguageName,
+                            openLanguageSelector = ::showLanguageSelector,
                         )
                     }
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun NowScreen(state: ForecastUiState, refresh: () -> Unit) {
-    Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 18.dp),
-    ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("RAIN ALARM", color = Accent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                Text(
-                    if (state is ForecastUiState.Ready) state.forecast.locationName else "Your forecast",
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.semantics { heading() },
-                )
-            }
-            IconButton(onClick = refresh, modifier = Modifier.size(48.dp)) {
-                Icon(Icons.Default.Refresh, contentDescription = "Refresh forecast", tint = Accent)
-            }
-        }
-        Spacer(Modifier.height(20.dp))
-        when (state) {
-            ForecastUiState.Loading -> LoadingCard()
-            is ForecastUiState.Error -> ErrorCard(state.message, refresh)
-            is ForecastUiState.Ready -> ForecastContent(state.forecast)
-        }
-    }
-}
-
-@Composable
-private fun LoadingCard() {
-    Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(24.dp)) {
-        Row(Modifier.fillMaxWidth().padding(28.dp), verticalAlignment = Alignment.CenterVertically) {
-            CircularProgressIndicator(Modifier.size(30.dp), color = Accent, strokeWidth = 3.dp)
-            Spacer(Modifier.width(18.dp))
-            Column {
-                Text("Checking the next two hours", fontWeight = FontWeight.SemiBold)
-                Text("Building your local rain timeline...", color = TextSecondary)
-            }
-        }
-    }
-}
-
-@Composable
-private fun ErrorCard(message: String, refresh: () -> Unit) {
-    Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(24.dp)) {
-        Column(Modifier.padding(24.dp)) {
-            Text("Forecast unavailable", color = Danger, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-            Text(message, color = TextSecondary, modifier = Modifier.padding(vertical = 12.dp))
-            Button(onClick = refresh) { Text("Try again") }
-        }
-    }
-}
-
-@Composable
-private fun ForecastContent(forecast: ForecastSnapshot) {
-    val summary = forecast.summary
-    Card(
-        colors = CardDefaults.cardColors(containerColor = Surface),
-        shape = RoundedCornerShape(24.dp),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(Modifier.padding(24.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(10.dp).clip(CircleShape).background(Accent))
-                Spacer(Modifier.width(8.dp))
-                val age = java.time.Duration.between(forecast.fetchedAt, java.time.Instant.now()).toMinutes().coerceAtLeast(0)
-                Text(
-                    if (forecast.isCached) "Cached - updated ${age} min ago" else "Updated just now",
-                    color = if (forecast.isCached) Danger else TextSecondary,
-                    fontSize = 13.sp,
-                )
-            }
-            Spacer(Modifier.height(18.dp))
-            Text(
-                summary.headline,
-                fontSize = 38.sp,
-                lineHeight = 42.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.semantics { heading() },
+        if (languageDialogOpen) {
+            LanguageSelectorDialog(
+                selectedTag = activeLanguageTag,
+                required = languageDialogRequired,
+                onConfirm = ::applyLanguage,
+                onDismiss = {
+                    if (!languageDialogRequired) languageDialogOpen = false
+                },
             )
-            Text(summary.detail, color = TextSecondary, fontSize = 16.sp, modifier = Modifier.padding(top = 8.dp))
-            Row(Modifier.padding(top = 22.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Metric(
-                    if (forecast.isRadarNowcast) "RADAR" else "PEAK",
-                    if (forecast.isRadarNowcast) "Nowcast" else String.format(Locale.UK, "%.1f mm/h", summary.peakRateMmPerHour ?: 0.0),
-                )
-                Metric("CHANCE", summary.peakProbabilityPercent?.let { "${it}%" } ?: "--")
-            }
         }
-    }
-    if (forecast.isDemo) {
-        Text(
-            "Demo forecast - choose current location in Places to prepare live data.",
-            color = Accent,
-            fontSize = 13.sp,
-            modifier = Modifier.padding(horizontal = 4.dp, vertical = 14.dp),
+        RadarPageSwipeOverlay(
+            mapBounds = radarPageSwipeBounds,
+            enabled = !wide && destination == Destination.RADAR && !languageDialogOpen,
+            onPageSwipe = ::handleRadarPageSwipe,
         )
-    }
-    Timeline(forecast)
-    Spacer(Modifier.height(18.dp))
-    Text(
-        if (forecast.isRadarNowcast) {
-            "Point nowcast: ${forecast.sourceLabel}. Future radar frames remain a forecast, not an observation."
-        } else {
-            "Point forecast: ${forecast.sourceLabel} (model-derived). No forecast is an observation."
-        },
-        color = TextSecondary,
-        fontSize = 12.sp,
-        lineHeight = 17.sp,
-    )
-}
-
-@Composable
-private fun RowScope.Metric(label: String, value: String) {
-    Column(
-        Modifier.weight(1f).background(Background, RoundedCornerShape(18.dp)).padding(16.dp),
-    ) {
-        Text(label, color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-        Text(value, color = TextPrimary, fontWeight = FontWeight.SemiBold)
-    }
-}
-
-@Composable
-private fun Timeline(forecast: ForecastSnapshot) {
-    Text("NEXT 2 HOURS", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-    Spacer(Modifier.height(10.dp))
-    Card(
-        colors = CardDefaults.cardColors(containerColor = Surface),
-        shape = RoundedCornerShape(22.dp),
-        modifier = Modifier.fillMaxWidth().semantics {
-            contentDescription = "Two hour precipitation timeline in fifteen minute buckets"
-        },
-    ) {
-        val visible = forecast.slots.take(9)
-        val max = visible.maxOfOrNull { it.precipitationMm }?.coerceAtLeast(0.1) ?: 0.1
-        Row(
-            Modifier.fillMaxWidth().height(150.dp).padding(horizontal = 14.dp, vertical = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.Bottom,
-        ) {
-            visible.forEachIndexed { index, slot ->
-                val formatter = DateTimeFormatter.ofPattern("HH:mm")
-                val time = formatter.format(slot.startsAt.atZone(ZoneId.systemDefault()))
-                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Box(
-                        Modifier.weight(1f).width(12.dp).clip(RoundedCornerShape(8.dp))
-                            .background(Border),
-                        contentAlignment = Alignment.BottomCenter,
-                    ) {
-                        Box(
-                            Modifier.fillMaxWidth()
-                                .fillMaxHeight((slot.precipitationMm / max).toFloat().coerceIn(0.04f, 1f))
-                                .background(if (slot.precipitationMm >= 0.1) Accent else TextSecondary),
-                        )
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Text(if (index % 2 == 0) time else "", color = TextSecondary, fontSize = 9.sp)
-                }
-            }
+        }
         }
     }
 }

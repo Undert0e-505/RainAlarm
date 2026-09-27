@@ -2,6 +2,7 @@ package com.rainalarm.app.ui
 
 import com.rainalarm.app.data.CURRENT_LOCATION_ID
 import com.rainalarm.app.data.RadarProviderKind
+import com.rainalarm.app.data.RadarSession
 import com.rainalarm.app.data.SavedPlace
 
 /** A live marker is independent of the materially updated forecast/session place. */
@@ -22,21 +23,41 @@ internal object RadarLiveMapPolicy {
  * paused player.
  */
 internal data class RadarPlaybackRefreshIdentity(
-    val selectedPlaceId: String,
+    val retainedFootprint: String?,
     val requestedProvider: RadarProviderKind?,
 )
 
 internal object RadarPlaybackRefreshPolicy {
     fun identity(
-        selectedPlaceId: String,
+        session: RadarSession?,
         requestedProvider: RadarProviderKind?,
-    ): RadarPlaybackRefreshIdentity = RadarPlaybackRefreshIdentity(selectedPlaceId, requestedProvider)
+    ): RadarPlaybackRefreshIdentity = identity(
+        retainedFootprint = session?.let { active ->
+            active.region?.id?.let { "region:$it" }
+                ?: (active.regional?.bounds ?: active.detail?.bounds)?.let { bounds ->
+                    listOf(
+                        bounds.topLeft.latitude.toBits(), bounds.topLeft.longitude.toBits(),
+                        bounds.bottomRight.latitude.toBits(), bounds.bottomRight.longitude.toBits(),
+                    ).joinToString(":", prefix = "raster:")
+                }
+        },
+        requestedProvider,
+    )
+
+    fun identity(
+        retainedFootprint: String?,
+        requestedProvider: RadarProviderKind?,
+    ): RadarPlaybackRefreshIdentity = RadarPlaybackRefreshIdentity(
+        retainedFootprint, requestedProvider,
+    )
 }
 
 /** Keeps successive Follow camera movements smooth without building an animation queue. */
 internal object RadarFollowCameraPolicy {
     const val defaultDurationMillis = 1_000
-    const val minimumDurationMillis = 500
+    // Match the fastest requested Travel fix cadence. Each ease joins two real fixes; no
+    // synthetic GPS samples are created, and a newer accepted fix cancels the prior transition.
+    const val minimumDurationMillis = 200
     const val maximumDurationMillis = 1_200
 
     fun durationMillis(previousElapsedNanos: Long, currentElapsedNanos: Long): Int {

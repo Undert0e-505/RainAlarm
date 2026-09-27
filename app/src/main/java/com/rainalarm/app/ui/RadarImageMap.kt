@@ -25,6 +25,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
@@ -66,6 +67,7 @@ import com.rainalarm.app.domain.RadarCameraMemory
 import com.rainalarm.app.domain.RadarCameraTarget
 import com.rainalarm.app.domain.WebMercator
 import com.rainalarm.app.domain.RadarTimelineBracket
+import com.rainalarm.app.domain.RadarEntryFocusPolicy
 import com.rainalarm.app.domain.RainAlarmPalette
 import org.maplibre.android.MapLibre
 import org.maplibre.android.offline.OfflineManager
@@ -1101,11 +1103,13 @@ private class LegacyStaticFallbackOverlayView(
 ) : View(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { alpha = 230 }
     private val markerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF4FC3F7.toInt() }
+    private val markerOutlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF0D0D0D.toInt() }
     private val decodeThread = HandlerThread("rain-radar-static-fallback").apply { start() }
     private val decodeHandler = Handler(decodeThread.looper)
     private var bitmap: android.graphics.Bitmap? = null
     private var map: MapLibreMap? = null
     private var marker = session.place
+    private var markerScale = 1f
     private var decodeStarted = false
     private var disposed = false
 
@@ -1122,6 +1126,11 @@ private class LegacyStaticFallbackOverlayView(
 
     fun setPlace(place: SavedPlace) {
         marker = place
+        invalidate()
+    }
+
+    fun setMarkerScale(scale: Float) {
+        markerScale = scale.takeIf(Float::isFinite)?.coerceIn(1f, 1.6f) ?: 1f
         invalidate()
     }
 
@@ -1214,7 +1223,8 @@ private class LegacyStaticFallbackOverlayView(
         )
         canvas.drawBitmap(image, null, destination, paint)
         val point = ready.projection.toScreenLocation(LatLng(marker.latitude, marker.longitude))
-        canvas.drawCircle(point.x, point.y, 7f * resources.displayMetrics.density, markerPaint)
+        canvas.drawCircle(point.x, point.y, RadarMarkerGeometry.outerRadius(markerScale), markerOutlinePaint)
+        canvas.drawCircle(point.x, point.y, RadarMarkerGeometry.innerRadius(markerScale), markerPaint)
     }
 }
 
@@ -1224,6 +1234,7 @@ internal interface RadarOverlayController {
     fun attachMap(ready: MapLibreMap)
     fun setState(next: RadarTimelineBracket, playing: Boolean, mapPlace: SavedPlace)
     fun setMarker(mapPlace: SavedPlace)
+    fun setMarkerScale(scale: Float) = Unit
     fun onCameraMoved()
     fun dispose()
 }
@@ -1296,6 +1307,12 @@ private class RadarSessionOverlaySlot(
         staticFallback?.setPlace(marker)
     }
 
+    fun setMarkerScale(scale: Float) {
+        if (disposed) return
+        overlay.setMarkerScale(scale)
+        staticFallback?.setMarkerScale(scale)
+    }
+
     fun onCameraMoved() {
         if (disposed) return
         overlay.onCameraMoved()
@@ -1314,14 +1331,12 @@ private class RadarSessionOverlaySlot(
 /** Keeps the selected/live marker available while the radar raster is still being acquired. */
 private class RadarBaseMarkerView(context: android.content.Context) : View(context) {
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF4FC3F7.toInt() }
-    private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0xFF0D0D0D.toInt()
-        style = Paint.Style.STROKE
-        strokeWidth = 2f * resources.displayMetrics.density
     }
-    private val radius = 7f * resources.displayMetrics.density
     private var map: MapLibreMap? = null
     private var marker: SavedPlace? = null
+    private var markerScale = 1f
 
     init {
         setWillNotDraw(false)
@@ -1343,13 +1358,18 @@ private class RadarBaseMarkerView(context: android.content.Context) : View(conte
 
     fun onCameraMoved() = invalidate()
 
+    fun setMarkerScale(scale: Float) {
+        markerScale = scale.takeIf(Float::isFinite)?.coerceIn(1f, 1.6f) ?: 1f
+        invalidate()
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val ready = map ?: return
         val place = marker ?: return
         val point = ready.projection.toScreenLocation(LatLng(place.latitude, place.longitude))
-        canvas.drawCircle(point.x, point.y, radius, fill)
-        canvas.drawCircle(point.x, point.y, radius, stroke)
+        canvas.drawCircle(point.x, point.y, RadarMarkerGeometry.outerRadius(markerScale), outline)
+        canvas.drawCircle(point.x, point.y, RadarMarkerGeometry.innerRadius(markerScale), fill)
     }
 }
 
@@ -1358,17 +1378,14 @@ private class CanvasRadarOverlayView(context: android.content.Context) : View(co
     private val firstPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val secondPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val markerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF4FC3F7.toInt() }
-    private val markerStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val markerOutlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0xFF0D0D0D.toInt()
-        style = Paint.Style.STROKE
-        strokeWidth = 3f * resources.displayMetrics.density
     }
     private val firstDestination = RectF()
     private val secondDestination = RectF()
     private lateinit var session: RadarSession
     private var frameTimes = emptyList<Long>()
     private var overlayBounds = emptyMap<RadarResolutionTier, OverlayBounds?>()
-    private val markerRadius = 7f * resources.displayMetrics.density
     private var map: MapLibreMap? = null
     private lateinit var marker: SavedPlace
     private lateinit var markerLatLng: LatLng
@@ -1378,6 +1395,7 @@ private class CanvasRadarOverlayView(context: android.content.Context) : View(co
     private var animating = false
     private var frameScheduled = false
     private var disposed = false
+    private var markerScale = 1f
     private val choreographer = Choreographer.getInstance()
     private val frameCallback = Choreographer.FrameCallback {
         frameScheduled = false
@@ -1445,6 +1463,11 @@ private class CanvasRadarOverlayView(context: android.content.Context) : View(co
         postInvalidateOnAnimation()
     }
 
+    override fun setMarkerScale(scale: Float) {
+        markerScale = scale.takeIf(Float::isFinite)?.coerceIn(1f, 1.6f) ?: 1f
+        postInvalidateOnAnimation()
+    }
+
     override fun onCameraMoved() {
         if (disposed) return
         rebuildPlan(force = false)
@@ -1507,8 +1530,12 @@ private class CanvasRadarOverlayView(context: android.content.Context) : View(co
             canvas.drawBitmap(secondBitmap, null, secondDestination, secondPaint)
         }
         val markerPoint = projection.toScreenLocation(markerLatLng)
-        canvas.drawCircle(markerPoint.x, markerPoint.y, markerRadius, markerPaint)
-        canvas.drawCircle(markerPoint.x, markerPoint.y, markerRadius, markerStrokePaint)
+        canvas.drawCircle(
+            markerPoint.x, markerPoint.y, RadarMarkerGeometry.outerRadius(markerScale), markerOutlinePaint,
+        )
+        canvas.drawCircle(
+            markerPoint.x, markerPoint.y, RadarMarkerGeometry.innerRadius(markerScale), markerPaint,
+        )
     }
 
     private fun rebuildPlan(force: Boolean) {
@@ -1650,6 +1677,10 @@ internal fun RadarImageMap(
     onMapStyleError: (String?) -> Unit = {},
     onWindViewportChanged: (WindViewport) -> Unit = {},
     onRadarTierChanged: (RadarResolutionTier) -> Unit = {},
+    entryFocusGeneration: Int = 0,
+    entryFocusEnabled: Boolean = true,
+    entryFocusDurationMillis: Int = RadarEntryFocusPolicy.DURATION_MILLIS,
+    markerScale: Float = 1f,
 ) {
     RadarImageMapInstance(
         session,
@@ -1683,6 +1714,10 @@ internal fun RadarImageMap(
         onMapStyleError,
         onWindViewportChanged,
         onRadarTierChanged,
+        entryFocusGeneration,
+        entryFocusEnabled,
+        entryFocusDurationMillis,
+        markerScale,
     )
 }
 
@@ -1719,14 +1754,19 @@ private fun RadarImageMapInstance(
     onMapStyleError: (String?) -> Unit,
     onWindViewportChanged: (WindViewport) -> Unit,
     onRadarTierChanged: (RadarResolutionTier) -> Unit,
+    entryFocusGeneration: Int,
+    entryFocusEnabled: Boolean,
+    entryFocusDurationMillis: Int,
+    markerScale: Float,
 ) {
     val context = LocalContext.current
+    val density = LocalDensity.current.density
     val applicationContext = context.applicationContext
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val satelliteFrameStore = remember(applicationContext) {
         SatelliteFrameStoreProvider.get(File(applicationContext.cacheDir, "satellite-frames"))
     }
-    val mapView = remember {
+    val mapView = remember(density) {
         SatelliteAmbientCache.configure(context)
         // Texture mode keeps MapLibre in the normal View hierarchy so our transparent GLES
         // TextureView can reliably composite above it on every Android surface compositor.
@@ -1740,7 +1780,7 @@ private fun RadarImageMapInstance(
             .attributionEnabled(true)
             .attributionGravity(Gravity.BOTTOM or Gravity.START)
             .attributionMargins(intArrayOf(4, 4, 4, 4).map {
-                (it * context.resources.displayMetrics.density).roundToInt()
+                (it * density).roundToInt()
             }.toIntArray())
         MapView(context, options).apply {
             setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(mapStyle))
@@ -1913,6 +1953,8 @@ private fun RadarImageMapInstance(
     var lastBracket by remember(mapView) { mutableStateOf<RadarTimelineBracket?>(null) }
     var lastPlaying by remember(mapView) { mutableStateOf<Boolean?>(null) }
     var lastMarker by remember(mapView) { mutableStateOf<SavedPlace?>(null) }
+    var activeEntryFocusGeneration by remember(mapView) { mutableStateOf<Int?>(null) }
+    val latestFollowLive by rememberUpdatedState(followLive)
     val satelliteBuffers = remember(mapView) {
         SatelliteLayerBuffers(
             onLayerError = { layer, message ->
@@ -1933,7 +1975,9 @@ private fun RadarImageMapInstance(
     fun saveCamera(ready: MapLibreMap, place: SavedPlace) {
         val position = ready.cameraPosition
         val center = position.target ?: return
-        cameraMemory.capture(place, center.latitude, center.longitude, position.zoom)
+        if (activeEntryFocusGeneration == null) {
+            cameraMemory.capture(place, center.latitude, center.longitude, position.zoom)
+        }
     }
     val latestBracket by rememberUpdatedState(bracket)
     val latestPlaying by rememberUpdatedState(isPlaying)
@@ -2074,6 +2118,7 @@ private fun RadarImageMapInstance(
                 addView(baseMarkerView, FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
                 baseMarkerView.update(latestMarkerPlace)
+                baseMarkerView.setMarkerScale(markerScale)
                 addView(windView, FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
                 windView.bringToFront()
@@ -2117,8 +2162,10 @@ private fun RadarImageMapInstance(
                     cameraListener = listener
                     ready.addOnCameraMoveListener(listener)
                     val startListener = MapLibreMap.OnCameraMoveStartedListener { reason ->
-                        if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE)
+                        if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
+                            activeEntryFocusGeneration = null
                             currentManualGesture()
+                        }
                     }
                     cameraStartListener = startListener
                     ready.addOnCameraMoveStartedListener(startListener)
@@ -2183,7 +2230,10 @@ private fun RadarImageMapInstance(
                 }
             }
             baseMarkerView.update(markerPlace)
+            baseMarkerView.setMarkerScale(markerScale)
             baseMarkerView.visibility = if (activeRadarSlot == null) View.VISIBLE else View.GONE
+            activeRadarSlot?.setMarkerScale(markerScale)
+            pendingRadarSlot?.setMarkerScale(markerScale)
             if (bracket != null && (lastBracket != bracket || lastPlaying != isPlaying)) {
                 // A replacement session preloads above the old usable radar. Only the slot that
                 // owns the new timeline may consume its frame indices; keep the outgoing slot
@@ -2309,6 +2359,43 @@ private fun RadarImageMapInstance(
         saveCamera(ready, cameraPlace)
     }
 
+    LaunchedEffect(map, entryFocusGeneration, entryFocusEnabled, mapPlace.id) {
+        val ready = map ?: return@LaunchedEffect
+        if (!entryFocusEnabled || entryFocusGeneration <= 0 || entryFocusDurationMillis <= 0 ||
+            teardown.isClosed) return@LaunchedEffect
+        val mapWidth = mapView.width.takeIf { it > 0 } ?: mapView.resources.displayMetrics.widthPixels
+        val cameraPlace = if (mapPlace.isCurrentLocation) latestMarkerPlace else mapPlace
+        val target = cameraMemory.target(cameraPlace, mapWidth, recenterSignal)
+        val starting = target.copy(zoom = RadarEntryFocusPolicy.startZoom(target.zoom))
+        activeEntryFocusGeneration = entryFocusGeneration
+        appliedPlace = cameraPlace
+        ready.cancelTransitions()
+        ready.cameraPosition = northUpCamera(starting)
+        try {
+            ready.easeCamera(
+                CameraUpdateFactory.newCameraPosition(northUpCamera(target)),
+                entryFocusDurationMillis,
+            )
+            delay(entryFocusDurationMillis + 20L)
+        } finally {
+            if (activeEntryFocusGeneration == entryFocusGeneration && !teardown.isClosed) {
+                // Pin the final camera exactly. During Travel, finish on the newest accepted fix
+                // at the retained desired zoom; the 5 Hz stream must not fight the entry ease.
+                val finalPlace = if (latestFollowLive && mapPlace.isCurrentLocation) {
+                    latestMarkerPlace
+                } else cameraPlace
+                val finalTarget = target.copy(
+                    latitude = finalPlace.latitude,
+                    longitude = finalPlace.longitude,
+                )
+                ready.cameraPosition = northUpCamera(finalTarget)
+                activeEntryFocusGeneration = null
+                appliedPlace = finalPlace
+                saveCamera(ready, finalPlace)
+            }
+        }
+    }
+
     // A live marker changes the snapshot's reference place, not the camera viewport.
     LaunchedEffect(map, markerPlace) {
         val ready = map ?: return@LaunchedEffect
@@ -2327,6 +2414,9 @@ private fun RadarImageMapInstance(
             lastFollowFixElapsedRealtimeNanos = 0L
             return@LaunchedEffect
         }
+        // The entry transition owns the camera for one second. Marker projection still updates;
+        // its latest accepted fix is applied exactly when that transition completes.
+        if (activeEntryFocusGeneration != null) return@LaunchedEffect
         val target = RadarCameraTarget(markerPlace.latitude, markerPlace.longitude, ready.cameraPosition.zoom)
         appliedPlace = markerPlace
         val duration = RadarFollowCameraPolicy.durationMillis(

@@ -1,5 +1,6 @@
 package com.rainalarm.app.ui
 
+import com.rainalarm.app.data.RadarMapLayer
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -53,6 +54,40 @@ class RadarMapNoticePolicyTest {
         ))
     }
 
+    @Test fun travelActivationIsAOneShotTwoSecondInformationalStatus() {
+        assertEquals(2_000L, TravelActivationNoticePolicy.DURATION_MILLIS)
+        assertFalse(TravelActivationNoticePolicy.isVisible(0, 0))
+        assertTrue(TravelActivationNoticePolicy.isVisible(1, 0))
+        assertTrue(TravelActivationNoticePolicy.isVisible(1, 1_999))
+        assertFalse(TravelActivationNoticePolicy.isVisible(1, 2_000))
+        assertFalse(TravelActivationNoticePolicy.isVisible(1, -1))
+
+        val information = RadarRefreshOverlay("Travel mode", "Travel mode")
+        val alone = RadarPreparationStackPolicy.entries(
+            radar = null,
+            enabledLayers = emptySet(),
+            statuses = emptyMap(),
+            preparation = emptyMap(),
+            information = information,
+        )
+        assertEquals(listOf(information), alone)
+
+        val operational = RadarPreparationStackPolicy.entries(
+            radar = RadarRefreshOverlay("Radar loading", "Radar loading"),
+            enabledLayers = setOf(RadarMapLayer.WIND, RadarMapLayer.LIGHTNING, RadarMapLayer.FOG),
+            statuses = mapOf(
+                RadarMapLayer.WIND to AncillaryStatus.Loading,
+                RadarMapLayer.LIGHTNING to AncillaryStatus.Loading,
+                RadarMapLayer.FOG to AncillaryStatus.Loading,
+            ),
+            preparation = emptyMap(),
+            location = RadarRefreshOverlay("Location loading", "Location loading"),
+            information = information,
+        )
+        assertEquals(RadarPreparationStackPolicy.maximumEntries, operational.size)
+        assertFalse(operational.contains(information))
+    }
+
     @Test fun unresolvedCurrentUsesShellAndOnlyRetainsMatchingCurrentContent() {
         assertTrue(CurrentLocationPresentationPolicy.retainCurrentSession(true, false, true))
         assertFalse(CurrentLocationPresentationPolicy.retainCurrentSession(true, false, false))
@@ -65,6 +100,9 @@ class RadarMapNoticePolicyTest {
         )?.label)
         assertNull(CurrentLocationPresentationPolicy.operationalStatus(
             false, false, true, null, null,
+        ))
+        assertNull(CurrentLocationPresentationPolicy.operationalStatus(
+            true, true, true, "accuracy update pending", "old request",
         ))
         assertTrue(CurrentLocationPresentationPolicy.retainCurrentForecast(
             true, "current-location:51.0:-0.1|provider",
@@ -101,12 +139,14 @@ class RadarMapNoticePolicyTest {
         assertTrue(now.contains("WeatherDataStatusPolicy.loading(WeatherDataKind.LOCATION)"))
         assertFalse(radar.contains("RadarMapNoticeKind.LOCATION"))
         assertTrue(radar.contains("locationStatus = locationOperationalStatus"))
+        assertTrue(radar.contains("travelActivationStatus = travelActivationStatus"))
+        assertFalse(radar.contains("if (followLive) Text("))
         assertTrue(main.contains("CurrentLocationPresentationPolicy.retainCurrentForecast"))
     }
 
     @Test fun nonFatalNoticesAreNeverCentredOverTheMap() {
         val radar = source("src/main/java/com/rainalarm/app/ui/RadarScreen.kt")
-        assertTrue(radar.contains("mapStyleError?.let { RadarMapNotice"))
+        assertTrue(radar.contains("mapStyleError?.let"))
         assertTrue(radar.contains("chartTimeMessage?.let { RadarMapNotice"))
         assertTrue(radar.contains("compatibilityNotice?.let"))
         assertFalse(radar.contains("modifier = Modifier.align(Alignment.TopCenter).padding(horizontal = 54.dp"))

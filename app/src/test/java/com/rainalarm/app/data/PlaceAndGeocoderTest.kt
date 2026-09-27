@@ -12,6 +12,9 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 
 class PlaceAndGeocoderTest {
+    @Test fun `duplicate coordinate feedback is deliberately transient`() {
+        assertEquals(2_800L, PlaceDuplicateFeedbackPolicy.DURATION_MILLIS)
+    }
     @Test fun freshStoreSelectsVirtualCurrentWithoutPersistingAFix() {
         assertTrue(PlaceCollectionRules.isFreshStore(false, false, false))
         assertFalse(PlaceCollectionRules.isFreshStore(true, false, false))
@@ -19,7 +22,7 @@ class PlaceAndGeocoderTest {
         assertFalse(PlaceCollectionRules.isFreshStore(false, false, true))
         val fresh = PlaceCollectionRules.freshInstall()
         assertEquals(CURRENT_LOCATION_ID, fresh.selectedId)
-        assertEquals(CURRENT_LOCATION_ID, PlaceCollectionRules.resolveDefaultId(fresh, CURRENT_LOCATION_ID))
+        assertEquals(DEFAULT_PLACE.id, PlaceCollectionRules.resolveDefaultId(fresh, CURRENT_LOCATION_ID))
         assertFalse(fresh.places.any { it.isCurrentLocation })
         assertEquals(DEFAULT_PLACE, fresh.places.single())
         val savedDefault = PlaceCollectionRules.select(fresh, DEFAULT_PLACE.id)
@@ -123,8 +126,52 @@ class PlaceAndGeocoderTest {
         assertEquals(york.id, PlaceCollectionRules.resolveDefaultId(collection, york.id))
         collection = PlaceCollectionRules.delete(collection, york.id)
         assertEquals(DEFAULT_PLACE.id, PlaceCollectionRules.resolveDefaultId(collection, york.id))
-        assertEquals(CURRENT_LOCATION_ID, PlaceCollectionRules.resolveDefaultId(collection, CURRENT_LOCATION_ID))
+        assertEquals(DEFAULT_PLACE.id, PlaceCollectionRules.resolveDefaultId(collection, CURRENT_LOCATION_ID))
         assertEquals(DEFAULT_PLACE.id, PlaceCollectionRules.resolveDefaultId(collection, null))
+    }
+
+    @Test fun `live fix snapshot becomes an ordinary saved place and never persists virtual identity`() {
+        val active = SavedPlace("51.5, -0.1", 51.5, -0.1, isCurrentLocation = true)
+        val snapshot = requireNotNull(LiveLocationSavePolicy.snapshot(active))
+        assertFalse(snapshot.isCurrentLocation)
+        assertTrue(snapshot.id != CURRENT_LOCATION_ID)
+        assertEquals(active.latitude, snapshot.latitude, 0.0)
+        assertEquals(active.longitude, snapshot.longitude, 0.0)
+        assertEquals(null, LiveLocationSavePolicy.snapshot(DEFAULT_PLACE))
+    }
+
+    @Test fun `live coordinate match prefers startup row then saved order within duplicate tolerance`() {
+        val first = SavedPlace("First", 51.5000, -0.1000)
+        val preferred = SavedPlace("Preferred", 51.5002, -0.1001)
+        val live = SavedPlace("Current", 51.5001, -0.1001, isCurrentLocation = true)
+        val snapshot = requireNotNull(LiveLocationSavePolicy.snapshot(live))
+        assertEquals(preferred, LiveLocationMatchPolicy.matchingPlace(
+            listOf(first, preferred), snapshot, preferred.id,
+        ))
+        assertEquals(first, LiveLocationMatchPolicy.matchingPlace(
+            listOf(first, preferred), snapshot, "missing",
+        ))
+        assertEquals(null, LiveLocationMatchPolicy.matchingPlace(listOf(first), null, first.id))
+        assertEquals(null, LiveLocationMatchPolicy.matchingPlace(
+            listOf(first), SavedPlace("Far", 54.0, -1.0), first.id,
+        ))
+    }
+
+    @Test fun `near-coordinate save reuses existing row while distant place stays separate`() {
+        val original = SavedPlace("Original", 51.50000, -0.10000)
+        val near = SavedPlace("Renamed nearby", 51.50030, -0.10020)
+        val distant = SavedPlace("Different", 51.50300, -0.10000)
+        assertTrue(PlaceCoordinatePolicy.nearDuplicate(original, near))
+        assertFalse(PlaceCoordinatePolicy.nearDuplicate(original, distant))
+        var collection = PlaceCollectionRules.upsert(
+            PlaceCollection(places = emptyList(), selectedId = CURRENT_LOCATION_ID), original,
+        )
+        collection = PlaceCollectionRules.upsert(collection, near)
+        assertEquals(1, collection.places.size)
+        assertEquals(original.id, collection.places.single().id)
+        assertEquals("Renamed nearby", collection.places.single().name)
+        collection = PlaceCollectionRules.upsert(collection, distant)
+        assertEquals(2, collection.places.size)
     }
 
     @Test
@@ -400,6 +447,39 @@ class PlaceAndGeocoderTest {
         assertEquals(52.1980316, results.first().latitude, 0.0000001)
         assertEquals(-1.8961030, results.first().longitude, 0.0000001)
     }
+
+    @Test fun `Photon reverse lookup uses bounded locality layers and shared three-decimal fallback`() =
+        runBlocking {
+            val url = buildPhotonReverseGeocodingUrl(51.4841, 5.8596, "nl-BE")
+            assertTrue(url.startsWith("https://photon.komoot.io/reverse?"))
+            assertTrue(url.contains("lat=51.4841"))
+            assertTrue(url.contains("lon=5.8596"))
+            assertTrue(url.contains("lang=nl"))
+            assertTrue(url.contains("layer=city&layer=locality&layer=district"))
+            assertThrows(IllegalArgumentException::class.java) {
+                buildPhotonReverseGeocodingUrl(51.0, 5.0, "en", "http://example.invalid")
+            }
+
+            val payload = """
+                {"features":[
+                  {"properties":{"name":"Some road","district":"Eindhoven"}},
+                  {"properties":{"name":"Nuenen","locality":"Nuenen"}}
+                ]}
+            """.trimIndent()
+            assertEquals("Nuenen", PhotonReverseGeocodingMapper.parse(payload))
+            assertEquals(null, PhotonReverseGeocodingMapper.parse("{\"features\":[]}"))
+            assertEquals("51.484, 5.860", PlacePickerNamePolicy.coordinateFallback(51.4841, 5.8596))
+            assertTrue(PlacePickerNamePolicy.shouldApplyResult(4, 4, false))
+            assertFalse(PlacePickerNamePolicy.shouldApplyResult(3, 4, false))
+            assertFalse(PlacePickerNamePolicy.shouldApplyResult(4, 4, true))
+
+            val success = PlaceNameSuggestionRepository(ReverseGeocodingEndpoint { _, _, _ -> "  Nuenen  " })
+            val empty = PlaceNameSuggestionRepository(ReverseGeocodingEndpoint { _, _, _ -> null })
+            val failed = PlaceNameSuggestionRepository(ReverseGeocodingEndpoint { _, _, _ -> error("offline") })
+            assertEquals("Nuenen", success.suggestedName(51.4841, 5.8596, "nl"))
+            assertEquals("51.484, 5.860", empty.suggestedName(51.4841, 5.8596, "nl"))
+            assertEquals("51.484, 5.860", failed.suggestedName(51.4841, 5.8596, "nl"))
+        }
 
     @Test
     fun `Wikimedia URL normalizes possessives and parser keeps only valid geocoded pages`() {

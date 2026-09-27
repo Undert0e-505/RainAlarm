@@ -3,6 +3,7 @@ package com.rainalarm.app.ui
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
+import android.text.format.DateFormat
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
@@ -64,7 +65,10 @@ import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -96,10 +100,10 @@ import com.rainalarm.app.domain.RainMinuteAnalysis
 import com.rainalarm.app.domain.RainMinuteAvailability
 import com.rainalarm.app.domain.RainMinuteSeries
 import com.rainalarm.app.domain.RainMinuteSeriesAnalyzer
-import com.rainalarm.app.domain.cardinalDirection
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 import kotlin.math.roundToInt
 
 private val NowSurface: Color @Composable get() = LocalRainAlarmPalette.current.surface
@@ -115,8 +119,14 @@ internal object NowSourceClock {
     fun ageMinutes(series: RainMinuteSeries, currentEpochSeconds: Long): Long =
         ((currentEpochSeconds - series.latestObservationEpochSeconds).coerceAtLeast(0L)) / 60L
 
-    fun label(startEpochSeconds: Long, minute: Int, zone: ZoneId): String =
-        DateTimeFormatter.ofPattern("HH:mm").format(
+    fun label(
+        startEpochSeconds: Long,
+        minute: Int,
+        zone: ZoneId,
+        use24Hour: Boolean = true,
+        locale: Locale = Locale.getDefault(),
+    ): String =
+        DateTimeFormatter.ofPattern(if (use24Hour) "HH:mm" else "h:mm a", locale).format(
             Instant.ofEpochSecond(startEpochSeconds + minute * 60L).atZone(zone),
         )
 }
@@ -179,7 +189,8 @@ fun NowScreen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Spacer(Modifier.width(NowHeaderLayoutPolicy.sideReserveDp.dp))
                     Text(
-                        selectedLocationName ?: if (state is ForecastUiState.Ready) state.forecast.locationName else "Current location",
+                        selectedLocationName ?: if (state is ForecastUiState.Ready) state.forecast.locationName
+                        else stringResource(R.string.current_location),
                     fontSize = NowHeaderLayoutPolicy.titleFontSizeSp(metrics.simplifyText).sp,
                     lineHeight = NowHeaderLayoutPolicy.titleLineHeightSp(metrics.simplifyText).sp,
                         fontWeight = FontWeight.SemiBold,
@@ -271,9 +282,11 @@ private fun NowPlaceholder(title: String, detail: String, metrics: NowLayoutMetr
                 if (pending) CircularProgressIndicator(color = NowAccent)
                 else Text("—", color = NowAccent, fontSize = 25.sp, fontWeight = FontWeight.Bold)
             }
-            Text(footerLabel,
-                color = NowMuted, fontSize = 12.sp,
-                modifier = Modifier.align(Alignment.CenterHorizontally).heightIn(min = 22.dp))
+            Text(localizedWeatherStatus(footerLabel),
+                color = NowMuted, fontSize = NowCompassStatusTypography.targetSp(false).sp,
+                lineHeight = (NowCompassStatusTypography.targetSp(false) * 1.08f).sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 28.dp))
         }
     }
     }
@@ -284,12 +297,14 @@ private fun NowPlaceholder(title: String, detail: String, metrics: NowLayoutMetr
     Card(colors = CardDefaults.cardColors(containerColor = NowSurfaceHigh), shape = RoundedCornerShape(20.dp),
         modifier = Modifier.fillMaxWidth().height(metrics.chartHeightDp.dp)) {
         Column(Modifier.fillMaxSize().padding(start = 10.dp, top = 7.dp, end = 10.dp, bottom = 4.dp)) {
-            Text("Next hour", color = NowText, fontSize = 16.sp, fontWeight = FontWeight.SemiBold,
+            Text(stringResource(R.string.now_next_hour), color = NowText, fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth().heightIn(min = NowLayoutPolicy.chartTitleHeightDp.dp))
             Row(Modifier.weight(1f).fillMaxWidth()) {
                 Column(Modifier.width(56.dp).fillMaxHeight()) {
-                    listOf("Severe", "Medium", "Light").forEach { band ->
+                    listOf(stringResource(R.string.now_severe), stringResource(R.string.now_medium),
+                        stringResource(R.string.now_light)).forEach { band ->
                         Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
                             Text(band, color = NowMuted, fontSize = 11.sp)
                         }
@@ -308,13 +323,14 @@ private fun NowPlaceholder(title: String, detail: String, metrics: NowLayoutMetr
                         drawLine(accent.copy(alpha = 0.35f), Offset(0f, 0f),
                             Offset(0f, size.height), 1f)
                     }
-                    Text(detail, color = NowMuted, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    Text(localizedWeatherStatus(detail), color = NowMuted, maxLines = 2, overflow = TextOverflow.Ellipsis,
                         textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 18.dp))
                 }
             }
             BoxWithConstraints(Modifier.fillMaxWidth().height(NowLayoutPolicy.chartAxisHeightDp.dp).padding(start = 56.dp)) {
                 val labelWidth = 46.dp.coerceAtMost(maxWidth)
-                Text("Now", color = NowMuted, fontSize = 11.sp, textAlign = TextAlign.Center,
+                Text(stringResource(R.string.now_now), color = NowMuted, fontSize = 11.sp,
+                    textAlign = TextAlign.Center,
                     maxLines = 1, modifier = Modifier.width(labelWidth).offset(y = 7.dp))
             }
         }
@@ -338,13 +354,15 @@ private fun NowCardHeader(status: String, source: String, refresh: (() -> Unit)?
         NowRefreshStatus.Updated -> source
         is NowRefreshStatus.Failed -> WeatherDataStatusPolicy.unavailable(WeatherDataKind.RADAR)
     }
+    val displayedStatus = localizedWeatherStatus(status)
+    val displayedSource = localizedWeatherStatus(sourceWithRefresh)
     Row(Modifier.fillMaxWidth().height(NowLayoutPolicy.cardHeaderHeightDp.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f).padding(start = 4.dp)) {
-            Text(status, fontSize = 20.sp, lineHeight = 24.sp, fontWeight = FontWeight.Bold,
+            Text(displayedStatus, fontSize = 20.sp, lineHeight = 24.sp, fontWeight = FontWeight.Bold,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(sourceWithRefresh, color = NowMuted, fontSize = 12.sp, lineHeight = 16.sp,
+            Text(displayedSource, color = NowMuted, fontSize = 12.sp, lineHeight = 16.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.semantics { contentDescription = sourceWithRefresh })
+                modifier = Modifier.semantics { contentDescription = displayedSource })
         }
         refresh?.let { RefreshNowButton(it, refreshStatus) }
     }
@@ -359,7 +377,8 @@ private fun NowForecastContent(forecast: ForecastSnapshot, metrics: NowLayoutMet
     val series = forecast.nowcastSeries
     val analysis = series?.let(RainMinuteSeriesAnalyzer::analyze)
     val age = series?.let { NowSourceClock.ageMinutes(it, Instant.now().epochSecond) } ?: 0L
-    val freshness = if (age == 0L) "now" else "${age}m ago"
+    val freshness = if (age == 0L) stringResource(R.string.now_fresh_now)
+        else stringResource(R.string.now_fresh_minutes, age)
     if (series == null || series.availability == RainMinuteAvailability.UNAVAILABLE || analysis == null) {
         val unavailable = WeatherDataStatusPolicy.unavailable(WeatherDataKind.RADAR)
         NowPlaceholder(unavailable, unavailable, metrics, refresh,
@@ -370,25 +389,26 @@ private fun NowForecastContent(forecast: ForecastSnapshot, metrics: NowLayoutMet
 
     val likelySnow = series.likelySnowFor(analysis)
     val title = when {
-        analysis.rainingNow && likelySnow -> "Snow likely"
-        analysis.rainingNow -> "Raining now"
-        analysis.arrivalMinute != null && likelySnow -> "Snow likely in"
-        analysis.arrivalMinute != null -> "Rain will start in"
-        series.availability == RainMinuteAvailability.PARTIAL -> "No rain detected yet"
-        else -> "No rain expected in the next hour"
+        analysis.rainingNow && likelySnow -> stringResource(R.string.now_snow_likely)
+        analysis.rainingNow -> stringResource(R.string.now_raining)
+        analysis.arrivalMinute != null && likelySnow -> stringResource(R.string.now_snow_in)
+        analysis.arrivalMinute != null -> stringResource(R.string.now_rain_in)
+        series.availability == RainMinuteAvailability.PARTIAL -> stringResource(R.string.now_no_rain_yet)
+        else -> stringResource(R.string.now_no_rain_hour)
     }
     val conciseTitle = if (metrics.simplifyText && series.availability == RainMinuteAvailability.AVAILABLE &&
         analysis.arrivalMinute == null && !analysis.rainingNow) {
-        "Dry next hour"
+        stringResource(R.string.now_dry_next_hour)
     } else title
     val coverage = if (series.availability == RainMinuteAvailability.PARTIAL) {
-        " · through +${series.points.last().minute} min"
+        stringResource(R.string.now_coverage_through, series.points.last().minute)
     } else ""
     val sourceKind = when {
-        series.intensityEncoding == com.rainalarm.app.domain.RadarIntensityEncoding.REGIONAL_AREA_CHART -> "AREA FORECAST"
+        series.intensityEncoding == com.rainalarm.app.domain.RadarIntensityEncoding.REGIONAL_AREA_CHART ->
+            stringResource(R.string.now_source_area_forecast)
         forecast.sourceLabel.contains("RainViewer", true) ||
-            forecast.sourceLabel.contains("OPERA", true) -> "EST"
-        else -> "RADAR"
+            forecast.sourceLabel.contains("OPERA", true) -> stringResource(R.string.now_source_estimate)
+        else -> stringResource(R.string.now_source_radar)
     }
     val source = locationNotice ?: "$sourceKind · $freshness$coverage"
     val context = LocalContext.current
@@ -442,7 +462,7 @@ private fun RainCompass(
         analysis.rainingNow, analysis.arrivalMinute, likelySnow,
     )
     val hasRain = textureKind != null
-    val resources = LocalContext.current.resources
+    val resources = LocalResources.current
     val precipitationTexture = remember(resources, textureKind) {
         textureKind?.let { kind ->
             val resource = when (kind) {
@@ -469,30 +489,48 @@ private fun RainCompass(
     val pointerFill = if (sourceBearing != null) rainFill else null
     val centerFill = rainFill ?: NowDeepBlue
     val centerTextMeasurer = rememberTextMeasurer()
+    val footerTextMeasurer = rememberTextMeasurer()
     val animatedBearing by animateFloatAsState(
         targetValue = (sourceBearing ?: 0.0).toFloat(),
         animationSpec = if (animationsEnabled) tween(450) else snap(),
-        label = "rain source bearing",
+        label = "rain-source-bearing",
     )
     val centerLabel = when {
-        analysis.rainingNow -> "Now"
+        analysis.rainingNow -> stringResource(R.string.now_now)
         analysis.arrivalMinute != null -> analysis.arrivalMinute.toString()
         else -> weather?.temperatureC?.roundToInt()?.let { "$it°" } ?: "—"
     }
-    val directionLabel = if (!hasRain) "No incoming rain detected" else
-        sourceBearing?.let { "${if (series.likelySnowFor(analysis)) "Likely snow from" else "From"} ${cardinalDirection(it)}" }
-            ?: "Direction unavailable"
-    val description = if (!hasRain) {
-        "No incoming rain detected in the available forecast. " +
-            (weather?.temperatureC?.let { "Model temperature ${it.roundToInt()} degrees Celsius. " } ?: "") + "North is up."
-    } else if (sourceBearing == null) {
-        if (analysis.rainingNow) "${if (series.likelySnowFor(analysis)) "Snow likely" else "Raining now"}. Direction unavailable. North is up."
-        else "$centerLabel minutes. ${if (series.likelySnowFor(analysis)) "Likely snow" else "Rain"} direction unavailable. North is up."
-    } else {
-        if (analysis.rainingNow) "${if (series.likelySnowFor(analysis)) "Snow likely" else "Raining now"}. $directionLabel at ${sourceBearing.toInt()} degrees. North is up."
-        else if (hasRain) "$centerLabel minutes. $directionLabel at ${sourceBearing.toInt()} degrees. North is up."
-        else "No incoming rain detected. North is up."
+    val directionLabel = if (!hasRain) stringResource(R.string.now_incoming_clear) else
+        sourceBearing?.let {
+            stringResource(
+                if (series.likelySnowFor(analysis)) R.string.now_likely_snow_from else R.string.now_from,
+                localizedCardinalDirectionLabel(it),
+            )
+        } ?: stringResource(R.string.now_direction_unavailable)
+    val northUp = stringResource(R.string.now_north_up)
+    val stateDescription = when {
+        !hasRain -> buildString {
+            append(stringResource(R.string.now_incoming_clear)).append(". ")
+            weather?.temperatureC?.let {
+                append(stringResource(R.string.now_model_temperature, it.roundToInt()))
+            }
+        }.trim()
+        analysis.rainingNow -> if (likelySnow) stringResource(R.string.now_snow_likely)
+            else stringResource(R.string.now_raining)
+        else -> stringResource(R.string.now_arrival_minutes, centerLabel)
     }
+    val description = if (sourceBearing == null || !hasRain) stringResource(
+        R.string.now_compass_no_direction_description,
+        stateDescription,
+        if (hasRain) stringResource(R.string.now_direction_unavailable) else directionLabel,
+        northUp,
+    ) else stringResource(
+        R.string.now_compass_direction_description,
+        stateDescription,
+        directionLabel,
+        sourceBearing.toInt(),
+        northUp,
+    )
     Card(
         colors = CardDefaults.cardColors(containerColor = NowSurface),
         shape = RoundedCornerShape(28.dp),
@@ -608,13 +646,17 @@ private fun RainCompass(
                         size.minDimension * (NowMotionPolicy.centerDiscRadiusFraction + 0.009f) * discScale, center,
                         style = Stroke(width = 2f))
                 }
-                Text("N", color = NowText, fontSize = 24.sp, lineHeight = 24.sp,
+                Text(stringResource(R.string.direction_north_short), color = NowText, fontSize = 24.sp,
+                    lineHeight = 24.sp,
                     fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopCenter))
-                Text("E", color = NowMuted, fontSize = 24.sp, lineHeight = 24.sp,
+                Text(stringResource(R.string.direction_east_short), color = NowMuted, fontSize = 24.sp,
+                    lineHeight = 24.sp,
                     modifier = Modifier.align(Alignment.CenterEnd).padding(end = NowCompassCardinalPolicy.eastEndInsetDp.dp))
-                Text("S", color = NowMuted, fontSize = 24.sp, lineHeight = 24.sp,
+                Text(stringResource(R.string.direction_south_short), color = NowMuted, fontSize = 24.sp,
+                    lineHeight = 24.sp,
                     modifier = Modifier.align(Alignment.BottomCenter))
-                Text("W", color = NowMuted, fontSize = 24.sp, lineHeight = 24.sp,
+                Text(stringResource(R.string.direction_west_short), color = NowMuted, fontSize = 24.sp,
+                    lineHeight = 24.sp,
                     modifier = Modifier.align(Alignment.CenterStart).padding(start = 3.dp))
                 Column(Modifier.align(Alignment.Center).graphicsLayer {
                     val scale = NowMotionPolicy.centerScale(entryProgress)
@@ -624,7 +666,8 @@ private fun RainCompass(
                     Text(centerLabel, color = Color.White, fontSize = centerFontSize, fontWeight = FontWeight.Bold,
                         style = TextStyle(shadow = CenterGlyphShadow),
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    if (!analysis.rainingNow && analysis.arrivalMinute != null) Text("min", color = Color.White,
+                    if (!analysis.rainingNow && analysis.arrivalMinute != null) Text(
+                        stringResource(R.string.now_minutes_short), color = Color.White,
                         style = TextStyle(shadow = CenterGlyphShadow),
                         fontSize = NowMotionPolicy.centerUnitFontSizeSp(mainCenterFontSize).sp)
                 }
@@ -632,13 +675,37 @@ private fun RainCompass(
             NowWeatherReadouts(weather, visibleWeatherMetrics,
                 Modifier.align(Alignment.BottomCenter).fillMaxWidth())
             val footerDirection = when {
-                !hasRain -> "No rain"
-                sourceBearing == null -> "From —"
+                !hasRain -> stringResource(R.string.now_no_rain)
+                sourceBearing == null -> stringResource(R.string.now_from, "—")
                 else -> directionLabel
             }
+            val targetFooterFontSp = NowCompassStatusTypography.targetSp(stackedReadouts)
+            val measuredFooterWidth = remember(
+                footerDirection,
+                targetFooterFontSp,
+                footerTextMeasurer,
+            ) {
+                footerTextMeasurer.measure(
+                    AnnotatedString(footerDirection),
+                    style = TextStyle(fontSize = targetFooterFontSp.sp),
+                    maxLines = 1,
+                    softWrap = false,
+                ).size.width
+            }
+            val availableFooterWidthPx = with(density) {
+                NowCompassStatusTypography.availableWidthDp(
+                    maxWidth.value,
+                    stackedReadouts,
+                ).dp.toPx()
+            }
+            val fittedFooterFontSp = NowCompassStatusTypography.fittedSp(
+                stackedReadouts,
+                measuredFooterWidth,
+                availableFooterWidthPx,
+            )
             Text(footerDirection, color = if (sourceBearing == null) NowMuted else NowAccent,
-                fontSize = if (stackedReadouts) 10.sp else 12.sp,
-                lineHeight = if (stackedReadouts) 12.sp else 15.sp,
+                fontSize = fittedFooterFontSp.sp,
+                lineHeight = (fittedFooterFontSp * 1.08f).sp,
                 maxLines = 1, textAlign = TextAlign.Center,
                 modifier = Modifier.align(Alignment.BottomCenter)
                     .padding(bottom = if (stackedReadouts) readoutHeightDp.dp else 0.dp)
@@ -650,7 +717,13 @@ private fun RainCompass(
 
 @Composable
 private fun NowWeatherReadouts(weather: CurrentWeather?, metrics: Set<NowWeatherMetric>, modifier: Modifier) {
-    val solar = weather?.solarToday(Instant.now().epochSecond)
+    val context = LocalContext.current
+    val locale = LocalConfiguration.current.locales[0]
+    val solar = weather?.solarToday(
+        Instant.now().epochSecond,
+        use24Hour = DateFormat.is24HourFormat(context),
+        locale = locale,
+    )
     val selected = NowWeatherMetric.entries.filter(metrics::contains)
     val values = selected.map { metric ->
         metric to (when (metric) {
@@ -659,25 +732,33 @@ private fun NowWeatherReadouts(weather: CurrentWeather?, metrics: Set<NowWeather
             NowWeatherMetric.HUMIDITY -> weather?.humidityPercent?.let { "$it%" }
             NowWeatherMetric.UV_INDEX -> weather?.uvIndex?.roundToInt()?.toString()
             NowWeatherMetric.WIND -> if (weather?.windSpeedKmh != null && weather.windFromDegrees != null)
-                "${weather.windSpeedKmh.roundToInt()} km/h ${cardinalDirection(weather.windFromDegrees)}" else null
+                stringResource(
+                    R.string.wind_value,
+                    weather.windSpeedKmh.roundToInt(),
+                    localizedCardinalDirectionLabel(weather.windFromDegrees),
+                ) else null
         } ?: "—")
     }
-    val solarRows = listOf("Sunrise" to (solar?.first ?: "—"), "Sunset" to (solar?.second ?: "—"))
-    val metricRows = values.map { (metric, value) -> NowWeatherReadoutPolicy.label(metric) to value }
+    val solarRows = listOf(
+        stringResource(R.string.now_sunrise) to (solar?.first ?: "—"),
+        stringResource(R.string.now_sunset) to (solar?.second ?: "—"),
+    )
+    val metricRows = values.map { (metric, value) -> localizedNowMetricLabel(metric) to value }
+    val weatherSource = stringResource(R.string.now_weather_source)
     BoxWithConstraints(modifier.padding(vertical = 2.dp)) {
         val fontScale = LocalDensity.current.fontScale
         val font = NowWeatherReadoutPolicy.fontSizeSp(maxWidth.value.toInt(), fontScale).sp
         if (NowWeatherReadoutPolicy.stack(maxWidth.value.toInt(), fontScale)) {
             Column(Modifier.fillMaxWidth()) {
-                DividerReadout(solarRows, font, Modifier.align(Alignment.Start), "Open-Meteo model")
+                DividerReadout(solarRows, font, Modifier.align(Alignment.Start), weatherSource)
                 if (metricRows.isNotEmpty()) DividerReadout(metricRows, font,
-                    Modifier.align(Alignment.End), "Open-Meteo model")
+                    Modifier.align(Alignment.End), weatherSource)
             }
         } else {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.Bottom) {
-                DividerReadout(solarRows, font, Modifier, "Open-Meteo model")
-                if (metricRows.isNotEmpty()) DividerReadout(metricRows, font, Modifier, "Open-Meteo model")
+                DividerReadout(solarRows, font, Modifier, weatherSource)
+                if (metricRows.isNotEmpty()) DividerReadout(metricRows, font, Modifier, weatherSource)
             }
         }
     }
@@ -698,25 +779,30 @@ private fun DividerReadout(rows: List<Pair<String, String>>, font: androidx.comp
         Box(Modifier.width(1.dp).fillMaxHeight().background(NowBorder))
         Spacer(Modifier.width(2.dp))
         Column {
-            rows.forEach { (label, value) -> Text(value, color = NowText, fontSize = font, lineHeight = rowLineHeight,
-                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.heightIn(min = rowHeight)
-                    .semantics { contentDescription = when {
-                        value == "—" -> "$label: unavailable; $source"
-                        label == "Wind" -> "Wind from ${value.substringAfterLast(' ')} at ${value.substringBeforeLast(' ')}; $source"
-                        else -> "$label: $value; $source"
-                    } }) }
+            rows.forEach { (label, value) ->
+                val valueDescription = if (value == "—") {
+                    stringResource(R.string.now_value_unavailable, label, source)
+                } else stringResource(R.string.now_value_description, label, value, source)
+                Text(value, color = NowText, fontSize = font, lineHeight = rowLineHeight,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.heightIn(min = rowHeight)
+                        .semantics { contentDescription = valueDescription })
+            }
         }
     }
 }
 
 @Composable
 private fun RefreshNowButton(refresh: () -> Unit, refreshStatus: NowRefreshStatus) {
+    val loadingDescription = localizedWeatherStatus(
+        WeatherDataStatusPolicy.loading(WeatherDataKind.RADAR),
+    )
     IconButton(onClick = refresh, modifier = Modifier.size(48.dp)) {
         if (refreshStatus is NowRefreshStatus.Refreshing) {
             CircularProgressIndicator(Modifier.size(22.dp).semantics {
-                contentDescription = WeatherDataStatusPolicy.loading(WeatherDataKind.RADAR)
+                contentDescription = loadingDescription
             }, color = NowAccent, strokeWidth = 2.dp)
-        } else Icon(Icons.Default.Refresh, contentDescription = "Refresh radar nowcast", tint = NowAccent)
+        } else Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.now_refresh), tint = NowAccent)
     }
 }
 
@@ -727,25 +813,20 @@ private fun RainTimeline(
     entryProgress: Float,
     onTimeSelected: (Double) -> Unit,
 ) {
+    val context = LocalContext.current
     val NowSurfaceHigh = LocalRainAlarmPalette.current.elevated
     val NowMuted = LocalRainAlarmPalette.current.muted
     val NowBorder = LocalRainAlarmPalette.current.border
     val NowAccent = LocalRainAlarmPalette.current.accent
     val endMinute = series.points.last().minute.coerceIn(0, 60)
-    val chartTitle = NowChartLayout.horizonTitle(endMinute)
-    val description = buildString {
-        append("$chartTitle ${if (series.intensityEncoding == com.rainalarm.app.domain.RadarIntensityEncoding.REGIONAL_AREA_CHART) "area forecast intensity" else "radar intensity"}. ")
-        val analysis = RainMinuteSeriesAnalyzer.analyze(series)
-        val likelySnow = analysis?.let(series::likelySnowFor) == true
-        if (analysis?.rainingNow == true) append(if (likelySnow) "Snow likely now. " else "Raining now. ")
-        else if (analysis?.arrivalMinute != null) append(if (likelySnow) "Snow likely in ${analysis.arrivalMinute} minutes. " else "Rain starts in ${analysis.arrivalMinute} minutes. ")
-        else if (series.availability == RainMinuteAvailability.PARTIAL) {
-            append("No rain detected before +${series.points.last().minute} minutes; later minutes unavailable. ")
-        } else append("No rain expected. ")
-        append("Light, medium and severe intensity bands are shown. ")
-        if (endMinute > 0) append("The axis runs from now through ${NowSourceClock.label(series.startEpochSeconds, endMinute, ZoneId.systemDefault())}.")
-        else append("Only the current radar point is available.")
+    val chartTitle = when (endMinute) {
+        0 -> stringResource(R.string.now_current_radar)
+        60 -> stringResource(R.string.now_next_hour)
+        else -> stringResource(R.string.now_next_minutes, endMinute)
     }
+    val description = "$chartTitle. ${stringResource(R.string.now_graph_description)}"
+    val graphDescription = stringResource(R.string.now_graph_description)
+    val inspectDescription = stringResource(R.string.now_chart_inspect)
     Card(
         colors = CardDefaults.cardColors(containerColor = NowSurfaceHigh),
         shape = RoundedCornerShape(24.dp),
@@ -759,7 +840,8 @@ private fun RainTimeline(
         }
         Row(Modifier.fillMaxWidth().weight(1f)) {
             Column(Modifier.width(56.dp).fillMaxHeight()) {
-                listOf("Severe", "Medium", "Light").forEach { band ->
+                listOf(stringResource(R.string.now_severe), stringResource(R.string.now_medium),
+                    stringResource(R.string.now_light)).forEach { band ->
                     Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
                         Text(band, color = NowMuted, fontSize = 11.sp)
                     }
@@ -773,8 +855,8 @@ private fun RainTimeline(
                     }
                 }
                 .semantics {
-                    contentDescription = "Rain intensity plot. Double tap to inspect the current forecast end on radar."
-                    onClick(label = "Inspect forecast end on radar") {
+                    contentDescription = graphDescription
+                    onClick(label = inspectDescription) {
                         onTimeSelected(series.startEpochSeconds + endMinute * 60.0)
                         true
                     }
@@ -848,9 +930,12 @@ private fun RainTimeline(
         }
         BoxWithConstraints(Modifier.fillMaxWidth().height(NowLayoutPolicy.chartAxisHeightDp.dp).padding(start = 56.dp)) {
             val fontScale = LocalDensity.current.fontScale
+            val locale = LocalConfiguration.current.locales[0]
             val ticks = NowChartLayout.clockTicks(
                 series.startEpochSeconds, endMinute, ZoneId.systemDefault(),
                 maxWidth.value.toInt(), fontScale,
+                use24Hour = DateFormat.is24HourFormat(context), locale = locale,
+                nowLabel = stringResource(R.string.now_now),
             )
             Canvas(Modifier.fillMaxSize()) {
                 ticks.forEach { tick ->
@@ -874,3 +959,12 @@ private fun RainTimeline(
         }
     }
 }
+
+@Composable
+private fun localizedNowMetricLabel(metric: NowWeatherMetric): String = stringResource(when (metric) {
+    NowWeatherMetric.TEMPERATURE -> R.string.metric_temperature
+    NowWeatherMetric.PRESSURE -> R.string.metric_pressure
+    NowWeatherMetric.HUMIDITY -> R.string.metric_humidity
+    NowWeatherMetric.UV_INDEX -> R.string.metric_uv
+    NowWeatherMetric.WIND -> R.string.metric_wind
+})

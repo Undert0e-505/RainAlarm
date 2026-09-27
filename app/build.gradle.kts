@@ -34,6 +34,9 @@ android {
     }
 
     buildTypes {
+        debug {
+            isPseudoLocalesEnabled = true
+        }
         release {
             signingConfig = signingConfigs.findByName("externalRelease")
             isMinifyEnabled = true
@@ -57,6 +60,7 @@ android {
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.appcompat)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.kotlinx.coroutines.android)
@@ -137,5 +141,10 @@ tasks.register<JavaExec>("directDebugUnitTest") {
         "com.rainalarm.app.data.OperaCogTest",
         "com.rainalarm.app.data.RainViewerRegionalCoverageTest",
         "com.rainalarm.app.ui.RadarCoverageMaskPolicyTest",
+        "com.rainalarm.app.data.AutomaticAppearanceTest",
+        "com.rainalarm.app.ui.NowVisualPolishTest",
+        "com.rainalarm.app.data.LocalizationResourcesTest",
+        "com.rainalarm.app.data.AppLanguageTest",
+        "com.rainalarm.app.BacklogFeatureWiringTest",
     )
 }

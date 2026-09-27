@@ -19,6 +19,7 @@ import java.util.Locale
 private const val GEOCODING_BASE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 private const val POSTCODE_BASE_URL = "https://api.postcodes.io/postcodes"
 private const val PHOTON_BASE_URL = "https://photon.komoot.io/api/"
+private const val PHOTON_REVERSE_BASE_URL = "https://photon.komoot.io/reverse"
 private const val WIKIMEDIA_BASE_URL = "https://en.wikipedia.org/w/api.php"
 private const val GEOCODING_CONNECT_TIMEOUT_MS = 8_000
 private const val GEOCODING_READ_TIMEOUT_MS = 10_000
@@ -74,6 +75,27 @@ fun buildPhotonGeocodingUrl(
     return "${baseUrl.trimEnd('/')}?q=${encode(trimmed)}&limit=$PHOTON_RESULT_LIMIT&lang=${encode(language)}"
 }
 
+fun buildPhotonReverseGeocodingUrl(
+    latitude: Double,
+    longitude: Double,
+    language: String,
+    baseUrl: String = PHOTON_REVERSE_BASE_URL,
+): String {
+    require(latitude.isFinite() && latitude in -85.05112878..85.05112878)
+    require(longitude.isFinite() && longitude in -180.0..180.0)
+    val endpoint = URL(baseUrl)
+    require(endpoint.protocol == "https" && endpoint.host.isNotBlank() &&
+        endpoint.userInfo == null && endpoint.query == null && endpoint.ref == null) {
+        "Photon endpoint must be a plain HTTPS URL"
+    }
+    fun encode(value: String) = URLEncoder.encode(value, StandardCharsets.UTF_8.name())
+    val normalizedLanguage = language.substringBefore('-').lowercase(Locale.ROOT)
+        .ifBlank { "en" }
+    return "${baseUrl.trimEnd('/')}?lat=${encode(latitude.toString())}" +
+        "&lon=${encode(longitude.toString())}&limit=5&lang=${encode(normalizedLanguage)}" +
+        "&layer=city&layer=locality&layer=district&layer=county&layer=state"
+}
+
 /**
  * Builds the low-volume fallback query against English Wikipedia. Keeping one audited host avoids
  * constructing a host name from an untrusted locale while still giving worldwide named-place
@@ -117,6 +139,79 @@ internal object PlaceSearchText {
 
 interface GeocodingEndpoint {
     suspend fun search(query: String, language: String): List<PlaceSearchResult>
+}
+
+fun interface ReverseGeocodingEndpoint {
+    suspend fun reverse(latitude: Double, longitude: Double, language: String): String?
+}
+
+/** Low-volume reverse lookup used only after the map picker settles on a new coordinate. */
+class PhotonReverseGeocoder(
+    private val baseUrl: String = PHOTON_REVERSE_BASE_URL,
+    private val httpClient: GeocodingHttpClient = UrlConnectionGeocodingHttpClient,
+    private val cacheCapacity: Int = 24,
+) : ReverseGeocodingEndpoint {
+    private val mutex = Mutex()
+    private val cached = LinkedHashMap<String, String>(cacheCapacity, 0.75f, true)
+    private val inFlight = mutableMapOf<String, Deferred<String?>>()
+
+    override suspend fun reverse(latitude: Double, longitude: Double, language: String): String? =
+        coroutineScope {
+            val key = String.format(
+                Locale.ROOT, "%.5f|%.5f|%s", latitude, longitude,
+                language.substringBefore('-').lowercase(Locale.ROOT),
+            )
+            mutex.withLock { cached[key] }?.let { return@coroutineScope it }
+            var ownsRequest = false
+            val request = mutex.withLock {
+                cached[key]?.let { return@withLock null }
+                inFlight[key] ?: async {
+                    val response = httpClient.get(
+                        buildPhotonReverseGeocodingUrl(latitude, longitude, language, baseUrl),
+                        PHOTON_CONNECT_TIMEOUT_MS,
+                        PHOTON_READ_TIMEOUT_MS,
+                    )
+                    check(response.statusCode in 200..299) {
+                        "Reverse place search returned ${response.statusCode}"
+                    }
+                    PhotonReverseGeocodingMapper.parse(response.body)
+                }.also {
+                    ownsRequest = true
+                    inFlight[key] = it
+                }
+            }
+            if (request == null) return@coroutineScope mutex.withLock { cached[key] }
+            try {
+                val result = request.await()
+                if (ownsRequest && result != null) mutex.withLock {
+                    cached[key] = result
+                    while (cached.size > cacheCapacity) cached.remove(cached.entries.first().key)
+                }
+                result
+            } finally {
+                if (ownsRequest) mutex.withLock {
+                    if (inFlight[key] === request) inFlight.remove(key)
+                }
+            }
+        }
+}
+
+object PlacePickerNamePolicy {
+    fun coordinateFallback(latitude: Double, longitude: Double): String =
+        String.format(Locale.ROOT, "%.3f, %.3f", latitude, longitude)
+
+    fun shouldApplyResult(requestToken: Int, currentToken: Int, userEdited: Boolean): Boolean =
+        requestToken == currentToken && !userEdited
+}
+
+/** One naming path for both the full-screen picker and Radar long-press save flow. */
+class PlaceNameSuggestionRepository(
+    private val endpoint: ReverseGeocodingEndpoint = PhotonReverseGeocoder(),
+) {
+    suspend fun suggestedName(latitude: Double, longitude: Double, language: String): String =
+        runCatching { endpoint.reverse(latitude, longitude, language) }
+            .getOrNull()?.trim()?.takeIf(String::isNotEmpty)
+            ?: PlacePickerNamePolicy.coordinateFallback(latitude, longitude)
 }
 
 data class GeocodingHttpResponse(val statusCode: Int, val body: String)
@@ -438,6 +533,8 @@ private data class PhotonProperties(
     val county: String? = null,
     val state: String? = null,
     val country: String? = null,
+    val type: String? = null,
+    val osm_value: String? = null,
 )
 
 @Serializable
@@ -468,6 +565,31 @@ object PhotonGeocodingMapper {
                 PlaceSearchResult(place.name, detail, place.latitude, place.longitude)
             }.getOrNull()
         }
+}
+
+object PhotonReverseGeocodingMapper {
+    private val json = Json { ignoreUnknownKeys = true }
+    private val settlementTypes = setOf("city", "town", "village", "locality", "hamlet")
+
+    fun parse(body: String): String? {
+        val features = json.decodeFromString<PhotonResponse>(body).features
+        fun clean(value: String?): String? = value?.trim()?.takeIf(String::isNotEmpty)
+        listOf<(PhotonProperties) -> String?>(
+            { clean(it.locality) },
+            { clean(it.city) },
+            { properties ->
+                val type = clean(properties.type ?: properties.osm_value)?.lowercase(Locale.ROOT)
+                clean(properties.name).takeIf { type in settlementTypes }
+            },
+            { clean(it.district) },
+            { clean(it.county) },
+            { clean(it.state) },
+            { clean(it.name) },
+        ).forEach { selector ->
+            features.firstNotNullOfOrNull { selector(it.properties) }?.let { return it }
+        }
+        return null
+    }
 }
 
 @Serializable

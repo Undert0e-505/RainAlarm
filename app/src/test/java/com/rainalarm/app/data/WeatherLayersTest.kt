@@ -575,6 +575,8 @@ class EumetLayersTest {
         assertEquals(RadarMapLayer.overlays.toSet(), toggled)
         assertEquals(setOf(RadarMapLayer.WIND, RadarMapLayer.FOG),
             RadarMapLayerPreference.toggled(toggled, RadarMapLayer.LIGHTNING, false))
+        assertEquals(setOf(RadarMapLayer.WIND, RadarMapLayer.LIGHTNING),
+            RadarMapLayerPreference.toggled(toggled, RadarMapLayer.FOG, false))
         assertEquals(NowWeatherMetric.entries.toSet(),
             NowWeatherMetricPreference.decode(null))
         assertEquals(NowWeatherMetric.entries.toSet(), NowWeatherMetricPreference.decode("old-value"))

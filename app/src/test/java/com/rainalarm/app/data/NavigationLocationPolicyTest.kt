@@ -23,16 +23,33 @@ class NavigationLocationPolicyTest {
         assertEquals(LocationRequestProfiles.Follow, LocationRequestProfiles.select(true, true, true))
         assertEquals(5_000L, LocationRequestProfiles.Current.intervalMillis)
         assertEquals(2_000L, LocationRequestProfiles.Current.fastestIntervalMillis)
-        assertEquals(1_000L, LocationRequestProfiles.Follow.intervalMillis)
-        assertEquals(500L, LocationRequestProfiles.Follow.fastestIntervalMillis)
+        assertEquals(200L, LocationRequestProfiles.Follow.intervalMillis)
+        assertEquals(200L, LocationRequestProfiles.Follow.fastestIntervalMillis)
         assertEquals(0L, LocationRequestProfiles.Follow.maxDelayMillis)
+    }
+
+    @Test fun rapidOrderedTravelFixesAreAcceptedWithoutAnArtificialCadenceGate() {
+        val previous = fix()
+        val rapid = fix(
+            lat = 51.50001,
+            wall = 1_000_200L,
+            elapsed = 1_200_000_000L,
+        )
+        assertTrue(NavigationFixAdjudicationPolicy.decide(
+            rapid, previous, 1_000_200L, 1_200_000_000L,
+        ) is LocationFixDecision.Accept)
     }
 
     @Test fun precisePermissionAndAccuracyGateFollow() {
         assertTrue(FollowCapabilityPolicy.canFollow(true, LocationFixQuality.ACCURATE))
         assertFalse(FollowCapabilityPolicy.canFollow(false, LocationFixQuality.ACCURATE))
         assertFalse(FollowCapabilityPolicy.canFollow(true, LocationFixQuality.WEAK))
-        assertTrue(FollowCapabilityPolicy.unavailableMessage(false, null).contains("Precise"))
+        assertEquals(FollowCapabilityReason.PRECISE_PERMISSION,
+            FollowCapabilityPolicy.unavailableReason(false, null))
+        assertEquals(FollowCapabilityReason.WAITING_FOR_FIX,
+            FollowCapabilityPolicy.unavailableReason(true, null))
+        assertEquals(FollowCapabilityReason.WEAK_ACCURACY,
+            FollowCapabilityPolicy.unavailableReason(true, LocationFixQuality.WEAK))
     }
 
     @Test fun recentAccurateFixBeatsNewerCoarseFix() {

@@ -85,8 +85,26 @@ internal object RadarShaderPrecisionPolicy {
         if (fragmentHighPrecisionBits > 0) RadarShaderPrecision.HIGH else RadarShaderPrecision.MEDIUM
 }
 
+/**
+ * One physical-pixel marker contract for the base canvas, CPU fallback and GLES renderers.
+ * The marker intentionally stays a small pinhead at high density; using dp in only the canvas
+ * path made session promotion visibly snap from a large marker to the GLES point.
+ */
+internal object RadarMarkerGeometry {
+    const val DIAMETER_PX = 16f
+    const val OUTER_RADIUS_PX = DIAMETER_PX / 2f
+    const val OUTLINE_WIDTH_PX = 2f
+    const val INNER_RADIUS_PX = OUTER_RADIUS_PX - OUTLINE_WIDTH_PX
+    const val INNER_RADIUS_FRACTION = INNER_RADIUS_PX / DIAMETER_PX
+    const val INNER_RADIUS_FRACTION_SQUARED = INNER_RADIUS_FRACTION * INNER_RADIUS_FRACTION
+
+    fun outerRadius(scale: Float): Float = OUTER_RADIUS_PX * scale.coerceIn(1f, 1.6f)
+    fun innerRadius(scale: Float): Float = INNER_RADIUS_PX * scale.coerceIn(1f, 1.6f)
+}
+
 internal object RadarShaderSources {
     private const val SHARED_MARKER_MODE = "uniform mediump float markerMode;"
+    private const val MARKER_SCALE = "uniform mediump float markerScale;"
     val vertex: String get() = vertexFor(RadarShaderPrecision.HIGH)
     val fragment: String get() = fragmentFor(RadarShaderPrecision.HIGH)
 
@@ -95,10 +113,11 @@ internal object RadarShaderSources {
         attribute ${precision.qualifier} vec2 textureCoordinate;
         varying ${precision.qualifier} vec2 uv;
         $SHARED_MARKER_MODE
+        $MARKER_SCALE
         void main() {
             uv = textureCoordinate;
             gl_Position = vec4(position, 0.0, 1.0);
-            gl_PointSize = markerMode > 0.5 ? 16.0 : 1.0;
+            gl_PointSize = markerMode > 0.5 ? ${RadarMarkerGeometry.DIAMETER_PX} * markerScale : 1.0;
         }
     """.trimIndent()
 
@@ -140,7 +159,9 @@ internal object RadarShaderSources {
             if (markerMode > 0.5) {
                 vec2 delta = gl_PointCoord - vec2(0.5);
                 if (dot(delta, delta) > 0.25) discard;
-                gl_FragColor = vec4(0.31, 0.76, 0.97, 1.0);
+                gl_FragColor = dot(delta, delta) <= ${RadarMarkerGeometry.INNER_RADIUS_FRACTION_SQUARED}
+                    ? vec4(0.31, 0.765, 0.97, 1.0)
+                    : vec4(0.051, 0.051, 0.051, 1.0);
                 return;
             }
             vec2 encoded = texture2D(texVelocity, textureCoordinate(uv)).ra;

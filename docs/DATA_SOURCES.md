@@ -342,8 +342,12 @@ References:
   instants are formatted in the returned IANA timezone for the selected
   place's **current local date**, including DST changes. Missing events show
   unavailable; a local-day change refreshes the point response. These facts
-  support Now indicators and help select the preferred daytime or nighttime
-  Clouds product; they do not alter radar prediction or alerts. Stale or
+  support Now indicators, help select the preferred daytime or nighttime
+  Clouds product, and drive the optional whole-app Day/Night appearance profiles
+  from the same selected-place cache. Automatic appearance adds no solar endpoint,
+  request, or polling subsystem; it schedules the next valid cached boundary and
+  uses the platform night mode only when selected-place solar facts are genuinely
+  unavailable. These facts do not alter radar prediction or alerts. Stale or
   missing daylight data falls back to today's solar events or a deterministic
   coordinate/time solar calculation rather than disabling Clouds. A separate
   request only while Wind is enabled carries

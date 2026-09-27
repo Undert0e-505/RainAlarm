@@ -22,10 +22,16 @@ class ForegroundFollowWiringTest {
 
     @Test fun followOwnsHighRateProfileSmoothNorthUpCameraAndScreenOnOnlyWhileVisible() {
         val main = source("src/main/java/com/rainalarm/app/MainActivity.kt")
+        val policy = source("src/main/java/com/rainalarm/app/data/NavigationLocationPolicy.kt")
+        val client = source("src/main/java/com/rainalarm/app/data/PlatformLocationClient.kt")
         val screen = source("src/main/java/com/rainalarm/app/ui/RadarScreen.kt")
         val map = source("src/main/java/com/rainalarm/app/ui/RadarImageMap.kt")
         assertTrue(main.contains("_followRequested"))
         assertTrue(main.contains("LocationRequestProfiles.select"))
+        assertTrue(policy.contains("intervalMillis = 200"))
+        assertTrue(policy.contains("fastestIntervalMillis = 200"))
+        assertTrue(client.contains("setMinUpdateIntervalMillis(profile.fastestIntervalMillis)"))
+        assertTrue(main.contains("_liveMapPlace.value = marker"))
         assertTrue(screen.contains("appForeground && selectedPlaceId == CURRENT_LOCATION_ID && followLive"))
         assertTrue(screen.contains("radarView.keepScreenOn = keepScreenOn"))
         assertTrue(screen.contains("onDispose { if (keepScreenOn) radarView.keepScreenOn = false }"))
@@ -44,7 +50,7 @@ class ForegroundFollowWiringTest {
         assertTrue(screen.contains("pendingCloudsRefresh"))
         assertTrue(screen.contains("pendingLightningRefresh"))
         assertTrue(screen.contains("pendingWindRefresh"))
-        assertTrue(screen.contains("refreshCoordinator.pause()"))
+        assertTrue(screen.contains("refreshCoordinator.pause(Instant.now().epochSecond)"))
         assertFalse(screen.contains("var layerRefresh"))
     }
 
@@ -53,7 +59,8 @@ class ForegroundFollowWiringTest {
         val screen = source("src/main/java/com/rainalarm/app/ui/RadarScreen.kt")
         assertFalse(manifest.contains("ACCESS_BACKGROUND_LOCATION"))
         assertFalse(manifest.contains("WAKE_LOCK"))
-        assertFalse(manifest.contains("<service"))
+        val declaredServices = Regex("<service[\\s\\S]*?</service>").findAll(manifest).map { it.value }.toList()
+        assertTrue(declaredServices.all { it.contains("AppLocalesMetadataHolderService") })
         assertTrue(manifest.contains("android.permission.FOREGROUND_SERVICE"))
         assertTrue(manifest.contains("tools:node='remove'"))
         assertFalse(screen.contains("PowerManager"))

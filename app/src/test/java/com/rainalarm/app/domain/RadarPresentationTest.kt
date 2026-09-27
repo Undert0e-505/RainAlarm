@@ -1,6 +1,7 @@
 package com.rainalarm.app.domain
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.Instant
@@ -40,14 +41,106 @@ class RadarPresentationTest {
     }
 
     @Test
-    fun ticksUseRealHalfHourBoundariesWithContinuousFractionsAndLocalClock() {
+    fun ticksUseRealQuarterHourBoundariesWithContinuousFractionsAndLocalClock() {
         val start = Instant.parse("2026-09-16T08:07:00Z").epochSecond
         val end = Instant.parse("2026-09-16T10:06:00Z").epochSecond
         val ticks = RadarTimelineTicks.between(start, end, ZoneId.of("Europe/London"))
-        assertEquals(listOf("09:30", "10:00", "10:30", "11:00"), ticks.map { it.label })
-        assertEquals(listOf(23L, 53L, 83L, 113L), ticks.map { (it.epochSeconds - start) / 60 })
-        assertEquals(23f / 119f, ticks.first().fraction, 0.0001f)
+        assertEquals(listOf("09:15", "09:30", "09:45", "10:00", "10:15", "10:30", "10:45", "11:00"),
+            ticks.map { it.label })
+        assertEquals(listOf(8L, 23L, 38L, 53L, 68L, 83L, 98L, 113L),
+            ticks.map { (it.epochSeconds - start) / 60 })
+        assertEquals(8f / 119f, ticks.first().fraction, 0.0001f)
         assertTrue(ticks.zipWithNext().all { it.first.fraction < it.second.fraction })
+    }
+
+    @Test fun `timeline labels use locale clock while provider frame cadence remains irrelevant`() {
+        val start = Instant.parse("2026-09-16T11:59:00Z").epochSecond
+        val end = start + 47 * 60
+        val twelveHour = RadarTimelineTicks.between(
+            start, end, ZoneId.of("Europe/London"), use24Hour = false, locale = java.util.Locale.US,
+        )
+        assertEquals(listOf("1:00 PM", "1:15 PM", "1:30 PM", "1:45 PM"), twelveHour.map { it.label })
+        assertTrue(twelveHour.all { it.epochSeconds % RadarTimelineTicks.SPACING_SECONDS == 0L })
+    }
+
+    @Test fun `measured label collision thinning never moves a label away from its tick`() {
+        val fractions = listOf(0f, .25f, .5f, .75f, 1f)
+        val roomy = RadarTimelineLabelLayout.arrange(fractions, List(5) { 34 }, 400, 8f, 6f)
+        assertTrue(roomy.all { it.visible })
+        assertEquals(listOf(17f, 104f, 200f, 296f, 383f), roomy.map { it.anchorPx })
+
+        val narrow = RadarTimelineLabelLayout.arrange(fractions, List(5) { 58 }, 180, 8f, 6f)
+        assertTrue(narrow.count { it.visible } < narrow.size)
+        assertEquals(29f, narrow.first().anchorPx, 0f)
+        assertEquals(151f, narrow.last().anchorPx, 0f)
+        assertTrue(narrow.last().visible)
+        assertTrue(narrow.zip(fractions).all { (placement, fraction) ->
+            val expectedRaw = 8f + (180f - 16f) * fraction
+            placement.anchorPx == expectedRaw.coerceIn(29f, 151f)
+        })
+    }
+
+    @Test fun `entry focus and radar edge swipes are bounded and deliberate`() {
+        assertEquals(9.45, RadarEntryFocusPolicy.startZoom(10.0), 0.0001)
+        assertEquals(RadarEntryFocusPolicy.START_MARKER_SCALE,
+            RadarEntryFocusPolicy.markerScale(0f), 0f)
+        assertEquals(1f, RadarEntryFocusPolicy.markerScale(1f), 0f)
+        assertEquals(RadarEntryFocusPolicy.START_TITLE_SCALE,
+            RadarEntryFocusPolicy.titleScale(-1f), 0f)
+        assertEquals(1f, RadarEntryFocusPolicy.titleScale(2f), 0f)
+        assertEquals(0, RadarEntryFocusPolicy.mapDurationMillis(0f))
+        assertEquals(500, RadarEntryFocusPolicy.mapDurationMillis(.5f))
+        assertEquals(1_000, RadarEntryFocusPolicy.mapDurationMillis(1f))
+        assertEquals(2_000, RadarEntryFocusPolicy.mapDurationMillis(2f))
+        assertTrue(RadarEntryFocusActivationPolicy.shouldAnimate(
+            screenActive = true,
+            entryGeneration = 4,
+            hasResolvedPlace = true,
+            waitingForInitialCurrentFix = false,
+        ))
+        // Travel/follow is deliberately not an input: a retained live page still animates once
+        // for each destination-entry generation, while GPS recompositions reuse that generation.
+        assertFalse(RadarEntryFocusActivationPolicy.shouldAnimate(true, 0, true, false))
+        assertFalse(RadarEntryFocusActivationPolicy.shouldAnimate(false, 4, true, false))
+        assertFalse(RadarEntryFocusActivationPolicy.shouldAnimate(true, 4, false, true))
+
+        assertEquals(-1, RadarPageSwipePolicy.destinationDelta(
+            RadarPageEdge.PREVIOUS, 80f, 5f,
+        ))
+        assertEquals(1, RadarPageSwipePolicy.destinationDelta(
+            RadarPageEdge.NEXT, -80f, 5f,
+        ))
+        assertEquals(null, RadarPageSwipePolicy.destinationDelta(
+            RadarPageEdge.PREVIOUS, 19f, 0f,
+        ))
+        assertEquals(null, RadarPageSwipePolicy.destinationDelta(
+            RadarPageEdge.PREVIOUS, 80f, 75f,
+        ))
+        assertEquals(null, RadarPageSwipePolicy.destinationDelta(
+            RadarPageEdge.PREVIOUS, 80f, 0f, multiTouch = true,
+        ))
+        assertEquals(-1, RadarPageSwipePolicy.destinationDelta(
+            RadarPageEdge.PREVIOUS, 24f, 2f, durationMillis = 50L,
+        ))
+        assertEquals(null, RadarPageSwipePolicy.destinationDelta(
+            RadarPageEdge.PREVIOUS, 24f, 2f, durationMillis = 500L,
+        ))
+        assertTrue(RadarPageSwipePolicy.canClaim(RadarPageEdge.PREVIOUS, 5f, 2f, false))
+        assertTrue(RadarPageSwipePolicy.canClaim(RadarPageEdge.NEXT, -5f, 2f, false))
+        assertFalse(RadarPageSwipePolicy.canClaim(RadarPageEdge.PREVIOUS, -5f, 0f, false))
+        assertFalse(RadarPageSwipePolicy.canClaim(RadarPageEdge.NEXT, -5f, 0f, true))
+    }
+
+    @Test fun `saved marker focus waits for its target and cancels on a different selection`() {
+        val request = RadarMarkerFocusRequest(7, "old-place", "new-place")
+        assertEquals(RadarMarkerFocusAction.WAIT,
+            RadarMarkerFocusPolicy.resolve(request, "old-place"))
+        assertEquals(RadarMarkerFocusAction.ANIMATE,
+            RadarMarkerFocusPolicy.resolve(request, "new-place"))
+        assertEquals(RadarMarkerFocusAction.CANCEL,
+            RadarMarkerFocusPolicy.resolve(request, "another-place"))
+        assertEquals(RadarMarkerFocusAction.CANCEL,
+            RadarMarkerFocusPolicy.resolve(request, null))
     }
 
     @Test

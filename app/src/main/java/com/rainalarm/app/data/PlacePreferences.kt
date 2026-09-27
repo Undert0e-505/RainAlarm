@@ -60,7 +60,8 @@ class PlacePreferences(private val context: Context) {
             val collection = if (freshInstall) PlaceCollectionRules.freshInstall() else decode(preferences)
             val normalized = json.encodeToString(collection)
             if (preferences[Keys.collection] != normalized) preferences[Keys.collection] = normalized
-            if (freshInstall) preferences[Keys.defaultStartupId] = CURRENT_LOCATION_ID
+            if (freshInstall) preferences[Keys.defaultStartupId] =
+                PlaceCollectionRules.resolveDefaultId(collection, collection.selectedId)
             preferences.remove(Keys.name)
             preferences.remove(Keys.latitude)
             preferences.remove(Keys.longitude)

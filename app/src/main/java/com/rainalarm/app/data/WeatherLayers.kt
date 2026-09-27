@@ -11,6 +11,7 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 import kotlin.math.floor
 import kotlin.math.abs
 import kotlin.math.ln
@@ -55,10 +56,14 @@ data class CurrentWeather(
     fun solarDate(): LocalDate? = timeZone?.let { zone ->
         sunriseEpochSeconds?.let { Instant.ofEpochSecond(it).atZone(ZoneId.of(zone)).toLocalDate() }
     }
-    fun solarToday(now: Long): Pair<String, String>? {
+    fun solarToday(
+        now: Long,
+        use24Hour: Boolean = true,
+        locale: Locale = Locale.getDefault(),
+    ): Pair<String, String>? {
         val zone = timeZone?.let { runCatching { ZoneId.of(it) }.getOrNull() } ?: return null
         if (solarDate() != Instant.ofEpochSecond(now).atZone(zone).toLocalDate()) return null
-        val format = DateTimeFormatter.ofPattern("HH:mm")
+        val format = DateTimeFormatter.ofPattern(if (use24Hour) "HH:mm" else "h:mm a", locale)
         return Pair(
             sunriseEpochSeconds?.let { Instant.ofEpochSecond(it).atZone(zone).format(format) } ?: "—",
             sunsetEpochSeconds?.let { Instant.ofEpochSecond(it).atZone(zone).format(format) } ?: "—",

@@ -5,6 +5,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RadarRendererLifecycleTest {
+    @Test fun `all marker renderers share a physical pixel pinhead geometry`() {
+        assertEquals(16f, RadarMarkerGeometry.DIAMETER_PX, 0f)
+        assertEquals(8f, RadarMarkerGeometry.outerRadius(1f), 0f)
+        assertEquals(6f, RadarMarkerGeometry.innerRadius(1f), 0f)
+        assertEquals(11.04f, RadarMarkerGeometry.outerRadius(1.38f), 0.001f)
+        assertTrue(RadarShaderSources.vertex.contains("16.0 * markerScale"))
+        assertTrue(RadarShaderSources.fragment.contains(
+            RadarMarkerGeometry.INNER_RADIUS_FRACTION_SQUARED.toString(),
+        ))
+    }
     @Test
     fun `bind before surface initializes then schedules first draw`() {
         val state = RadarRendererLifecycle()

@@ -130,6 +130,7 @@ internal class RadarGlOverlayView(
     private var screenVertices: FloatArray? = null
     private var markerNdc: FloatArray? = null
     private var markerPlace: SavedPlace? = null
+    private var markerScale = 1f
     private var disposed = false
     private var renderer: Renderer? = null
     private val renderQueued = AtomicBoolean(false)
@@ -194,6 +195,17 @@ internal class RadarGlOverlayView(
             previous?.latitude != mapPlace.latitude || previous.longitude != mapPlace.longitude
         }
         if (moved) updateMarkerProjection(mapPlace)
+    }
+
+    override fun setMarkerScale(scale: Float) {
+        val safe = scale.takeIf(Float::isFinite)?.coerceIn(1f, 1.6f) ?: 1f
+        val changed = synchronized(stateLock) {
+            if (markerScale == safe) false else {
+                markerScale = safe
+                true
+            }
+        }
+        if (changed) requestRender()
     }
 
     private fun updateMarkerProjection(mapPlace: SavedPlace) {
@@ -313,11 +325,12 @@ internal class RadarGlOverlayView(
     private fun drawOnRenderThread() {
         if (disposed) return
         val snapshot = synchronized(stateLock) {
-            RenderSnapshot(screenVertices?.copyOf(), markerNdc?.copyOf(), bracket, activeTier)
+            RenderSnapshot(screenVertices?.copyOf(), markerNdc?.copyOf(), markerScale, bracket, activeTier)
         }
         if (snapshot.vertices != null) runCatching {
             val drew = renderer?.draw(
-                requireNotNull(snapshot.vertices), snapshot.marker, snapshot.bracket, snapshot.tier,
+                requireNotNull(snapshot.vertices), snapshot.marker, snapshot.markerScale,
+                snapshot.bracket, snapshot.tier,
             )
                 ?: false
             if (drew) {
@@ -334,6 +347,7 @@ internal class RadarGlOverlayView(
     private data class RenderSnapshot(
         val vertices: FloatArray?,
         val marker: FloatArray?,
+        val markerScale: Float,
         val bracket: RadarTimelineBracket,
         val tier: RadarResolutionTier,
     )
@@ -451,6 +465,7 @@ internal class RadarGlOverlayView(
         fun draw(
             vertices: FloatArray,
             marker: FloatArray?,
+            markerScale: Float,
             bracket: RadarTimelineBracket,
             tier: RadarResolutionTier,
         ): Boolean {
@@ -523,6 +538,7 @@ internal class RadarGlOverlayView(
             // in the LUT and apply the surface-level factor only once here.
             GLES20.glUniform1f(uniform("layerAlpha"), 0.90f)
             GLES20.glUniform1f(uniform("markerMode"), 0f)
+            GLES20.glUniform1f(uniform("markerScale"), markerScale.coerceIn(1f, 1.6f))
             GLES20.glUniform1f(uniform("coloredSource"), rasterPolicy.coloredSource)
             val textureLayout = legacyLayout
             GLES20.glUniform2f(

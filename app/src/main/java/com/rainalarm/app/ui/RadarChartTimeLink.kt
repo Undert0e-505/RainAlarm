@@ -1,6 +1,6 @@
 package com.rainalarm.app.ui
 
-/** Ephemeral navigation intent; the selected-place ID remains stable across small live-fix drift. */
+/** Sticky navigation intent; the selected-place ID remains stable across session promotion/refresh. */
 data class RadarChartTimeRequest(
     val token: Int,
     val selectedPlaceId: String,
@@ -27,9 +27,16 @@ internal object RadarChartTimeLink {
         if (request.selectedPlaceId != selectedPlaceId) return RadarChartTimeDecision.Unavailable
         if (loadedPlaceId == null || firstEpochSeconds == null || endEpochSeconds == null)
             return RadarChartTimeDecision.Waiting
-        if (loadedPlaceId != selectedPlaceId || !request.epochSeconds.isFinite() ||
-            !endEpochSeconds.isFinite() || request.epochSeconds < firstEpochSeconds ||
-            request.epochSeconds > endEpochSeconds) return RadarChartTimeDecision.Unavailable
-        return RadarChartTimeDecision.Apply((request.epochSeconds - firstEpochSeconds).toFloat())
+        // A retained old session while the requested place loads is not evidence that the intent
+        // is unavailable. Wait for its replacement instead of consuming the request.
+        if (loadedPlaceId != selectedPlaceId) return RadarChartTimeDecision.Waiting
+        if (!request.epochSeconds.isFinite() || !endEpochSeconds.isFinite() ||
+            endEpochSeconds < firstEpochSeconds) return RadarChartTimeDecision.Unavailable
+        // Publication refresh can move the real domain past the requested instant. Preserve the
+        // absolute intent and deterministically select the nearest available edge, still paused.
+        val resolvedEpoch = request.epochSeconds.coerceIn(
+            firstEpochSeconds.toDouble(), endEpochSeconds,
+        )
+        return RadarChartTimeDecision.Apply((resolvedEpoch - firstEpochSeconds).toFloat())
     }
 }

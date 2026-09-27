@@ -5,6 +5,7 @@ import com.rainalarm.app.data.PlaceCollectionRules
 import com.rainalarm.app.data.SavedPlace
 import com.rainalarm.app.data.AppearanceMode
 import com.rainalarm.app.data.NowCardAppearance
+import com.rainalarm.app.data.ProfileMapAppearance
 import com.rainalarm.app.data.EumetLayerMetadata
 import com.rainalarm.app.data.EumetProduct
 import com.rainalarm.app.data.RadarMapLayer
@@ -57,7 +58,8 @@ class WeatherUiWiringTest {
         val placesUi = source("PlacesScreen.kt")
         assertTrue(placesUi.contains("displayedPlaces.removeAll { it.id == place.id }"))
         assertTrue(placesUi.contains("deletePlace(place.id) { succeeded ->"))
-        assertTrue(placesUi.contains("IconButton(onClick = onDelete)"))
+        assertTrue(placesUi.contains("Icon(Icons.Default.Delete"))
+        assertFalse(placesUi.contains("Snackbar"))
         assertTrue(placesUi.contains("detectDragGesturesAfterLongPress("))
         val main = listOf(File("src/main/java/com/rainalarm/app/MainActivity.kt"),
             File("app/src/main/java/com/rainalarm/app/MainActivity.kt")).first(File::isFile).readText()
@@ -81,13 +83,13 @@ class WeatherUiWiringTest {
         assertEquals(listOf("london-default", bath.id), failureRestored.places.map { it.id })
         val placesUi = source("PlacesScreen.kt")
         assertTrue(placesUi.contains("pendingDeletes = pendingDeletes - place.id"))
-        assertTrue(placesUi.contains("Could not delete"))
+        assertTrue(placesUi.contains("R.string.places_delete_failed"))
     }
 
     @Test fun `notification switch lives only in settings and provider rows are titles only`() {
         val settings = source("SettingsScreen.kt")
         val places = source("PlacesScreen.kt")
-        assertTrue(settings.contains("Text(\"Rain Notification\""))
+        assertTrue(settings.contains("Text(stringResource(R.string.settings_rain_notification)"))
         assertTrue(settings.contains("notificationPermission.launch"))
         assertFalse(places.contains("Rain approaching alert"))
         assertFalse(places.contains("alertSnapshot"))
@@ -119,36 +121,27 @@ class WeatherUiWiringTest {
         val places = source("PlacesScreen.kt")
         val settings = source("SettingsScreen.kt")
         assertTrue(places.contains("val geocoder = remember { PlaceGeocoder() }"))
-        assertTrue(places.contains(
-            "Towns: Open-Meteo · Named places: Photon/OSM + Wikipedia · UK postcodes: postcodes.io",
-        ))
-        assertTrue(places.contains("val liveSnapshot = if (collection.selectedId == CURRENT_LOCATION_ID)"))
+        assertTrue(places.contains("R.string.places_search_sources"))
         assertTrue(places.contains("LiveLocationSavePolicy.snapshot((locationState as? LocationUiState.Active)?.place)"))
-        assertTrue(places.contains("onClick = { saveAndSelect(liveSnapshot) }"))
-        assertTrue(places.contains("Text(\"Save current location\")"))
-        assertTrue(settings.contains("UK postcode lookup: postcodes.io"))
-        assertTrue(settings.contains(
-            "Named-place search: Photon using © OpenStreetMap contributors data, with " +
-                "geocoded notable-place fallback from Wikipedia/Wikimedia",
-        ))
+        assertTrue(places.contains("if (liveSnapshot != null && !liveSnapshotAlreadySaved) Button("))
+        assertTrue(places.contains("R.string.places_save_current"))
+        assertTrue(settings.contains("R.string.settings_about_search_body"))
     }
 
-    @Test fun `radar provider preference uses accessible pins without changing startup radio semantics`() {
+    @Test fun `radar provider preference uses accessible pins while startup place moved to Places`() {
         val settings = source("SettingsScreen.kt")
-        assertTrue(settings.contains("PREFERRED RADAR PROVIDER"))
+        val places = source("PlacesScreen.kt")
+        assertTrue(settings.contains("R.string.settings_provider_heading"))
         assertTrue(settings.contains("Icons.Filled.PushPin else Icons.Outlined.PushPin"))
         assertTrue(settings.contains("if (!pinned) onClick()"))
-        assertTrue(settings.contains("pinned as preferred radar provider"))
-        assertTrue(settings.contains("set as preferred radar provider"))
-        val pinChoice = settings.substring(
-            settings.indexOf("private fun ProviderPinChoice"),
-            settings.indexOf("private fun ProviderChoice"),
-        )
+        assertTrue(settings.contains("R.string.settings_provider_pinned_description"))
+        assertTrue(settings.contains("R.string.settings_provider_set_description"))
+        val pinChoice = settings.substringAfter("private fun ProviderPinChoice")
         assertFalse(pinChoice.contains("RadioButton"))
         assertFalse(pinChoice.contains(".selectable("))
-        val startupChoice = settings.substring(settings.indexOf("private fun ProviderChoice"))
-        assertTrue(startupChoice.contains("role = Role.RadioButton"))
-        assertTrue(startupChoice.contains("RadioButton(selected = selected"))
+        assertFalse(settings.contains("defaultStartupId"))
+        assertTrue(places.contains("startup = place.id == defaultStartupId"))
+        assertTrue(places.contains("onMakeStartup = { setDefaultStartupId(place.id) }"))
     }
 
     @Test fun `radar refresh reloads session and layer without replacing camera memory`() {
@@ -188,7 +181,8 @@ class WeatherUiWiringTest {
         assertTrue(map.contains("if (oldPlace?.id == mapPlace.id && !cameraMemory.hasPendingRecenter(recenterSignal))"))
         assertTrue(map.contains("oldPlace?.let { saveCamera(ready, it) }"))
         assertTrue(map.contains("val target = cameraMemory.target(cameraPlace, mapWidth, recenterSignal)"))
-        assertTrue(radar.contains("saveAndSelect(SavedPlace(name.trim(), point.latitude, point.longitude))"))
+        assertTrue(radar.contains("val incoming = SavedPlace(name.trim(), point.latitude, point.longitude)"))
+        assertTrue(radar.contains("saveAndSelect(incoming)"))
     }
 
     @Test fun `Now and alerts share dense first open radar minute series builder`() {
@@ -214,9 +208,9 @@ class WeatherUiWiringTest {
 
     @Test fun `settings marks the default MeteoGroup source as recommended`() {
         val settings = source("SettingsScreen.kt")
-        assertTrue(settings.contains("title = \"MeteoGroup regional (recommended)\""))
-        assertFalse(settings.contains("title = \"MeteoGroup regional\""))
-        assertTrue(settings.contains("title = \"Open European / OPERA\""))
+        assertTrue(settings.contains("title = stringResource(R.string.settings_provider_meteo)"))
+        assertTrue(settings.contains("title = stringResource(R.string.settings_provider_opera)"))
+        assertTrue(settings.contains("title = stringResource(R.string.settings_provider_rainviewer)"))
         assertFalse(settings.contains("European composite observations; future frames are app estimates"))
     }
 
@@ -236,7 +230,9 @@ class WeatherUiWiringTest {
         assertTrue(radar.contains("Modifier.widthIn(max = maxTitleWidth)"))
         assertFalse(radar.contains("modifier = Modifier.weight(1f))\n            PlaceSwitcher"))
         assertTrue(radar.contains("textAlign = TextAlign.Center"))
-        assertTrue(radar.contains("PlaceSwitcher(places, locationState, selectPlace"))
+        assertTrue(radar.contains("PlaceSwitcher("))
+        assertTrue(radar.contains("locationState,"))
+        assertTrue(radar.contains("useCurrentLocation = { requestCurrentLocation(false) }"))
         assertTrue(main.contains("recenterToSelectedPlace = viewModel::recenterToSelectedPlace"))
         assertTrue(main.contains("_currentRecenterTick.value++"))
     }
@@ -265,16 +261,16 @@ class WeatherUiWiringTest {
         assertTrue(radar.contains("horizontal = NowHeaderLayoutPolicy.horizontalPaddingDp"))
         assertTrue(radar.contains("vertical = NowHeaderLayoutPolicy.verticalPaddingDp.dp"))
         assertTrue(radar.contains("fontWeight = FontWeight.SemiBold"))
-        assertTrue(radar.contains("Modifier.widthIn(max = maxTitleWidth).semantics { heading() }"))
+        assertTrue(radar.contains(".widthIn(max = maxTitleWidth)"))
+        assertTrue(radar.contains(".semantics { heading() }"))
     }
 
     @Test fun `compass cardinals double in size without changing dial anchors or rings`() {
         val now = source("NowScreen.kt")
-        for (letter in listOf("N", "E", "S", "W")) {
-            assertTrue(now.contains("Text(\"$letter\", color = " +
-                (if (letter == "N") "NowText" else "NowMuted") +
-                ", fontSize = 24.sp, lineHeight = 24.sp"))
-        }
+        for (resource in listOf("direction_north_short", "direction_east_short",
+            "direction_south_short", "direction_west_short"))
+            assertTrue(now.contains("stringResource(R.string.$resource)"))
+        assertTrue(now.contains("fontSize = 24.sp"))
         assertTrue(now.contains("fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopCenter)"))
         assertTrue(now.contains("modifier = Modifier.align(Alignment.CenterEnd).padding(end = NowCompassCardinalPolicy.eastEndInsetDp.dp)"))
         assertTrue(now.contains("modifier = Modifier.align(Alignment.BottomCenter)"))
@@ -292,10 +288,13 @@ class WeatherUiWiringTest {
             File("app/src/main/res/drawable/ic_place_switch.xml"))
             .first(File::isFile).readText()
         assertTrue(switcher.contains("painterResource(R.drawable.ic_place_switch)"))
-        assertTrue(switcher.contains("modifier = Modifier.size(48.dp)"))
-        assertTrue(switcher.contains("contentDescription = \"Switch place, selected"))
+        assertTrue(switcher.contains("modifier.size(48.dp)"))
+        assertTrue(switcher.contains("R.string.places_switch_description"))
         assertTrue(now.contains("PlaceSwitcher(places, locationState, selectPlace, useCurrentLocation)"))
-        assertTrue(radar.contains("PlaceSwitcher(places, locationState, selectPlace"))
+        assertTrue(radar.contains("PlaceSwitcher("))
+        assertTrue(radar.contains("useCurrentLocation = { requestCurrentLocation(false) }"))
+        assertTrue(switcher.contains("DropdownMenu("))
+        assertTrue(switcher.contains("collection.places.forEach"))
         assertFalse(now.contains("SwapHoriz"))
         assertFalse(switcher.contains("SwapHoriz"))
         assertEquals(1, Regex("<path\\b").findAll(vector).count())
@@ -336,6 +335,89 @@ class WeatherUiWiringTest {
         assertTrue(radar.contains("end = RadarTopControlsPolicy.statusEndDp.dp"))
     }
 
+    @Test fun `radar edge swipe gutters use full physical edges with control cutouts and bounded exclusions`() {
+        assertEquals(64, RadarPageSwipeLayoutPolicy.widthDp)
+        assertEquals(0, RadarPageSwipeLayoutPolicy.leftTopInsetDp)
+        assertTrue(RadarPageSwipeLayoutPolicy.rightTopInsetDp > RadarTopControlsPolicy.statusTopDp)
+        assertEquals(64, RadarPageSwipeLayoutPolicy.leftInfoCutoutHeightDp)
+        assertEquals(200, RadarPageSwipeLayoutPolicy.exclusionHeightDp)
+        assertEquals(RadarPageSwipeLayoutPolicy.leftTopInsetDp,
+            RadarPageSwipeLayoutPolicy.topInsetDp(-1))
+        assertEquals(RadarPageSwipeLayoutPolicy.rightTopInsetDp,
+            RadarPageSwipeLayoutPolicy.topInsetDp(1))
+
+        assertEquals(-1, RadarPageSwipeLayoutPolicy.directionForStart(
+            0f, 100f, 360f, 100f, 800f))
+        assertEquals(-1, RadarPageSwipeLayoutPolicy.directionForStart(
+            5f, 400f, 360f, 100f, 800f))
+        assertEquals(-1, RadarPageSwipeLayoutPolicy.directionForStart(
+            32f, 400f, 360f, 100f, 800f))
+        assertEquals(-1, RadarPageSwipeLayoutPolicy.directionForStart(
+            63f, 735f, 360f, 100f, 800f))
+        assertEquals(0, RadarPageSwipeLayoutPolicy.directionForStart(
+            65f, 400f, 360f, 100f, 800f))
+        // Bottom-left is reserved for the information icon and comfortable touch margin.
+        assertEquals(0, RadarPageSwipeLayoutPolicy.directionForStart(
+            30f, 736f, 360f, 100f, 800f))
+        assertEquals(1, RadarPageSwipeLayoutPolicy.directionForStart(
+            359f, 100f + RadarPageSwipeLayoutPolicy.rightTopInsetDp, 360f, 100f, 800f))
+        assertEquals(0, RadarPageSwipeLayoutPolicy.directionForStart(
+            295f, 500f, 360f, 100f, 800f))
+
+        val radar = source("RadarScreen.kt")
+        val main = listOf(
+            File("src/main/java/com/rainalarm/app/MainActivity.kt"),
+            File("app/src/main/java/com/rainalarm/app/MainActivity.kt"),
+        ).first(File::isFile).readText()
+        assertTrue(main.contains("RadarPageSwipeOverlay("))
+        assertTrue(main.contains("mapBounds = radarPageSwipeBounds"))
+        assertTrue(main.contains("onPageSwipeBoundsChanged = { radarPageSwipeBounds = it }"))
+        assertTrue(radar.contains("internal fun Modifier.radarPageSwipeInput("))
+        assertFalse(radar.contains(".radarPageSwipeInput(localMapBounds"))
+        assertTrue(radar.contains("RadarPageGestureExclusions(radarMapBounds, screenActive)"))
+        assertTrue(radar.contains("pass = PointerEventPass.Initial"))
+        assertTrue(radar.contains("if (claimed) change.consume()"))
+        val ownershipLoop = radar.substringAfter("awaitEachGesture {")
+            .substringBefore("/**\n * Android accepts only 200 dp")
+        assertEquals(0, Regex("directionForStart\\(").findAll(ownershipLoop).count())
+        assertTrue(ownershipLoop.contains("else if (claimed) {\n                    onPageSwipe(RadarPageSwipeEvent.Drag(amount.x))"))
+        assertFalse(radar.contains("RadarPageSwipeZone("))
+        assertTrue(radar.contains("RadarPageSwipeOverlay("))
+        assertTrue(radar.contains("radarPageSwipeInput(RadarPageEdge.PREVIOUS"))
+        assertTrue(radar.contains("radarPageSwipeInput(RadarPageEdge.NEXT"))
+        assertTrue(radar.contains("onPageSwipeBoundsChanged(if (screenActive) radarMapBounds else Rect.Zero)"))
+        assertTrue(radar.contains("const val leftInfoCutoutHeightDp = 64"))
+        assertTrue(radar.contains("rootView.systemGestureExclusionRects = listOf("))
+        assertTrue(radar.contains("rootView.systemGestureExclusionRects = emptyList()"))
+        assertFalse(radar.contains("WindowInsets.systemGestures"))
+    }
+
+    @Test fun `Radar tick labels match Now timeline typography without moving their anchors`() {
+        val radar = source("RadarScreen.kt")
+        val tickRow = radar.substringAfter("private fun RadarTimelineTickRow(")
+            .substringBefore("internal fun Modifier.radarPageSwipeInput(")
+        assertTrue(tickRow.contains("fontSize = 11.sp"))
+        assertTrue(tickRow.contains("lineHeight = 13.sp"))
+        assertTrue(tickRow.contains("fontWeight = FontWeight.Normal"))
+        assertTrue(tickRow.contains("textAlign = TextAlign.Center"))
+        assertTrue(tickRow.contains("maxLines = 1"))
+        assertTrue(tickRow.contains("placement.anchorPx - label.width / 2f"))
+        assertFalse(tickRow.contains("fontSize = 9.sp"))
+    }
+
+    @Test fun `cloud toggle immediately cancels preparation and removes its rendered request`() {
+        val radar = source("RadarScreen.kt")
+        val map = source("RadarImageMap.kt")
+        assertTrue(radar.contains("onValueChange = { setMapLayerEnabled(layer, it) }"))
+        assertTrue(radar.contains("if (!cloudsEnabled) {"))
+        assertTrue(radar.contains("cloudsStatus = AncillaryStatus.Off"))
+        assertTrue(radar.contains("enabledSatelliteLayers = enabledMapLayers.filterTo(mutableSetOf())"))
+        assertTrue(map.contains("if (!enabled) {"))
+        assertTrue(map.contains("preparedSatellitePlans = preparedSatellitePlans - choice"))
+        assertTrue(map.contains("currentSatellitePreparation(choice, null)"))
+        assertTrue(map.contains("satelliteBuffers.reconcile(\n                style, satelliteRequests, enabledSatelliteLayers"))
+    }
+
     @Test fun `radar keeps only native attribution and puts provider credits in About data`() {
         val radar = source("RadarScreen.kt")
         val map = source("RadarImageMap.kt")
@@ -346,18 +428,11 @@ class WeatherUiWiringTest {
         assertTrue(map.contains(".attributionEnabled(true)"))
         assertTrue(map.contains(".attributionGravity(Gravity.BOTTOM or Gravity.START)"))
         assertTrue(map.contains("ready.uiSettings.isAttributionEnabled = true"))
-        assertTrue(settings.contains("Regional radar: MeteoGroup/DTN."))
-        assertTrue(settings.contains("Contains public sector information licensed under the Open Government Licence v3.0"))
-        assertTrue(settings.contains("Met Éireann radar open data is CC BY 4.0"))
-        assertTrue(settings.contains("Fixed nominal coverage envelopes use national radar-network information"))
-        assertTrue(settings.contains("Météo-France and MeteoSwiss, cross-checked with EUMETNET"))
-        assertTrue(settings.contains("approximate structural reach, not DTN-published masks or live availability"))
-        assertTrue(settings.contains("European open radar: EUMETNET OPERA Open Radar Data (CC BY 4.0)."))
-        assertTrue(settings.contains("Worldwide open radar: RainViewer."))
-        assertTrue(settings.contains("Open-Meteo (CC BY 4.0)"))
-        assertTrue(settings.contains("© EUMETSAT (CC BY 4.0)"))
-        assertTrue(settings.contains("© OpenStreetMap contributors"))
-        assertTrue(settings.contains("Version ${'$'}{BuildConfig.VERSION_NAME}"))
+        assertTrue(settings.contains("R.string.settings_about_radar_body"))
+        assertTrue(settings.contains("R.string.settings_about_model_body"))
+        assertTrue(settings.contains("R.string.settings_about_satellite_body"))
+        assertTrue(settings.contains("R.string.settings_about_map_body"))
+        assertTrue(settings.contains("R.string.settings_version, BuildConfig.VERSION_NAME"))
         assertFalse(settings.contains("Version 0.3.1"))
     }
 
@@ -366,9 +441,9 @@ class WeatherUiWiringTest {
         val controls = radar.substringAfter(
             "Row(Modifier.align(Alignment.TopEnd).padding(4.dp), verticalAlignment = Alignment.CenterVertically)",
         ).substringBefore("RadarLayerSegments(enabledMapLayers")
-        val follow = controls.indexOf("Stop following live location")
-        val refresh = controls.indexOf("Refresh radar and map layer")
-        val centre = controls.indexOf("Use current device location")
+        val follow = controls.indexOf("R.string.radar_follow_stop")
+        val refresh = controls.indexOf("R.string.radar_refresh")
+        val centre = controls.indexOf("R.string.radar_use_location")
         assertTrue(follow >= 0)
         assertTrue(follow < refresh)
         assertTrue(refresh < centre)
@@ -397,7 +472,7 @@ class WeatherUiWiringTest {
         assertTrue(radar.contains("if (speed == null || from == null) return"))
         assertFalse(radar.contains("\"Night only · fog / low cloud\""))
         assertFalse(radar.contains("\"Daylight status unavailable\""))
-        assertTrue(radar.contains("contentDescription = \"${'$'}{layer.label} map layer\""))
+        assertTrue(radar.contains("R.string.radar_layer_description"))
         assertFalse(radar.contains("Wind · Open-Meteo model"))
         assertFalse(radar.contains("m ago"))
     }
@@ -531,7 +606,7 @@ class WeatherUiWiringTest {
             RadarPreparationStackPolicy.bottomInsetDp)
         val radar = source("RadarScreen.kt")
         assertTrue(radar.contains("private fun RadarOperationalStatusStack("))
-        assertTrue(radar.contains("location?.let(::add)\n        radar?.let(::add)"))
+        assertTrue(radar.contains("location?.let(::add)\n            radar?.let(::add)"))
         assertTrue(radar.contains("maxLines = 1"))
         assertTrue(radar.contains("overflow = TextOverflow.Ellipsis"))
         assertTrue(radar.contains("bottomRightEntryCount = preparationEntries.size"))
@@ -553,6 +628,38 @@ class WeatherUiWiringTest {
         val decodeFailure = buffers.substringAfter("bitmap decode failed")
             .substringBefore("private fun add(")
         assertFalse(decodeFailure.contains("state.active = null"))
+    }
+
+    @Test fun `Radar reentry alone does not invalidate retained weather streams`() {
+        val radar = source("RadarScreen.kt")
+        val rain = radar.substringAfter(
+            "LaunchedEffect(screenActive, requestedRadarIdentity, radarSelectionCoordinates, reload)",
+        ).substringBefore("LaunchedEffect(place?.latitude, place?.longitude, session)")
+        assertTrue(rain.contains("RadarRainSessionLoadPolicy.shouldLoad("))
+        assertTrue(rain.contains("installedRadarRefresh"))
+        assertTrue(rain.contains("installedRadarIdentity"))
+
+        val lightning = radar.substringAfter(
+            "LaunchedEffect(lightningEnabled, place?.id, regionLatitude, regionLongitude, lightningRefresh)",
+        ).substringBefore("val cloudsEnabled")
+        assertFalse(lightning.contains("screenActive"))
+        val clouds = radar.substringAfter("LaunchedEffect(\n        cloudsEnabled")
+            .substringBefore("val viewportKey")
+        assertFalse(clouds.contains("screenActive"))
+        val wind = radar.substringAfter(
+            "LaunchedEffect(windEnabled, viewportKey, windTimelineWindow.cacheKey)",
+        ).substringBefore("val activeWind")
+        assertFalse(wind.contains("screenActive"))
+
+        // Their existing place/region/product/viewport/manual-generation keys remain the only
+        // acquisition triggers; independent stale/publication effects remain below them.
+        assertTrue(radar.contains("regionLatitude, regionLongitude, lightningRefresh"))
+        assertTrue(radar.contains("regionLatitude, regionLongitude, cloudsRefresh"))
+        assertTrue(radar.contains("preferredCloudProduct"))
+        assertTrue(radar.contains("windTimelineWindow.cacheKey"))
+        assertTrue(radar.contains("LaunchedEffect(windEnabled, staleWindIdentity, viewportKey)"))
+        assertTrue(radar.contains("LaunchedEffect(lightningEnabled, staleLightningIdentity)"))
+        assertTrue(radar.contains("LaunchedEffect(cloudsEnabled, staleCloudsIdentity)"))
     }
 
     @Test fun `clouds have no daylight gate and concurrent satellite ordering is stable`() {
@@ -789,8 +896,8 @@ class WeatherUiWiringTest {
         assertTrue(now.contains("NowCardPalettePolicy.resolve(mode, LocalRainAlarmPalette.current)"))
         assertTrue(now.contains("MaterialTheme(colorScheme = palette.materialScheme(), content = content)"))
         assertTrue(now.contains("refreshStatus, compassAppearance, graphAppearance"))
-        assertTrue(settings.contains("NowCardAppearanceChoice(\"Compass card\""))
-        assertTrue(settings.contains("NowCardAppearanceChoice(\"Graph card\""))
+        assertTrue(settings.contains("NowCardAppearanceChoice(stringResource(R.string.settings_compass_card)"))
+        assertTrue(settings.contains("NowCardAppearanceChoice(stringResource(R.string.settings_graph_card)"))
     }
 
     @Test fun `appearance settings use four aligned columns and Slate excludes only App`() {
@@ -799,6 +906,9 @@ class WeatherUiWiringTest {
             AppearanceMode.FOLLOW_SYSTEM, null), AppearanceGridPolicy.appColumns)
         assertEquals(listOf(AppearanceMode.DARK, AppearanceMode.LIGHT,
             AppearanceMode.FOLLOW_SYSTEM, AppearanceMode.SLATE), AppearanceGridPolicy.mapColumns)
+        assertEquals(listOf(ProfileMapAppearance.DARK, ProfileMapAppearance.LIGHT,
+            ProfileMapAppearance.FOLLOW_APP, ProfileMapAppearance.SLATE),
+            AppearanceGridPolicy.profileMapColumns)
         assertEquals(listOf(NowCardAppearance.DARK, NowCardAppearance.LIGHT,
             NowCardAppearance.FOLLOW_APP, NowCardAppearance.SLATE), AppearanceGridPolicy.cardColumns)
         assertFalse(AppearanceMode.SLATE in AppearanceGridPolicy.appColumns)
@@ -808,8 +918,13 @@ class WeatherUiWiringTest {
 
         val settings = source("SettingsScreen.kt")
         val repository = source("../data/RadarProviders.kt")
-        assertTrue(settings.contains("AppearanceChoice(\"App\", appAppearance, AppearanceGridPolicy.appColumns"))
-        assertTrue(settings.contains("AppearanceChoice(\"Map\", mapAppearance, AppearanceGridPolicy.mapColumns"))
+        assertTrue(settings.contains("AppearanceChoice(stringResource(R.string.settings_app), appAppearance"))
+        assertTrue(settings.contains("AppearanceChoice(stringResource(R.string.settings_map), mapAppearance"))
+        assertTrue(settings.contains("AppearanceGrid(AppearanceGridPolicy.profileMapColumns"))
+        assertTrue(settings.contains("if (automaticAppearance.enabled)"))
+        assertTrue(settings.contains("if (!automaticAppearance.enabled)"))
+        assertTrue(settings.indexOf("CoverageMaskDarknessControl(") >
+            settings.indexOf("if (!automaticAppearance.enabled)"))
         assertTrue(settings.contains("if (mode == null) Spacer(Modifier.weight(1f))"))
         assertTrue(settings.contains("require(columns.size == AppearanceGridPolicy.columnCount)"))
         assertTrue(settings.contains("maxLines = 2"))
@@ -825,12 +940,12 @@ class WeatherUiWiringTest {
         val radarScreen = source("RadarScreen.kt")
         val map = source("RadarImageMap.kt")
 
-        assertTrue(settings.contains("Coverage mask darkness"))
-        assertTrue(settings.contains("Darkens areas outside known radar coverage for every provider."))
+        assertTrue(settings.contains("R.string.settings_mask_darkness"))
+        assertTrue(settings.contains("R.string.settings_mask_help"))
         assertTrue(settings.contains("CoverageMaskDarknessPreview(mapAppearance, previewDarkness)"))
-        assertTrue(settings.contains("contentDescription = \"Coverage mask darkness preview\""))
-        assertTrue(settings.contains("Text(\"No mask\""))
-        assertTrue(settings.contains("Text(\"Dark (\$maximumOpacityPercent%)\""))
+        assertTrue(settings.contains("R.string.settings_mask_preview"))
+        assertTrue(settings.contains("R.string.settings_no_mask"))
+        assertTrue(settings.contains("R.string.settings_dark_percent, maximumOpacityPercent"))
         assertTrue(settings.contains("steps = 9"))
         assertTrue(settings.contains("Nine internal stops plus the endpoints gives 0, 10, ... 100%."))
         assertTrue(settings.contains("selectCoverageMaskDarkness(previewDarkness)"))
@@ -893,7 +1008,7 @@ class WeatherUiWiringTest {
         val main = source("../MainActivity.kt")
         val radar = source("RadarScreen.kt")
         val map = source("RadarImageMap.kt")
-        assertTrue(main.contains("mapStyle = mapAppearance.resolveMapStyle(systemDark)"))
+        assertTrue(main.contains("mapStyle = resolvedAppearance.map.resolveMapStyle(systemDark)"))
         assertTrue(radar.contains("val darkMap = mapStyle.darkControls"))
         assertTrue(radar.contains("mapStyle = mapStyle"))
         assertTrue(map.contains("DisposableEffect(map, mapStyle)"))
@@ -905,10 +1020,18 @@ class WeatherUiWiringTest {
         val main = source("../MainActivity.kt")
         val radar = source("RadarScreen.kt")
         assertTrue(settings.contains("if (selectedProvider == RadarProviderKind.OPEN_RAINVIEWER)"))
-        assertTrue(settings.contains("Text(\"Show likely snow\""))
+        assertTrue(settings.contains("R.string.settings_show_snow"))
         assertTrue(settings.contains("Switch(checked = showLikelySnow"))
         assertTrue(main.contains("showLikelySnow = showLikelySnow"))
-        assertTrue(radar.contains("LaunchedEffect(RadarLiveSessionPolicy.loadIdentity(place), reload, showLikelySnow)"))
+        assertTrue(radar.contains(
+            "LaunchedEffect(screenActive, requestedRadarIdentity, radarSelectionCoordinates, reload)",
+        ))
+        assertTrue(radar.contains("RadarRainSessionLoadPolicy.shouldLoad("))
+        assertTrue(radar.contains("Reusing compatible fresh radar session"))
+        assertTrue(radar.contains(
+            "else -> selectedPlaceId == CURRENT_LOCATION_ID && session?.isReleased == false",
+        ))
+        assertTrue(radar.contains("installedRadarAnchor = place"))
     }
 
     @Test fun `dynamic provider coverage uses one raster compositor and cleans every resource`() {

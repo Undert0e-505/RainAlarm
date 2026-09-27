@@ -86,7 +86,7 @@ class FollowRefreshCoordinatorTest {
         assertTrue(coordinator.complete(lightning, 9_300, true, now))
     }
 
-    @Test fun disabledLayersDisappearAndPauseStopsAllWork() {
+    @Test fun disabledLayersDisappearAndPausePreservesPublicationSchedule() {
         val coordinator = FollowRefreshCoordinator()
         coordinator.synchronize(mapOf(
             FollowRefreshStream.CLOUDS to ProviderPublicationClock(9_000, 600, false),
@@ -95,8 +95,26 @@ class FollowRefreshCoordinatorTest {
         ), now)
         assertNull(coordinator.nextDue(FollowRefreshStream.CLOUDS))
         assertTrue(coordinator.nextDue(FollowRefreshStream.LIGHTNING) != null)
-        coordinator.pause()
-        assertTrue(FollowRefreshStream.entries.all { coordinator.nextDue(it) == null })
+        val lightningDue = coordinator.nextDue(FollowRefreshStream.LIGHTNING)
+        val windDue = coordinator.nextDue(FollowRefreshStream.WIND)
+        coordinator.pause(now)
+        assertEquals(lightningDue, coordinator.nextDue(FollowRefreshStream.LIGHTNING))
+        assertEquals(windDue, coordinator.nextDue(FollowRefreshStream.WIND))
+        assertFalse(coordinator.isInFlight(FollowRefreshStream.LIGHTNING))
+    }
+
+    @Test fun pausingAnInFlightCheckAppliesBackoffInsteadOfImmediateTravelReentryRetry() {
+        val coordinator = FollowRefreshCoordinator()
+        val clock = ProviderPublicationClock(9_000, 300)
+        coordinator.synchronize(mapOf(FollowRefreshStream.RADAR_NOW to clock), now)
+        val ticket = requireNotNull(coordinator.start(FollowRefreshStream.RADAR_NOW, now))
+        coordinator.pause(now + 5)
+
+        assertFalse(coordinator.isInFlight(FollowRefreshStream.RADAR_NOW))
+        assertEquals(now + 65, coordinator.nextDue(FollowRefreshStream.RADAR_NOW))
+        assertNull(coordinator.start(FollowRefreshStream.RADAR_NOW, now + 64))
+        assertFalse(coordinator.complete(ticket, 9_300, true, now + 10))
+        assertTrue(coordinator.start(FollowRefreshStream.RADAR_NOW, now + 65) != null)
     }
 
     @Test fun manualRefreshRebasesEveryEnabledStreamWithoutStartingOne() {

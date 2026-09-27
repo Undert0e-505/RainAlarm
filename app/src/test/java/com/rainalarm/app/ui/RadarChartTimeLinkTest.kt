@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 class RadarChartTimeLinkTest {
     @Test fun continuousPlotTapUsesFullWidthActualPartialHorizon() {
@@ -36,11 +37,11 @@ class RadarChartTimeLinkTest {
             RadarChartTimeLink.decide(request, "current-location", "current-location", 1_000, 4_000.0))
         assertEquals(RadarChartTimeDecision.Unavailable,
             RadarChartTimeLink.decide(request, "saved-place", "saved-place", 1_000, 4_000.0))
-        assertEquals(RadarChartTimeDecision.Unavailable,
+        assertEquals(RadarChartTimeDecision.Waiting,
             RadarChartTimeLink.decide(request, "current-location", "other-place", 1_000, 4_000.0))
-        assertEquals(RadarChartTimeDecision.Unavailable,
+        assertEquals(RadarChartTimeDecision.Apply(0f),
             RadarChartTimeLink.decide(request, "current-location", "current-location", 2_100, 4_000.0))
-        assertEquals(RadarChartTimeDecision.Unavailable,
+        assertEquals(RadarChartTimeDecision.Apply(1_000f),
             RadarChartTimeLink.decide(request, "current-location", "current-location", 1_000, 2_000.0))
         assertTrue(RadarChartTimeLink.decide(request.copy(epochSeconds = Double.NaN),
             "current-location", "current-location", 1_000, 4_000.0) is RadarChartTimeDecision.Unavailable)
@@ -48,5 +49,29 @@ class RadarChartTimeLinkTest {
         assertTrue(RadarChartTimeLink.shouldDiscard(request, "saved-place", false))
         assertTrue(RadarChartTimeLink.shouldDiscard(request, "current-location", true))
         assertTrue(!RadarChartTimeLink.shouldDiscard(null, "saved-place", true))
+    }
+
+    @Test fun `graph time intent stays sticky across session promotion until play or scrub`() {
+        val request = RadarChartTimeRequest(9, "place", 2_500.0)
+        assertEquals(RadarChartTimeDecision.Waiting,
+            RadarChartTimeLink.decide(request, "place", "old-place", 1_000, 4_000.0))
+        assertEquals(RadarChartTimeDecision.Apply(1_500f),
+            RadarChartTimeLink.decide(request, "place", "place", 1_000, 4_000.0))
+        assertEquals(RadarChartTimeDecision.Apply(0f),
+            RadarChartTimeLink.decide(request, "place", "place", 3_000, 6_000.0))
+
+        val screen = listOf(
+            File("src/main/java/com/rainalarm/app/ui/RadarScreen.kt"),
+            File("app/src/main/java/com/rainalarm/app/ui/RadarScreen.kt"),
+        ).first(File::isFile).readText()
+        val applyBlock = screen.substringAfter("is RadarChartTimeDecision.Apply -> {")
+            .substringBefore("RadarChartTimeDecision.Unavailable")
+        assertTrue(!applyBlock.contains("onChartTimeConsumed"))
+        assertTrue(screen.contains(
+            "if (!playing) chartTimeRequest?.let { onChartTimeConsumed(it.token) }",
+        ))
+        assertTrue(screen.contains(
+            "chartTimeRequest?.let { request -> onChartTimeConsumed(request.token) }",
+        ))
     }
 }

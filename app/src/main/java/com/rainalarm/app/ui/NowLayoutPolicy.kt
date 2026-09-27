@@ -4,6 +4,7 @@ import com.rainalarm.app.data.NowWeatherMetric
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 import kotlin.math.sqrt
 import kotlin.math.ceil
 
@@ -126,13 +127,16 @@ internal object NowChartLayout {
         zone: ZoneId,
         plotWidthDp: Int,
         fontScale: Float,
+        use24Hour: Boolean = true,
+        locale: Locale = Locale.getDefault(),
+        nowLabel: String = "Now",
     ): List<ClockTick> {
         val end = endMinute.coerceIn(0, 60)
-        val origin = ClockTick(0f, "Now", true)
+        val origin = ClockTick(0f, nowLabel, true)
         if (end == 0) return listOf(origin)
         val endEpoch = startEpochSeconds + end * 60L
         val firstMinute = Math.floorDiv(startEpochSeconds, 60L) * 60L + 60L
-        val formatter = DateTimeFormatter.ofPattern("HH:mm")
+        val formatter = DateTimeFormatter.ofPattern(if (use24Hour) "HH:mm" else "h:mm a", locale)
         val candidateEpochs = generateSequence(firstMinute) { it + 60L }
             .takeWhile { it <= endEpoch }
             .filter { epoch -> Instant.ofEpochSecond(epoch).atZone(zone).minute % 10 == 0 }
@@ -143,7 +147,7 @@ internal object NowChartLayout {
             val local = Instant.ofEpochSecond(epoch).atZone(zone)
             ClockTick(
                 (epoch - startEpochSeconds) / 60f,
-                if (counts.getValue(labels[index]) > 1) "${labels[index]} ${local.format(DateTimeFormatter.ofPattern("z", java.util.Locale.ENGLISH))}"
+                if (counts.getValue(labels[index]) > 1) "${labels[index]} ${local.format(DateTimeFormatter.ofPattern("z", locale))}"
                 else labels[index],
                 false,
             )
@@ -167,11 +171,7 @@ internal object NowChartLayout {
 
     /** Match the rendered clock-label boxes when deciding which labels can coexist. */
     fun labelWidthDp(label: String, fontScale: Float): Float =
-        (when {
-            label == "Now" -> 26f
-            label.length > 5 -> 72f
-            else -> 46f
-        }) * fontScale.coerceAtLeast(0f)
+        (label.length * 6.5f + 8f).coerceIn(26f, 88f) * fontScale.coerceAtLeast(0f)
 
     fun plotX(minute: Int, width: Float, endMinute: Int = 60): Float {
         return plotX(minute.toFloat(), width, endMinute)
@@ -235,6 +235,28 @@ internal object NowMotionPolicy {
     fun centerUnitFontSizeSp(mainFontSizeSp: Float): Float = minOf(20f, mainFontSizeSp * 0.42f)
     fun revealRight(startX: Float, endX: Float, progress: Float): Float =
         startX + (endX - startX).coerceAtLeast(0f) * progress.coerceIn(0f, 1f)
+}
+
+internal object NowCompassStatusTypography {
+    fun settledBaseSp(stackedReadouts: Boolean): Float = if (stackedReadouts) 10f else 12f
+    fun targetSp(stackedReadouts: Boolean): Float = settledBaseSp(stackedReadouts) * 2f
+
+    /** Non-stacked corner readouts retain their space; a stacked footer owns the full row. */
+    fun availableWidthDp(contentWidthDp: Float, stackedReadouts: Boolean): Float =
+        if (stackedReadouts) (contentWidthDp - 16f).coerceAtLeast(1f)
+        else (contentWidthDp * 0.42f).coerceIn(96f, (contentWidthDp - 16f).coerceAtLeast(96f))
+
+    fun fittedSp(
+        stackedReadouts: Boolean,
+        measuredTargetWidthPx: Int,
+        availableWidthPx: Float,
+    ): Float {
+        val base = settledBaseSp(stackedReadouts)
+        val target = targetSp(stackedReadouts)
+        if (measuredTargetWidthPx <= 0 || availableWidthPx <= 0f) return base
+        return if (measuredTargetWidthPx <= availableWidthPx) target
+        else (target * availableWidthPx / measuredTargetWidthPx).coerceIn(base, target)
+    }
 }
 
 internal data class NowRainTextureCrop(val left: Int, val top: Int, val side: Int)

@@ -87,7 +87,7 @@ class RadarMapRevealGateTest {
         ).first(File::isFile).readText()
         assertFalse(source.contains("key(session)"))
         assertTrue(source.contains("session: RadarSession?"))
-        assertTrue(source.contains("val mapView = remember {"))
+        assertTrue(source.contains("val mapView = remember(density) {"))
         assertTrue(source.contains("val desiredRadarSlot = remember(session)"))
         assertTrue(source.contains("val teardown = remember(mapView)"))
         assertTrue(source.contains("private class RadarBaseMarkerView"))

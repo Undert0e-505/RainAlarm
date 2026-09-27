@@ -28,8 +28,8 @@ class NowSourceClockTest {
         val text = canvas.readText()
         assertTrue(text.contains("Modifier.align(Alignment.CenterEnd).padding(end = NowCompassCardinalPolicy.eastEndInsetDp.dp)"))
         assertTrue(text.contains("Modifier.align(Alignment.CenterStart).padding(start = 3.dp)"))
-        assertTrue(text.contains("Text(\"N\", color = NowText, fontSize = 24.sp"))
-        assertTrue(text.contains("Text(\"S\", color = NowMuted, fontSize = 24.sp"))
+        assertTrue(text.contains("Text(stringResource(R.string.direction_north_short), color = NowText, fontSize = 24.sp"))
+        assertTrue(text.contains("Text(stringResource(R.string.direction_south_short), color = NowMuted, fontSize = 24.sp"))
     }
 
     @Test
@@ -520,7 +520,7 @@ class NowSourceClockTest {
         assertTrue(canvas.contains("val centerFill = rainFill ?: NowDeepBlue"))
         assertTrue(canvas.contains("val pointerFill = if (sourceBearing != null) rainFill else null"))
         assertTrue(canvas.contains("Text(centerLabel, color = Color.White"))
-        assertTrue(canvas.contains("Text(\"min\", color = Color.White"))
+        assertTrue(canvas.contains("stringResource(R.string.now_minutes_short), color = Color.White"))
         assertTrue(canvas.contains("style = TextStyle(shadow = CenterGlyphShadow)"))
         assertTrue(canvas.contains("rememberTextMeasurer()"))
         assertTrue(!canvas.contains("NowCenterColorPolicy"))

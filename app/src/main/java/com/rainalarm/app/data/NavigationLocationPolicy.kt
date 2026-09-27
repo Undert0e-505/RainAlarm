@@ -33,8 +33,11 @@ object LocationRequestProfiles {
     )
     val Follow = LocationRequestProfile(
         LocationRequestMode.FOLLOW,
-        intervalMillis = 1_000,
-        fastestIntervalMillis = 500,
+        // Navigation-style following asks the platform for every genuine fix it can provide.
+        // This is a requested cadence rather than a promise: Android and the GNSS hardware may
+        // still deliver more slowly, particularly under weak-signal or power constraints.
+        intervalMillis = 200,
+        fastestIntervalMillis = 200,
         maxDelayMillis = 0,
         initialMaxAgeMillis = 3_000,
         waitForAccurateFix = true,
@@ -136,14 +139,19 @@ object NavigationFixAdjudicationPolicy {
             (nowElapsedNanos - fix.elapsedRealtimeNanos) / 1_000_000L <= weakSignalGraceMillis
 }
 
+enum class FollowCapabilityReason { PRECISE_PERMISSION, WAITING_FOR_FIX, WEAK_ACCURACY }
+
 object FollowCapabilityPolicy {
     fun canFollow(finePermission: Boolean, quality: LocationFixQuality?): Boolean =
         finePermission && quality == LocationFixQuality.ACCURATE
 
-    fun unavailableMessage(finePermission: Boolean, quality: LocationFixQuality?): String = when {
-        !finePermission -> "Precise location is required for Follow. Enable precise location in Android settings."
-        quality == null -> "Wait for an accurate location fix before starting Follow."
-        else -> "Location accuracy is too weak for Follow. Move to a clearer view of the sky and try again."
+    fun unavailableReason(
+        finePermission: Boolean,
+        quality: LocationFixQuality?,
+    ): FollowCapabilityReason = when {
+        !finePermission -> FollowCapabilityReason.PRECISE_PERMISSION
+        quality == null -> FollowCapabilityReason.WAITING_FOR_FIX
+        else -> FollowCapabilityReason.WEAK_ACCURACY
     }
 }
 
