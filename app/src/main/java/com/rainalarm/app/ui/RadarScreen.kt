@@ -3,6 +3,7 @@ package com.rainalarm.app.ui
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.Rect as AndroidRect
 import android.os.Build
 import android.util.Log
@@ -72,6 +73,9 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
@@ -104,6 +108,7 @@ import com.rainalarm.app.FollowUiCapability
 import com.rainalarm.app.PointRefreshCompletion
 import com.rainalarm.app.ProviderMapNoticeEvent
 import com.rainalarm.app.data.RadarSession
+import com.rainalarm.app.data.FeatureTourScenario
 import com.rainalarm.app.data.RadarProviderCoordinator
 import com.rainalarm.app.data.RadarSettingsRepository
 import com.rainalarm.app.data.SavedPlace
@@ -145,6 +150,7 @@ import com.rainalarm.app.domain.RadarMotionPolicy
 import com.rainalarm.app.domain.RadarTimeline
 import com.rainalarm.app.domain.RadarTimelineBracket
 import com.rainalarm.app.domain.RadarTimelineTicks
+import com.rainalarm.app.domain.FeatureTourRadarField
 import com.rainalarm.app.domain.RadarTimelineLabelLayout
 import com.rainalarm.app.domain.RadarEntryFocusPolicy
 import com.rainalarm.app.domain.RadarEntryFocusActivationPolicy
@@ -532,6 +538,8 @@ fun LiveRadarScreen(
     onPageSwipeBoundsChanged: (Rect) -> Unit = {},
     screenActive: Boolean = true,
     entryFocusGeneration: Int = 0,
+    featureTourScenario: FeatureTourScenario? = null,
+    onFeatureTourTarget: (FeatureTourTargetBounds) -> Unit = {},
 ) {
     val context = LocalContext.current
     val platformAnimatorScale = remember(context) {
@@ -1273,13 +1281,14 @@ fun LiveRadarScreen(
     }
     val currentSelected = selectedPlaceId == CURRENT_LOCATION_ID
     val displayedMapPlace = place ?: session?.place?.takeIf { currentSelected }
+        ?: featureTourScenario?.fallbackPlace
     val sessionReusable = session != null && displayedMapPlace != null && when {
         place != null -> RadarLiveSessionPolicy.canReuse(
             session!!, place, installedRadarAnchor ?: session!!.place,
         )
         else -> currentSelected
     }
-    val showInteractiveMap = RadarBaseMapPresentationPolicy.showInteractiveMap(
+    val showInteractiveMap = featureTourScenario != null || RadarBaseMapPresentationPolicy.showInteractiveMap(
         hasResolvedPlace = place != null,
         hasRetainedCurrentCoordinates = place == null && currentSelected && displayedMapPlace != null,
     )
@@ -1537,6 +1546,8 @@ fun LiveRadarScreen(
                     RadarEntryFocusPolicy.markerScale(markerFocusProgress.value),
                 ),
                 onMapBoundsChanged = { radarMapBounds = it },
+                featureTourScenario = featureTourScenario,
+                onFeatureTourTarget = onFeatureTourTarget,
             )
             else -> RadarLoadingShell(
                 mapStyle = mapStyle,
@@ -1872,14 +1883,22 @@ private fun ColumnScope.RadarPlayer(
     entryFocusDurationMillis: Int,
     markerScale: Float,
     onMapBoundsChanged: (Rect) -> Unit,
+    featureTourScenario: FeatureTourScenario? = null,
+    onFeatureTourTarget: (FeatureTourTargetBounds) -> Unit = {},
 ) {
     val context = LocalContext.current
     val darkMap = mapStyle.darkControls
     val secondaryColor = Secondary
     val timelineDescription = stringResource(R.string.radar_timeline)
-    val times = remember(session) { session?.timelineFrames?.map { it.time }.orEmpty() }
-    val forecastFlags = remember(session) { session?.timelineFrames?.map { it.forecast }.orEmpty() }
-    val hasRadarSession = session != null && times.isNotEmpty()
+    val sessionTimes = remember(session) { session?.timelineFrames?.map { it.time }.orEmpty() }
+    val sessionForecastFlags = remember(session) {
+        session?.timelineFrames?.map { it.forecast }.orEmpty()
+    }
+    val times = featureTourScenario?.radarFrames?.map { it.epochSeconds } ?: sessionTimes
+    val forecastFlags = featureTourScenario?.radarFrames?.mapIndexed { index, _ -> index >= 2 }
+        ?: sessionForecastFlags
+    val hasRadarSession = times.isNotEmpty() && (session != null || featureTourScenario != null)
+    val hasRealRadarSession = session != null && sessionTimes.isNotEmpty()
     val loadingEpochSeconds = remember(mapPlace.id) {
         Math.floorDiv(Instant.now().epochSecond, 60L) * 60L
     }
@@ -1889,6 +1908,7 @@ private fun ColumnScope.RadarPlayer(
         (times[latestObservationIndex] - times.first()).toFloat()
     } else 0f
     val providerForecast = forecastFlags.any { it }
+    val sessionProviderForecast = sessionForecastFlags.any { it }
     var displayedRadarTier by remember(session) {
         mutableStateOf(if (session?.regional != null || session?.legacyArchive != null) {
             RadarResolutionTier.REGIONAL
@@ -1896,9 +1916,10 @@ private fun ColumnScope.RadarPlayer(
     }
     val preferredOpenTier = displayedRadarTier.takeIf { session?.tier(it) != null }
         ?: if (session?.detail != null) RadarResolutionTier.DETAIL else RadarResolutionTier.REGIONAL
-    val estimatedForecast = session != null && !providerForecast &&
+    val estimatedForecast = session != null && !sessionProviderForecast &&
         session.velocity(preferredOpenTier)?.futureField != null
-    val forecastAvailable = providerForecast || estimatedForecast
+    val realForecastAvailable = sessionProviderForecast || estimatedForecast
+    val forecastAvailable = if (featureTourScenario != null) providerForecast else realForecastAvailable
     val endOffset = if (!hasRadarSession) {
         RadarTimeline.FORECAST_HORIZON_SECONDS.toFloat()
     } else if (providerForecast) {
@@ -1906,15 +1927,28 @@ private fun ColumnScope.RadarPlayer(
     } else {
         (times.last() - times.first() + if (estimatedForecast) RadarTimeline.FORECAST_HORIZON_SECONDS else 0L).toFloat()
     }
+    val realLatestObservationIndex = sessionForecastFlags.indexOfLast { !it }.coerceAtLeast(0)
+    val realLatestOffset = if (hasRealRadarSession) {
+        (sessionTimes[realLatestObservationIndex] - sessionTimes.first()).toFloat()
+    } else 0f
+    val realEndOffset = if (!hasRealRadarSession) {
+        RadarTimeline.FORECAST_HORIZON_SECONDS.toFloat()
+    } else if (sessionProviderForecast) {
+        (sessionTimes.last() - sessionTimes.first()).toFloat()
+    } else {
+        (sessionTimes.last() - sessionTimes.first() +
+            if (estimatedForecast) RadarTimeline.FORECAST_HORIZON_SECONDS else 0L).toFloat()
+    }
     val initialCursor = remember(session) {
-        if (!hasRadarSession) 0f else RadarEntryClock.initialCursor(
-            times.first(), times[latestObservationIndex], times.first() + endOffset.toLong(),
-            forecastAvailable, Instant.now().epochSecond,
+        if (!hasRealRadarSession) 0f else RadarEntryClock.initialCursor(
+            sessionTimes.first(), sessionTimes[realLatestObservationIndex],
+            sessionTimes.first() + realEndOffset.toLong(),
+            realForecastAvailable, Instant.now().epochSecond,
         )
     }
-    val chartDecision = if (!hasRadarSession) null else chartTimeRequest?.let {
-        RadarChartTimeLink.decide(it, selectedPlaceId, requireNotNull(session).place.id, times.first(),
-            times.first() + endOffset.toDouble())
+    val chartDecision = if (!hasRealRadarSession) null else chartTimeRequest?.let {
+        RadarChartTimeLink.decide(it, selectedPlaceId, requireNotNull(session).place.id, sessionTimes.first(),
+            sessionTimes.first() + realEndOffset.toDouble())
     }
     var cursor by remember(session) { mutableFloatStateOf(
         (chartDecision as? RadarChartTimeDecision.Apply)?.cursorSeconds ?: initialCursor,
@@ -1924,6 +1958,8 @@ private fun ColumnScope.RadarPlayer(
         session?.providerSelection?.requested,
     )
     var playing by remember(playbackRefreshIdentity) { mutableStateOf(false) }
+    var tourCursor by remember(featureTourScenario) { mutableFloatStateOf(0f) }
+    var tourPlaying by remember(featureTourScenario) { mutableStateOf(false) }
     var chartTimeMessage by remember(session) { mutableStateOf<String?>(null) }
     val chartTimeUnavailableMessage = stringResource(R.string.radar_chart_time_unavailable)
     LaunchedEffect(session, chartTimeRequest?.token, chartDecision) {
@@ -1962,26 +1998,48 @@ private fun ColumnScope.RadarPlayer(
     var satellitePreparation by remember {
         mutableStateOf<Map<RadarMapLayer, SatellitePreparationStatus>>(emptyMap())
     }
-    val safeCursor = cursor.takeIf { it.isFinite() }?.coerceIn(0f, endOffset) ?: initialCursor
+    val activeCursor = if (featureTourScenario != null) tourCursor else cursor
+    val displayPlaying = if (featureTourScenario != null) tourPlaying else playing
+    val safeCursor = activeCursor.takeIf { it.isFinite() }?.coerceIn(0f, endOffset)
+        ?: if (featureTourScenario != null) 0f else initialCursor
     val bracket = if (!hasRadarSession) null else if (providerForecast) {
         RadarTimeline.bracket(times, forecastFlags, times.first() + safeCursor.toDouble())
     } else {
         RadarTimeline.bracket(times, times.first() + safeCursor.toDouble())
     }
+    val realSafeCursor = cursor.takeIf { it.isFinite() }?.coerceIn(0f, realEndOffset) ?: initialCursor
+    val realBracket = if (!hasRealRadarSession) null else if (sessionProviderForecast) {
+        RadarTimeline.bracket(
+            sessionTimes,
+            sessionForecastFlags,
+            sessionTimes.first() + realSafeCursor.toDouble(),
+        )
+    } else {
+        RadarTimeline.bracket(sessionTimes, sessionTimes.first() + realSafeCursor.toDouble())
+    }
 
-    LaunchedEffect(playing, session, playbackSpeed) {
-        if (!playing || !hasRadarSession) return@LaunchedEffect
+    LaunchedEffect(displayPlaying, session, featureTourScenario, playbackSpeed) {
+        if (!displayPlaying || !hasRadarSession) return@LaunchedEffect
         var lastNanos = withFrameNanos { it }
-        while (playing) {
+        while (if (featureTourScenario != null) tourPlaying else playing) {
             val nanos = withFrameNanos { it }
             val elapsedSeconds = (nanos - lastNanos) / 1_000_000_000.0
             lastNanos = nanos
             val stopAt = if (forecastAvailable) endOffset else latestOffset
-            val currentCursor = cursor.takeIf { it.isFinite() }?.coerceIn(0f, stopAt) ?: latestOffset
-            cursor = RadarPlaybackClock.advance(currentCursor, elapsedSeconds, stopAt, playbackSpeed.multiplier)
+            val rawCursor = if (featureTourScenario != null) tourCursor else cursor
+            val currentCursor = rawCursor.takeIf { it.isFinite() }?.coerceIn(0f, stopAt) ?: latestOffset
+            val advanced = RadarPlaybackClock.advance(
+                currentCursor, elapsedSeconds, stopAt, playbackSpeed.multiplier,
+            )
+            if (featureTourScenario != null) tourCursor = advanced else cursor = advanced
         }
     }
-    val label = bracket?.let {
+    val label = if (featureTourScenario != null) {
+        val time = Instant.ofEpochSecond((times.first() + safeCursor.toLong()))
+            .atZone(ZoneId.systemDefault())
+            .format(DateTimeFormatter.ofPattern(if (DateFormat.is24HourFormat(context)) "HH:mm" else "h:mm a"))
+        "${featureTourScenario.forecast.sourceLabel} · $time"
+    } else bracket?.let {
         timelineLabel(times, it, safeCursor, latestOffset, forecastAvailable)
     } ?: stringResource(R.string.radar_loading)
     val refreshOverlay = if (!hasRadarSession && refreshError.isNullOrBlank()) {
@@ -2023,7 +2081,7 @@ private fun ColumnScope.RadarPlayer(
             val mapWidthDp = maxWidth.value.toInt()
             RadarImageMap(
                 session,
-                bracket,
+                realBracket,
                 mapPlace,
                 markerPlace = markerPlace,
                 followLive = RadarLiveMapPolicy.shouldCenterOnFix(
@@ -2034,6 +2092,7 @@ private fun ColumnScope.RadarPlayer(
                 recenterSignal = currentRecenterTick,
                 cameraMemory = cameraMemory,
                 isPlaying = playing,
+                radarPresentationVisible = featureTourScenario == null,
                 onRendererStatus = { rendererStatus = it },
                 mapStyle = mapStyle,
                 coverageMaskDarkness = coverageMaskDarkness,
@@ -2068,6 +2127,14 @@ private fun ColumnScope.RadarPlayer(
                 entryFocusDurationMillis = entryFocusDurationMillis,
                 markerScale = markerScale,
             )
+            featureTourScenario?.let { scenario ->
+                FeatureTourRadarOverlay(
+                    scenario = scenario,
+                    epochSeconds = times.first() + safeCursor.toDouble(),
+                    darkMap = darkMap,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
             RadarMapNoticeRail(
                 mapNotice,
                 mapWidthDp = mapWidthDp,
@@ -2091,7 +2158,14 @@ private fun ColumnScope.RadarPlayer(
             )
             Row(Modifier.align(Alignment.TopEnd).padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { onFollowLiveChange(!followLive) },
-                    modifier = Modifier.size(RadarTopControlsPolicy.controlSizeDp.dp)) {
+                    modifier = Modifier.size(RadarTopControlsPolicy.controlSizeDp.dp)
+                        .featureTourTarget(
+                            FeatureTourTarget.RADAR_TRAVEL,
+                            enabled = featureTourScenario != null,
+                            cornerRadiusDp = 24f,
+                            paddingDp = 2f,
+                            onBounds = onFeatureTourTarget,
+                        )) {
                     Icon(Icons.Default.Navigation,
                         contentDescription = stringResource(
                             if (followLive) R.string.radar_follow_stop else R.string.radar_follow_start,
@@ -2115,6 +2189,12 @@ private fun ColumnScope.RadarPlayer(
                 Modifier.align(Alignment.TopEnd).padding(
                     top = RadarTopControlsPolicy.segmentTopDp.dp,
                     end = RadarTopControlsPolicy.controlsEndDp.dp,
+                ).featureTourTarget(
+                    FeatureTourTarget.RADAR_LAYERS,
+                    enabled = featureTourScenario != null,
+                    cornerRadiusDp = 12f,
+                    paddingDp = 3f,
+                    onBounds = onFeatureTourTarget,
                 ))
             RadarLayerStatuses(
                 enabledMapLayers, currentWeather, mapWidthDp,
@@ -2131,6 +2211,15 @@ private fun ColumnScope.RadarPlayer(
             )
         }
     }
+    Column(
+        Modifier.fillMaxWidth().featureTourTarget(
+            FeatureTourTarget.RADAR_TIMELINE,
+            enabled = featureTourScenario != null,
+            cornerRadiusDp = 12f,
+            paddingDp = 3f,
+            onBounds = onFeatureTourTarget,
+        ),
+    ) {
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -2138,16 +2227,20 @@ private fun ColumnScope.RadarPlayer(
     ) {
         IconButton(
             onClick = {
-                if (!playing) chartTimeRequest?.let { onChartTimeConsumed(it.token) }
-                playing = !playing
+                if (featureTourScenario == null) {
+                    if (!playing) chartTimeRequest?.let { onChartTimeConsumed(it.token) }
+                    playing = !playing
+                } else {
+                    tourPlaying = !tourPlaying
+                }
             },
             enabled = hasRadarSession,
             modifier = Modifier.size(48.dp),
         ) {
             Icon(
-                if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
+                if (displayPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                 contentDescription = stringResource(
-                    if (playing) R.string.radar_pause else R.string.radar_play,
+                    if (displayPlaying) R.string.radar_pause else R.string.radar_play,
                 ),
             )
         }
@@ -2155,9 +2248,15 @@ private fun ColumnScope.RadarPlayer(
             value = safeCursor,
             onValueChange = {
                 chartTimeRequest?.let { request -> onChartTimeConsumed(request.token) }
-                cursor = it.takeIf { value -> value.isFinite() }
-                    ?.coerceIn(0f, endOffset) ?: safeCursor
-                playing = false
+                if (featureTourScenario != null) {
+                    tourCursor = it.takeIf { value -> value.isFinite() }
+                        ?.coerceIn(0f, endOffset) ?: safeCursor
+                    tourPlaying = false
+                } else {
+                    cursor = it.takeIf { value -> value.isFinite() }
+                        ?.coerceIn(0f, endOffset) ?: safeCursor
+                    playing = false
+                }
             },
             valueRange = 0f..endOffset,
             enabled = hasRadarSession,
@@ -2171,7 +2270,7 @@ private fun ColumnScope.RadarPlayer(
         val configuration = androidx.compose.ui.platform.LocalConfiguration.current
         val use24Hour = DateFormat.is24HourFormat(context)
         val locale = configuration.locales[0]
-        val ticks = remember(session, endOffset, use24Hour, locale) {
+        val ticks = remember(session, featureTourScenario, endOffset, use24Hour, locale) {
             RadarTimelineTicks.between(
                 times.first(),
                 times.first() + endOffset.toLong(),
@@ -2187,6 +2286,69 @@ private fun ColumnScope.RadarPlayer(
             modifier = Modifier.fillMaxWidth().height(21.dp).padding(start = 54.dp),
         )
     } else Spacer(Modifier.fillMaxWidth().height(21.dp))
+    }
+}
+
+@Composable
+private fun FeatureTourRadarOverlay(
+    scenario: FeatureTourScenario,
+    epochSeconds: Double,
+    darkMap: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val progress = scenario.radarMotionProgress(epochSeconds)
+    val precipitation = remember(darkMap) { featureTourRadarBitmap(darkMap) }
+    Canvas(modifier) {
+        val offset = FeatureTourRadarField.motionOffset(progress)
+        val padding = FeatureTourRadarField.FIELD_PADDING
+        val fieldScale = 1f + padding * 2f
+        drawImage(
+            image = precipitation,
+            dstOffset = androidx.compose.ui.unit.IntOffset(
+                (size.width * (offset.xFraction - padding)).toInt(),
+                (size.height * (offset.yFraction - padding)).toInt(),
+            ),
+            dstSize = androidx.compose.ui.unit.IntSize(
+                (size.width * fieldScale).toInt().coerceAtLeast(1),
+                (size.height * fieldScale).toInt().coerceAtLeast(1),
+            ),
+            filterQuality = FilterQuality.Medium,
+        )
+    }
+}
+
+private fun featureTourRadarBitmap(darkMap: Boolean): ImageBitmap {
+    val intensities = FeatureTourRadarField.generate()
+    val pixels = IntArray(intensities.size) { index ->
+        featureTourRadarColor(intensities[index], darkMap)
+    }
+    return Bitmap.createBitmap(
+        pixels,
+        FeatureTourRadarField.WIDTH,
+        FeatureTourRadarField.HEIGHT,
+        Bitmap.Config.ARGB_8888,
+    ).asImageBitmap()
+}
+
+private fun featureTourRadarColor(intensity: Float, darkMap: Boolean): Int {
+    if (intensity <= 0.018f) return 0
+    val safe = intensity.coerceIn(0f, 1f)
+    val edge = ((safe - 0.018f) / 0.21f).coerceIn(0f, 1f)
+    val core = ((safe - 0.28f) / 0.50f).coerceIn(0f, 1f)
+    val medium = ((safe - 0.73f) / 0.27f).coerceIn(0f, 1f)
+    val firstBlend = core * (1f - medium)
+    val red = (77f + (26f - 77f) * firstBlend + (116f - 77f) * medium)
+        .toInt().coerceIn(0, 255)
+    val green = (217f + (159f - 217f) * firstBlend + (82f - 217f) * medium)
+        .toInt().coerceIn(0, 255)
+    val blue = (244f + (235f - 244f) * firstBlend + (214f - 244f) * medium)
+        .toInt().coerceIn(0, 255)
+    // The spotlight scrim intentionally dims the map. Keep the synthetic radar sufficiently
+    // luminous to read through it, while retaining feathered translucent edges.
+    val maxAlpha = if (darkMap) 224f else 236f
+    val alpha = ((26f + edge * 92f + safe * maxAlpha) * (1f - medium * 0.10f))
+        .toInt().coerceIn(0, 244)
+    return (alpha shl 24) or (red shl 16) or (green shl 8) or blue
 }
 
 @Composable

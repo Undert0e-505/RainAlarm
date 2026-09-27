@@ -64,7 +64,9 @@ import com.rainalarm.app.domain.RadarOverlayPlanner
 import com.rainalarm.app.domain.RadarResolutionTier
 import com.rainalarm.app.domain.RadarResourceTeardown
 import com.rainalarm.app.domain.RadarCameraMemory
+import com.rainalarm.app.domain.RadarCameraIntentOwner
 import com.rainalarm.app.domain.RadarCameraTarget
+import com.rainalarm.app.domain.RadarEntryFocusCompletionPolicy
 import com.rainalarm.app.domain.WebMercator
 import com.rainalarm.app.domain.RadarTimelineBracket
 import com.rainalarm.app.domain.RadarEntryFocusPolicy
@@ -151,6 +153,13 @@ internal object RadarMapAppearance {
         RadarMapStyle.LIGHT -> 0xFFF3F5F4.toInt()
         RadarMapStyle.SLATE -> 0xFF45516E.toInt()
     }
+
+    /**
+     * MapLibre captures this renderer colour when MapView is constructed and cannot update it
+     * when an asynchronously restored appearance changes. Texture mode lets the mutable,
+     * style-aware MapView/container background show through instead.
+     */
+    fun rendererForegroundArgb(): Int = 0x00000000
 }
 
 internal enum class RadarMapLabelCategory { PLACE, ROAD, WATER, ROAD_REFERENCE }
@@ -1313,6 +1322,13 @@ private class RadarSessionOverlaySlot(
         staticFallback?.setMarkerScale(scale)
     }
 
+    fun setVisible(visible: Boolean) {
+        if (disposed) return
+        val visibility = if (visible) View.VISIBLE else View.INVISIBLE
+        overlay.overlayView.visibility = visibility
+        staticFallback?.visibility = visibility
+    }
+
     fun onCameraMoved() {
         if (disposed) return
         overlay.onCameraMoved()
@@ -1657,6 +1673,7 @@ internal fun RadarImageMap(
     onManualCameraGesture: () -> Unit = {},
     recenterSignal: Int = 0,
     isPlaying: Boolean = false,
+    radarPresentationVisible: Boolean = true,
     onRendererStatus: (RadarRendererStatus) -> Unit = {},
     mapStyle: RadarMapStyle = RadarMapStyle.DARK,
     coverageMaskDarkness: Float = CoverageMaskDarknessPreference.DEFAULT,
@@ -1694,6 +1711,7 @@ internal fun RadarImageMap(
         onManualCameraGesture,
         recenterSignal,
         isPlaying,
+        radarPresentationVisible,
         onRendererStatus,
         mapStyle,
         coverageMaskDarkness,
@@ -1734,6 +1752,7 @@ private fun RadarImageMapInstance(
     onManualCameraGesture: () -> Unit,
     recenterSignal: Int,
     isPlaying: Boolean,
+    radarPresentationVisible: Boolean,
     onRendererStatus: (RadarRendererStatus) -> Unit,
     mapStyle: RadarMapStyle,
     coverageMaskDarkness: Float,
@@ -1772,7 +1791,10 @@ private fun RadarImageMapInstance(
         // TextureView can reliably composite above it on every Android surface compositor.
         val options = MapLibreMapOptions.createFromAttributes(context, null)
             .textureMode(true)
-            .foregroundLoadColor(RadarMapAppearance.loadingBackgroundArgb(mapStyle))
+            // Do not bake the initial (often default-dark) preference into MapLibre's immutable
+            // renderer clear colour. During a remote place focus, unloaded tiles reveal the
+            // live style-aware backgrounds below this transparent TextureView.
+            .foregroundLoadColor(RadarMapAppearance.rendererForegroundArgb())
             // The style's attribution remains available through MapLibre's compact info
             // control. The optional MapLibre logo and the old duplicate Compose credit are
             // intentionally omitted.
@@ -1953,7 +1975,8 @@ private fun RadarImageMapInstance(
     var lastBracket by remember(mapView) { mutableStateOf<RadarTimelineBracket?>(null) }
     var lastPlaying by remember(mapView) { mutableStateOf<Boolean?>(null) }
     var lastMarker by remember(mapView) { mutableStateOf<SavedPlace?>(null) }
-    var activeEntryFocusGeneration by remember(mapView) { mutableStateOf<Int?>(null) }
+    val cameraIntentOwner = remember(mapView) { RadarCameraIntentOwner() }
+    var activeEntryFocusToken by remember(mapView) { mutableStateOf<Long?>(null) }
     val latestFollowLive by rememberUpdatedState(followLive)
     val satelliteBuffers = remember(mapView) {
         SatelliteLayerBuffers(
@@ -1975,12 +1998,13 @@ private fun RadarImageMapInstance(
     fun saveCamera(ready: MapLibreMap, place: SavedPlace) {
         val position = ready.cameraPosition
         val center = position.target ?: return
-        if (activeEntryFocusGeneration == null) {
+        if (activeEntryFocusToken == null) {
             cameraMemory.capture(place, center.latitude, center.longitude, position.zoom)
         }
     }
     val latestBracket by rememberUpdatedState(bracket)
     val latestPlaying by rememberUpdatedState(isPlaying)
+    val latestRadarPresentationVisible by rememberUpdatedState(radarPresentationVisible)
     val slotStatusHandler by rememberUpdatedState<(RadarSessionOverlaySlot, RadarRendererStatus) -> Unit> {
             slot, status ->
         val isRelevant = slot === pendingRadarSlot ||
@@ -1996,7 +2020,8 @@ private fun RadarImageMapInstance(
             val outgoing = activeRadarSlot
             activeRadarSlot = slot
             pendingRadarSlot = null
-            baseMarkerView.visibility = View.GONE
+            slot.setVisible(latestRadarPresentationVisible)
+            baseMarkerView.visibility = if (latestRadarPresentationVisible) View.GONE else View.VISIBLE
             outgoing?.removeFrom(mapContainer)
             outgoing?.dispose()
             map?.style?.let {
@@ -2163,7 +2188,8 @@ private fun RadarImageMapInstance(
                     ready.addOnCameraMoveListener(listener)
                     val startListener = MapLibreMap.OnCameraMoveStartedListener { reason ->
                         if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
-                            activeEntryFocusGeneration = null
+                            cameraIntentOwner.invalidate()
+                            activeEntryFocusToken = null
                             currentManualGesture()
                         }
                     }
@@ -2222,6 +2248,7 @@ private fun RadarImageMapInstance(
                     pendingRadarSlot?.dispose()
                     pendingRadarSlot = desiredRadarSlot
                     desiredRadarSlot.addTo(container)
+                    desiredRadarSlot.setVisible(radarPresentationVisible)
                     map?.let(desiredRadarSlot::attachMap)
                     latestBracket?.let { desiredRadarSlot.setState(it, latestPlaying, latestMarkerPlace) }
                     desiredRadarSlot.setMarker(latestMarkerPlace)
@@ -2231,7 +2258,10 @@ private fun RadarImageMapInstance(
             }
             baseMarkerView.update(markerPlace)
             baseMarkerView.setMarkerScale(markerScale)
-            baseMarkerView.visibility = if (activeRadarSlot == null) View.VISIBLE else View.GONE
+            activeRadarSlot?.setVisible(radarPresentationVisible)
+            pendingRadarSlot?.setVisible(radarPresentationVisible)
+            baseMarkerView.visibility = if (activeRadarSlot == null) View.VISIBLE
+            else if (!radarPresentationVisible) View.VISIBLE else View.GONE
             activeRadarSlot?.setMarkerScale(markerScale)
             pendingRadarSlot?.setMarkerScale(markerScale)
             if (bracket != null && (lastBracket != bracket || lastPlaying != isPlaying)) {
@@ -2350,6 +2380,9 @@ private fun RadarImageMapInstance(
             appliedPlace = mapPlace
             return@LaunchedEffect
         }
+        cameraIntentOwner.invalidate()
+        activeEntryFocusToken = null
+        ready.cancelTransitions()
         oldPlace?.let { saveCamera(ready, it) }
         val mapWidth = mapView.width.takeIf { it > 0 } ?: mapView.resources.displayMetrics.widthPixels
         val cameraPlace = if (mapPlace.isCurrentLocation) latestMarkerPlace else mapPlace
@@ -2367,31 +2400,42 @@ private fun RadarImageMapInstance(
         val cameraPlace = if (mapPlace.isCurrentLocation) latestMarkerPlace else mapPlace
         val target = cameraMemory.target(cameraPlace, mapWidth, recenterSignal)
         val starting = target.copy(zoom = RadarEntryFocusPolicy.startZoom(target.zoom))
-        activeEntryFocusGeneration = entryFocusGeneration
+        val intentToken = cameraIntentOwner.claim()
+        activeEntryFocusToken = intentToken
         appliedPlace = cameraPlace
         ready.cancelTransitions()
         ready.cameraPosition = northUpCamera(starting)
+        var completed = false
         try {
             ready.easeCamera(
                 CameraUpdateFactory.newCameraPosition(northUpCamera(target)),
                 entryFocusDurationMillis,
             )
             delay(entryFocusDurationMillis + 20L)
+            completed = true
         } finally {
-            if (activeEntryFocusGeneration == entryFocusGeneration && !teardown.isClosed) {
-                // Pin the final camera exactly. During Travel, finish on the newest accepted fix
-                // at the retained desired zoom; the 5 Hz stream must not fight the entry ease.
-                val finalPlace = if (latestFollowLive && mapPlace.isCurrentLocation) {
-                    latestMarkerPlace
-                } else cameraPlace
-                val finalTarget = target.copy(
-                    latitude = finalPlace.latitude,
-                    longitude = finalPlace.longitude,
+            val ownsCamera = cameraIntentOwner.owns(intentToken) &&
+                activeEntryFocusToken == intentToken && !teardown.isClosed
+            if (ownsCamera) {
+                // Stop a cancelled native ease before releasing capture suppression. A normal
+                // return retains the exact panned target; only Travel may finish on a newer fix.
+                ready.cancelTransitions()
+                val followTarget = latestMarkerPlace.takeIf {
+                    latestFollowLive && mapPlace.isCurrentLocation
+                }
+                val finalTarget = RadarEntryFocusCompletionPolicy.finalTarget(
+                    entryTarget = target,
+                    completed = completed,
+                    ownsCamera = true,
+                    followTarget = followTarget,
                 )
-                ready.cameraPosition = northUpCamera(finalTarget)
-                activeEntryFocusGeneration = null
-                appliedPlace = finalPlace
-                saveCamera(ready, finalPlace)
+                activeEntryFocusToken = null
+                if (finalTarget != null) {
+                    val finalPlace = followTarget ?: cameraPlace
+                    ready.cameraPosition = northUpCamera(finalTarget)
+                    appliedPlace = finalPlace
+                    saveCamera(ready, finalPlace)
+                }
             }
         }
     }
@@ -2416,7 +2460,8 @@ private fun RadarImageMapInstance(
         }
         // The entry transition owns the camera for one second. Marker projection still updates;
         // its latest accepted fix is applied exactly when that transition completes.
-        if (activeEntryFocusGeneration != null) return@LaunchedEffect
+        if (activeEntryFocusToken != null) return@LaunchedEffect
+        cameraIntentOwner.invalidate()
         val target = RadarCameraTarget(markerPlace.latitude, markerPlace.longitude, ready.cameraPosition.zoom)
         appliedPlace = markerPlace
         val duration = RadarFollowCameraPolicy.durationMillis(

@@ -216,6 +216,7 @@ fun SettingsScreen(
     activeProviderCoverage: RadarProviderCoverageState? = null,
     activeLanguageName: String,
     openLanguageSelector: () -> Unit,
+    showAppTour: () -> Unit,
 ) {
     val context = LocalContext.current
     val resources = LocalResources.current
@@ -460,6 +461,21 @@ fun SettingsScreen(
             selectCoverageMaskDarkness = selectCoverageMaskDarkness,
         )
         Spacer(Modifier.height(24.dp))
+        Card(
+            colors = CardDefaults.cardColors(containerColor = SettingsSurface),
+            shape = RoundedCornerShape(18.dp),
+            modifier = Modifier.fillMaxWidth().clickable(onClick = showAppTour)
+                .semantics {
+                    contentDescription = resources.getString(R.string.settings_show_app_tour_description)
+                },
+        ) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+                Text(stringResource(R.string.settings_show_app_tour), fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.settings_show_app_tour_help), color = SettingsSecondary,
+                    fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
+            }
+        }
+        Spacer(Modifier.height(8.dp))
         Card(
             colors = CardDefaults.cardColors(containerColor = SettingsSurface),
             shape = RoundedCornerShape(18.dp),

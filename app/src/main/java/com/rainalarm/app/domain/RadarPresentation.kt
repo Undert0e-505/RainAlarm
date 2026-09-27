@@ -1,5 +1,6 @@
 package com.rainalarm.app.domain
 
+import com.rainalarm.app.data.SavedPlace
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -89,6 +90,38 @@ object RadarEntryFocusActivationPolicy {
         waitingForInitialCurrentFix: Boolean,
     ): Boolean = screenActive && entryGeneration > 0 && hasResolvedPlace &&
         !waitingForInitialCurrentFix
+}
+
+/**
+ * Monotonic ownership for camera operations which outlive the Compose event that started them.
+ * A delayed entry-animation completion may only write to the camera while it still owns the
+ * current token. A pan, recenter, place change, or newer entry invalidates that token first.
+ */
+class RadarCameraIntentOwner {
+    private var generation = 0L
+
+    fun claim(): Long = ++generation
+
+    fun invalidate() {
+        generation++
+    }
+
+    fun owns(token: Long): Boolean = token == generation
+}
+
+/** Keeps a normal Radar return anchored to its captured viewport; only Travel follows a new fix. */
+object RadarEntryFocusCompletionPolicy {
+    fun finalTarget(
+        entryTarget: RadarCameraTarget,
+        completed: Boolean,
+        ownsCamera: Boolean,
+        followTarget: SavedPlace? = null,
+    ): RadarCameraTarget? {
+        if (!completed || !ownsCamera) return null
+        return followTarget?.let {
+            entryTarget.copy(latitude = it.latitude, longitude = it.longitude)
+        } ?: entryTarget
+    }
 }
 
 data class RadarMarkerFocusRequest(

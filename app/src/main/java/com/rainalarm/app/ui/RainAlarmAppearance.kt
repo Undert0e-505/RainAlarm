@@ -66,4 +66,17 @@ internal object NowCardPalettePolicy {
     }
 }
 
+/**
+ * Keeps the Activity substrate aligned with the resolved app appearance. Compose normally covers
+ * the window, but Android can briefly expose it while a place-change subtree is being replaced.
+ * A fixed dark window background therefore reads as a theme flash in the light profile.
+ */
+internal object RainAlarmWindowAppearancePolicy {
+    fun backgroundArgb(dark: Boolean): Int = if (dark) {
+        0xFF0D0D0D.toInt()
+    } else {
+        0xFFF5F8FA.toInt()
+    }
+}
+
 val LocalRainAlarmPalette = compositionLocalOf { DarkRainPalette }

@@ -131,6 +131,53 @@ class RadarPresentationTest {
         assertFalse(RadarPageSwipePolicy.canClaim(RadarPageEdge.NEXT, -5f, 0f, true))
     }
 
+    @Test fun `entry focus completion preserves a panned viewport unless travel follows a fix`() {
+        val panned = RadarCameraTarget(52.14, -1.72, 11.75)
+        assertEquals(
+            panned,
+            RadarEntryFocusCompletionPolicy.finalTarget(
+                entryTarget = panned,
+                completed = true,
+                ownsCamera = true,
+            ),
+        )
+
+        val liveFix = com.rainalarm.app.data.SavedPlace(
+            "Current", 53.01, -2.22, isCurrentLocation = true,
+            id = com.rainalarm.app.data.CURRENT_LOCATION_ID,
+        )
+        assertEquals(
+            RadarCameraTarget(liveFix.latitude, liveFix.longitude, panned.zoom),
+            RadarEntryFocusCompletionPolicy.finalTarget(
+                entryTarget = panned,
+                completed = true,
+                ownsCamera = true,
+                followTarget = liveFix,
+            ),
+        )
+    }
+
+    @Test fun `cancelled or superseded entry completion cannot overwrite a newer camera intent`() {
+        val target = RadarCameraTarget(51.7, 0.2, 14.5)
+        val owner = RadarCameraIntentOwner()
+        val first = owner.claim()
+        owner.invalidate() // A user pan, recenter, place switch, or later entry.
+        assertFalse(owner.owns(first))
+        assertEquals(null, RadarEntryFocusCompletionPolicy.finalTarget(
+            entryTarget = target,
+            completed = true,
+            ownsCamera = owner.owns(first),
+        ))
+
+        val current = owner.claim()
+        assertTrue(owner.owns(current))
+        assertEquals(null, RadarEntryFocusCompletionPolicy.finalTarget(
+            entryTarget = target,
+            completed = false,
+            ownsCamera = owner.owns(current),
+        ))
+    }
+
     @Test fun `saved marker focus waits for its target and cancels on a different selection`() {
         val request = RadarMarkerFocusRequest(7, "old-place", "new-place")
         assertEquals(RadarMarkerFocusAction.WAIT,

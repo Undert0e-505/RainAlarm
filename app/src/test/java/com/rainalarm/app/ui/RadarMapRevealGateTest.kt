@@ -62,6 +62,7 @@ class RadarMapRevealGateTest {
             RadarMapAppearance.loadingBackgroundArgb(RadarMapStyle.LIGHT))
         assertEquals(0xFF45516E.toInt(),
             RadarMapAppearance.loadingBackgroundArgb(RadarMapStyle.SLATE))
+        assertEquals(0x00000000, RadarMapAppearance.rendererForegroundArgb())
     }
 
     @Test fun failureKeepsTheCoverButReportsItAndCanRecover() {
@@ -105,7 +106,7 @@ class RadarMapRevealGateTest {
         assertTrue(source.contains("MapView.OnDidFinishRenderingFrameListener"))
         assertTrue(source.contains("mapRevealGate.frameStarted()"))
         assertTrue(source.contains("mapRevealGate.frameRendered(fully)"))
-        assertTrue(source.contains(".foregroundLoadColor(RadarMapAppearance.loadingBackgroundArgb(mapStyle))"))
+        assertTrue(source.contains(".foregroundLoadColor(RadarMapAppearance.rendererForegroundArgb())"))
         assertTrue(source.contains("container.setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(mapStyle))"))
         assertTrue(source.contains("mapView.removeOnWillStartRenderingFrameListener(startingListener)"))
         assertTrue(source.contains("mapView.removeOnDidFinishRenderingFrameListener(renderedListener)"))

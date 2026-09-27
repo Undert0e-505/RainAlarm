@@ -3,6 +3,7 @@ package com.rainalarm.app
 import android.app.Application
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -75,6 +76,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -85,6 +87,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
@@ -117,6 +120,13 @@ import com.rainalarm.app.data.StartupPermissionStep
 import com.rainalarm.app.data.AppLanguagePolicy
 import com.rainalarm.app.data.LanguageChoiceGatePolicy
 import com.rainalarm.app.data.LanguageChoicePreferences
+import com.rainalarm.app.data.FeatureTourPreferences
+import com.rainalarm.app.data.FeatureTourLaunchState
+import com.rainalarm.app.data.FeatureTourProgress
+import com.rainalarm.app.data.FeatureTourStage
+import com.rainalarm.app.data.FeatureTourAction
+import com.rainalarm.app.data.FeatureTourPolicy
+import com.rainalarm.app.data.FeatureTourScenario
 import com.rainalarm.app.data.PlatformLocationClient
 import com.rainalarm.app.data.LiveLocationPolicy
 import com.rainalarm.app.data.ForegroundLocationSnapshot
@@ -167,9 +177,15 @@ import com.rainalarm.app.ui.PlacesScreen
 import com.rainalarm.app.ui.PlaceMapPicker
 import com.rainalarm.app.ui.SettingsScreen
 import com.rainalarm.app.ui.LanguageSelectorDialog
+import com.rainalarm.app.ui.FeatureSpotlightOverlay
+import com.rainalarm.app.ui.FeatureTourCopy
+import com.rainalarm.app.ui.FeatureTourTarget
+import com.rainalarm.app.ui.FeatureTourTargetBounds
+import com.rainalarm.app.ui.featureTourTarget
 import com.rainalarm.app.ui.LocalRainAlarmPalette
 import com.rainalarm.app.ui.DarkRainPalette
 import com.rainalarm.app.ui.LightRainPalette
+import com.rainalarm.app.ui.RainAlarmWindowAppearancePolicy
 import com.rainalarm.app.alerts.AlertSnapshot
 import com.rainalarm.app.alerts.RainAlertPreferences
 import com.rainalarm.app.alerts.RainAlertScheduler
@@ -317,6 +333,12 @@ class MainActivity : AppCompatActivity() {
             }
             val dark = resolved.app.isDark(systemDark)
             SideEffect {
+                // Place selection can replace a large Compose subtree (and Radar's TextureView).
+                // Keep the Android window beneath it on the same resolved palette so no default
+                // dark surface can flash between otherwise-light animation frames.
+                window.setBackgroundDrawable(
+                    ColorDrawable(RainAlarmWindowAppearancePolicy.backgroundArgb(dark)),
+                )
                 WindowInsetsControllerCompat(window, window.decorView).apply {
                     isAppearanceLightStatusBars = !dark
                     isAppearanceLightNavigationBars = !dark
@@ -408,6 +430,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     private val alertPreferences = RainAlertPreferences(application)
     private val startupPermissions = StartupPermissionPreferences(application)
     private val languageChoices = LanguageChoicePreferences(application)
+    private val featureTourPreferences = FeatureTourPreferences(application)
     private val radarSettings = RadarSettingsRepository(application)
     private val _state = MutableStateFlow<ForecastUiState>(ForecastUiState.Loading)
     val state: StateFlow<ForecastUiState> = _state.asStateFlow()
@@ -431,6 +454,10 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     val startupReady: StateFlow<Boolean> = _startupReady.asStateFlow()
     private val _languageChoiceCompleted = MutableStateFlow<Boolean?>(null)
     val languageChoiceCompleted: StateFlow<Boolean?> = _languageChoiceCompleted.asStateFlow()
+    private val _featureTourLaunchState = MutableStateFlow<FeatureTourLaunchState?>(null)
+    val featureTourLaunchState: StateFlow<FeatureTourLaunchState?> = _featureTourLaunchState.asStateFlow()
+    private val _featureTourReplayGeneration = MutableStateFlow(0L)
+    val featureTourReplayGeneration: StateFlow<Long> = _featureTourReplayGeneration.asStateFlow()
     private val _livePlace = MutableStateFlow<SavedPlace?>(null)
     // Foreground-only marker position; small fixes do not invalidate point forecasts.
     private val _liveMapPlace = MutableStateFlow<SavedPlace?>(null)
@@ -536,6 +563,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             val freshInstall = places.ensureMigrated()
             _languageChoiceCompleted.value = languageChoices.initialize(freshInstall)
+            _featureTourLaunchState.value = featureTourPreferences.initialize(freshInstall)
             val explicitAlerts = alertPreferences.snapshot().enabled
                 .takeIf { alertPreferences.hasExplicitEnabledChoice() }
             val wantsAlerts = explicitAlerts != false
@@ -681,6 +709,22 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     fun completeLanguageChoice() {
         languageChoices.complete()
         _languageChoiceCompleted.value = true
+    }
+
+    fun completeFeatureTour() {
+        featureTourPreferences.complete()
+        _featureTourLaunchState.value = FeatureTourLaunchState.COMPLETE
+    }
+
+    fun completeFeatureTourNowStage() {
+        featureTourPreferences.completeNow()
+        _featureTourLaunchState.value = FeatureTourLaunchState.RADAR_PENDING
+    }
+
+    fun replayFeatureTour() {
+        featureTourPreferences.resetForReplay()
+        _featureTourLaunchState.value = FeatureTourLaunchState.NOW_PENDING
+        _featureTourReplayGeneration.value++
     }
 
     /** Rebind the few retained/persisted presentation strings after AppCompat changes locale. */
@@ -1319,6 +1363,8 @@ private fun RainAlarmApp(
     val startupPermissions = remember(context) { StartupPermissionPreferences(context) }
     val startupReady by viewModel.startupReady.collectAsStateWithLifecycle()
     val languageChoiceCompleted by viewModel.languageChoiceCompleted.collectAsStateWithLifecycle()
+    val featureTourLaunchState by viewModel.featureTourLaunchState.collectAsStateWithLifecycle()
+    val featureTourReplayGeneration by viewModel.featureTourReplayGeneration.collectAsStateWithLifecycle()
     var startupPromptInFlight by rememberSaveable { mutableStateOf(false) }
     var languageDialogOpen by rememberSaveable { mutableStateOf(false) }
     var languageDialogRequired by rememberSaveable { mutableStateOf(false) }
@@ -1404,6 +1450,13 @@ private fun RainAlarmApp(
         }
     }
     var destination by rememberSaveable { mutableStateOf(Destination.NOW) }
+    var featureTourStageName by rememberSaveable { mutableStateOf<String?>(null) }
+    var featureTourStepIndex by rememberSaveable { mutableIntStateOf(0) }
+    var featureTourScenario by remember { mutableStateOf<FeatureTourScenario?>(null) }
+    val featureTourTargets = remember { mutableStateMapOf<FeatureTourTarget, FeatureTourTargetBounds>() }
+    val featureTourProgress = featureTourStageName?.let { name ->
+        FeatureTourProgress(FeatureTourStage.valueOf(name), featureTourStepIndex)
+    }
     val pagerState = rememberPagerState(initialPage = destination.ordinal) {
         Destination.entries.size
     }
@@ -1448,10 +1501,21 @@ private fun RainAlarmApp(
         if (pagerState.currentPage != next.ordinal) {
             navigationScope.launch { pagerState.animateScrollToPage(next.ordinal) }
         }
-        if (NowEntryRefreshPolicy.entersNow(previous, next)) {
+        if (NowEntryRefreshPolicy.entersNow(previous, next) && featureTourStageName == null) {
             nowVisitGeneration++
             viewModel.refreshOnNowEntry()
         }
+    }
+    fun startFeatureTour() {
+        featureTourStepIndex = 0
+        featureTourStageName = FeatureTourStage.NOW.name
+    }
+    fun finishFeatureTour() {
+        viewModel.completeFeatureTour()
+        featureTourStageName = null
+        featureTourStepIndex = 0
+        featureTourScenario = null
+        featureTourTargets.clear()
     }
     LaunchedEffect(pagerState) {
         snapshotFlow { pagerState.settledPage to radarPageTransitionActive }
@@ -1496,6 +1560,52 @@ private fun RainAlarmApp(
     val visibleWeatherMetrics by viewModel.visibleWeatherMetrics.collectAsStateWithLifecycle()
     val selectedWeather by viewModel.currentWeather.collectAsStateWithLifecycle()
     val pointRefreshCompletion by viewModel.pointRefreshCompletion.collectAsStateWithLifecycle()
+    val exampleLabel = androidx.compose.ui.res.stringResource(R.string.feature_tour_example)
+    val exampleHeadline = androidx.compose.ui.res.stringResource(
+        R.string.feature_tour_example_headline,
+        FeatureTourScenario.RAIN_ARRIVAL_MINUTE,
+    )
+    val exampleDetail = androidx.compose.ui.res.stringResource(R.string.feature_tour_example_detail)
+    val permissionOnboardingComplete = startupReady && languageChoiceCompleted == true &&
+        !startupPromptInFlight && !localeApplyInFlight && !languageDialogOpen &&
+        !startupPermissions.locationPending() && !startupPermissions.notificationPending()
+    LaunchedEffect(
+        featureTourLaunchState,
+        featureTourReplayGeneration,
+        permissionOnboardingComplete,
+        destination,
+        featureTourTargets[FeatureTourTarget.NOW_PLACE],
+    ) {
+        if (featureTourStageName != null) return@LaunchedEffect
+        val firstTarget = featureTourTargets[FeatureTourTarget.NOW_PLACE]
+        val start = FeatureTourPolicy.initial(
+            launchState = featureTourLaunchState,
+            onboardingComplete = permissionOnboardingComplete,
+            nowSelected = destination == Destination.NOW,
+            firstTargetReady = firstTarget != null && firstTarget.bounds.width > 1f && firstTarget.bounds.height > 1f,
+        ) ?: return@LaunchedEffect
+        featureTourStepIndex = start.stepIndex
+        featureTourStageName = start.stage.name
+    }
+    LaunchedEffect(featureTourLaunchState, permissionOnboardingComplete, featureTourStageName) {
+        if (featureTourStageName != null) return@LaunchedEffect
+        val resumed = FeatureTourPolicy.resumeRadar(featureTourLaunchState, permissionOnboardingComplete)
+            ?: return@LaunchedEffect
+        featureTourStepIndex = resumed.stepIndex
+        featureTourStageName = resumed.stage.name
+        navigateTo(Destination.RADAR)
+    }
+    LaunchedEffect(featureTourStageName) {
+        if (featureTourStageName != null && featureTourScenario == null) {
+            featureTourScenario = FeatureTourScenario.create(
+                nowEpochSeconds = java.time.Instant.now().epochSecond,
+                selectedPlace = selectedPlace,
+                exampleLabel = exampleLabel,
+                summaryHeadline = exampleHeadline,
+                summaryDetail = exampleDetail,
+            )
+        }
+    }
     var weatherClock by remember { mutableStateOf(java.time.Instant.now().epochSecond) }
     LaunchedEffect(selectedWeather) {
         if (selectedWeather != null) while (true) {
@@ -1545,6 +1655,9 @@ private fun RainAlarmApp(
     }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= 720.dp
+        val rootDensity = LocalDensity.current
+        val rootWidthPx = with(rootDensity) { maxWidth.toPx() }
+        val rootHeightPx = with(rootDensity) { maxHeight.toPx() }
         fun handleRadarPageSwipe(event: RadarPageSwipeEvent) {
             when (event) {
                 RadarPageSwipeEvent.Begin -> {
@@ -1621,6 +1734,14 @@ private fun RainAlarmApp(
                             NavigationBarItem(
                                 selected = destination == item,
                                 onClick = { navigateTo(item) },
+                                modifier = Modifier.featureTourTarget(
+                                    target = FeatureTourTarget.NAV_RADAR,
+                                    enabled = item == Destination.RADAR &&
+                                        featureTourLaunchState != FeatureTourLaunchState.COMPLETE,
+                                    cornerRadiusDp = 22f,
+                                    paddingDp = 2f,
+                                    onBounds = { featureTourTargets[it.target] = it },
+                                ),
                                 icon = { Icon(item.icon, contentDescription = null, modifier = Modifier.size(29.dp)) },
                                 label = { Text(androidx.compose.ui.res.stringResource(item.labelRes)) },
                             )
@@ -1637,6 +1758,14 @@ private fun RainAlarmApp(
                             NavigationRailItem(
                                 selected = destination == item,
                                 onClick = { navigateTo(item) },
+                                modifier = Modifier.featureTourTarget(
+                                    target = FeatureTourTarget.NAV_RADAR,
+                                    enabled = item == Destination.RADAR &&
+                                        featureTourLaunchState != FeatureTourLaunchState.COMPLETE,
+                                    cornerRadiusDp = 22f,
+                                    paddingDp = 2f,
+                                    onBounds = { featureTourTargets[it.target] = it },
+                                ),
                                 icon = { Icon(item.icon, contentDescription = null) },
                                 label = { Text(androidx.compose.ui.res.stringResource(item.labelRes)) },
                             )
@@ -1694,7 +1823,8 @@ private fun RainAlarmApp(
                     // Disable the pager for the whole time Radar is the selected destination.
                     // Looking only at currentPage can flip this flag half-way through a swipe
                     // into Radar and leave the pager in an indeterminate drag state.
-                    userScrollEnabled = !wide && destination != Destination.RADAR,
+                    userScrollEnabled = !wide && destination != Destination.RADAR &&
+                        featureTourProgress == null,
                     beyondViewportPageCount = Destination.entries.lastIndex,
                     key = { Destination.entries[it].name },
                 ) { page ->
@@ -1719,6 +1849,11 @@ private fun RainAlarmApp(
                                     navigateTo(Destination.RADAR)
                                 }
                             },
+                            screenActive = destination == Destination.NOW,
+                            featureTourScenario = featureTourScenario?.takeIf {
+                                featureTourProgress?.stage == FeatureTourStage.NOW
+                            },
+                            onFeatureTourTarget = { featureTourTargets[it.target] = it },
                         )
                         Destination.RADAR -> LiveRadarScreen(
                             place = selectedPlace,
@@ -1761,6 +1896,10 @@ private fun RainAlarmApp(
                             onPageSwipeBoundsChanged = { radarPageSwipeBounds = it },
                             screenActive = destination == Destination.RADAR,
                             entryFocusGeneration = radarEntryGeneration,
+                            featureTourScenario = featureTourScenario?.takeIf {
+                                featureTourProgress?.stage == FeatureTourStage.RADAR
+                            },
+                            onFeatureTourTarget = { featureTourTargets[it.target] = it },
                         )
                         Destination.PLACES -> PlacesScreen(
                             collection = placesState,
@@ -1813,6 +1952,19 @@ private fun RainAlarmApp(
                             activeProviderCoverage = activeRadarSelection?.coverageState,
                             activeLanguageName = activeLanguageName,
                             openLanguageSelector = ::showLanguageSelector,
+                            showAppTour = {
+                                viewModel.replayFeatureTour()
+                                featureTourTargets.clear()
+                                featureTourScenario = FeatureTourScenario.create(
+                                    nowEpochSeconds = java.time.Instant.now().epochSecond,
+                                    selectedPlace = selectedPlace,
+                                    exampleLabel = exampleLabel,
+                                    summaryHeadline = exampleHeadline,
+                                    summaryDetail = exampleDetail,
+                                )
+                                startFeatureTour()
+                                navigateTo(Destination.NOW)
+                            },
                         )
                     }
                 }
@@ -1830,9 +1982,96 @@ private fun RainAlarmApp(
         }
         RadarPageSwipeOverlay(
             mapBounds = radarPageSwipeBounds,
-            enabled = !wide && destination == Destination.RADAR && !languageDialogOpen,
+            enabled = !wide && destination == Destination.RADAR && !languageDialogOpen &&
+                featureTourProgress == null,
             onPageSwipe = ::handleRadarPageSwipe,
         )
+        featureTourProgress?.let { progress ->
+            val targetId = when (progress.stage) {
+                FeatureTourStage.NOW -> listOf(
+                    FeatureTourTarget.NOW_PLACE,
+                    FeatureTourTarget.NOW_COMPASS,
+                    FeatureTourTarget.NOW_GRAPH,
+                    FeatureTourTarget.NAV_RADAR,
+                )[progress.stepIndex]
+                FeatureTourStage.RADAR -> listOf(
+                    FeatureTourTarget.RADAR_TIMELINE,
+                    FeatureTourTarget.RADAR_LAYERS,
+                    FeatureTourTarget.RADAR_TRAVEL,
+                )[progress.stepIndex]
+            }
+            val expectedDestination = if (progress.stage == FeatureTourStage.NOW) Destination.NOW else Destination.RADAR
+            val target = featureTourTargets[targetId]
+            if (destination == expectedDestination && pagerState.settledPage == expectedDestination.ordinal &&
+                target != null && target.ready(rootWidthPx, rootHeightPx)
+            ) {
+                val titles = when (progress.stage) {
+                    FeatureTourStage.NOW -> listOf(
+                        R.string.feature_tour_your_place_title,
+                        R.string.feature_tour_rain_glance_title,
+                        R.string.feature_tour_next_hour_title,
+                        R.string.feature_tour_see_move_title,
+                    )
+                    FeatureTourStage.RADAR -> listOf(
+                        R.string.feature_tour_move_time_title,
+                        R.string.feature_tour_layers_title,
+                        R.string.feature_tour_travel_title,
+                    )
+                }
+                val bodies = when (progress.stage) {
+                    FeatureTourStage.NOW -> listOf(
+                        R.string.feature_tour_your_place_body,
+                        R.string.feature_tour_rain_glance_body,
+                        R.string.feature_tour_next_hour_body,
+                        R.string.feature_tour_see_move_body,
+                    )
+                    FeatureTourStage.RADAR -> listOf(
+                        R.string.feature_tour_move_time_body,
+                        R.string.feature_tour_layers_body,
+                        R.string.feature_tour_travel_body,
+                    )
+                }
+                val stepCount = if (progress.stage == FeatureTourStage.NOW) {
+                    FeatureTourPolicy.nowStepCount
+                } else FeatureTourPolicy.radarStepCount
+                val action = when {
+                    progress.stage == FeatureTourStage.NOW && progress.stepIndex ==
+                        FeatureTourPolicy.nowStepCount - 1 -> R.string.feature_tour_show_radar
+                    progress.stage == FeatureTourStage.RADAR && progress.stepIndex ==
+                        FeatureTourPolicy.radarStepCount - 1 -> R.string.feature_tour_done
+                    else -> R.string.feature_tour_next
+                }
+                FeatureSpotlightOverlay(
+                    target = target,
+                    copy = FeatureTourCopy(
+                        title = androidx.compose.ui.res.stringResource(titles[progress.stepIndex]),
+                        body = androidx.compose.ui.res.stringResource(bodies[progress.stepIndex]),
+                        action = androidx.compose.ui.res.stringResource(action),
+                        skip = androidx.compose.ui.res.stringResource(R.string.feature_tour_skip),
+                        progress = androidx.compose.ui.res.stringResource(
+                            R.string.feature_tour_step_count,
+                            progress.stepIndex + 1,
+                            stepCount,
+                        ),
+                        paneTitle = androidx.compose.ui.res.stringResource(R.string.feature_tour_pane),
+                    ),
+                    onAdvance = {
+                        val completes = FeatureTourPolicy.completes(progress, FeatureTourAction.Advance)
+                        val next = FeatureTourPolicy.reduce(progress, FeatureTourAction.Advance)
+                        if (completes || next == null) finishFeatureTour()
+                        else {
+                            featureTourStepIndex = next.stepIndex
+                            featureTourStageName = next.stage.name
+                            if (progress.stage == FeatureTourStage.NOW && next.stage == FeatureTourStage.RADAR) {
+                                viewModel.completeFeatureTourNowStage()
+                                navigateTo(Destination.RADAR)
+                            }
+                        }
+                    },
+                    onSkip = { finishFeatureTour() },
+                )
+            }
+        }
         }
         }
     }

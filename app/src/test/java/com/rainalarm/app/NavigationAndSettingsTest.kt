@@ -11,12 +11,23 @@ import com.rainalarm.app.data.StartupPermissionPolicy
 import com.rainalarm.app.data.StartupPermissionStep
 import com.rainalarm.app.ui.RadarMapAppearance
 import com.rainalarm.app.ui.RainAlarmSwitchGeometry
+import com.rainalarm.app.ui.RainAlarmWindowAppearancePolicy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
 class NavigationAndSettingsTest {
+    @Test fun `window substrate follows the resolved app palette during place transitions`() {
+        assertEquals(0xFF0D0D0D.toInt(), RainAlarmWindowAppearancePolicy.backgroundArgb(true))
+        assertEquals(0xFFF5F8FA.toInt(), RainAlarmWindowAppearancePolicy.backgroundArgb(false))
+
+        val main = listOf(File("src/main/java/com/rainalarm/app/MainActivity.kt"),
+            File("app/src/main/java/com/rainalarm/app/MainActivity.kt")).first(File::isFile).readText()
+        assertTrue(main.contains(
+            "ColorDrawable(RainAlarmWindowAppearancePolicy.backgroundArgb(dark))",
+        ))
+    }
     @Test fun `settings switch thumb stays near full track height with accessible target`() {
         assertEquals(52, RainAlarmSwitchGeometry.trackWidthDp)
         assertEquals(32, RainAlarmSwitchGeometry.trackHeightDp)

@@ -90,6 +90,7 @@ import com.rainalarm.app.R
 import com.rainalarm.app.NowRefreshStatus
 import com.rainalarm.app.LocationUiState
 import com.rainalarm.app.data.ForecastSnapshot
+import com.rainalarm.app.data.FeatureTourScenario
 import com.rainalarm.app.data.PlaceCollection
 import com.rainalarm.app.data.CurrentWeather
 import com.rainalarm.app.data.NowWeatherMetric
@@ -148,6 +149,9 @@ fun NowScreen(
     visitGeneration: Int = 0,
     selectedLocationKey: String? = null,
     onChartTimeSelected: (Double) -> Unit = {},
+    screenActive: Boolean = true,
+    featureTourScenario: FeatureTourScenario? = null,
+    onFeatureTourTarget: (FeatureTourTargetBounds) -> Unit = {},
 ) {
     val context = LocalContext.current
     val locationPermission = rememberLauncherForActivityResult(
@@ -172,7 +176,8 @@ fun NowScreen(
         LocationUiState.Idle -> if (selectedLocationKey == null)
             WeatherDataStatusPolicy.unavailable(WeatherDataKind.LOCATION) else null
     } else null
-    val unresolvedCurrent = currentSelected && selectedLocationKey == null
+    val displayedState = featureTourScenario?.let { ForecastUiState.Ready(it.forecast) } ?: state
+    val unresolvedCurrent = currentSelected && selectedLocationKey == null && featureTourScenario == null
     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         val density = LocalDensity.current
         val metrics = NowLayoutPolicy.measure(maxWidth.value.toInt(), maxHeight.value.toInt(), density.fontScale)
@@ -186,10 +191,19 @@ fun NowScreen(
                 contentAlignment = Alignment.Center,
             ) {
                 val maxTitleWidth = NowHeaderLayoutPolicy.titleMaxWidthDp(maxWidth.value).dp
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.featureTourTarget(
+                        FeatureTourTarget.NOW_PLACE,
+                        enabled = screenActive,
+                        cornerRadiusDp = 18f,
+                        paddingDp = 4f,
+                        onBounds = onFeatureTourTarget,
+                    ),
+                ) {
                     Spacer(Modifier.width(NowHeaderLayoutPolicy.sideReserveDp.dp))
                     Text(
-                        selectedLocationName ?: if (state is ForecastUiState.Ready) state.forecast.locationName
+                        selectedLocationName ?: if (displayedState is ForecastUiState.Ready) displayedState.forecast.locationName
                         else stringResource(R.string.current_location),
                     fontSize = NowHeaderLayoutPolicy.titleFontSizeSp(metrics.simplifyText).sp,
                     lineHeight = NowHeaderLayoutPolicy.titleLineHeightSp(metrics.simplifyText).sp,
@@ -203,7 +217,7 @@ fun NowScreen(
                     PlaceSwitcher(places, locationState, selectPlace, useCurrentLocation)
                 }
             }
-            when (state) {
+            when (displayedState) {
                 ForecastUiState.Loading -> if (unresolvedCurrent) NowPlaceholder(
                     title = currentLocationMessage ?: WeatherDataStatusPolicy.unavailable(WeatherDataKind.LOCATION),
                     detail = currentLocationMessage ?: WeatherDataStatusPolicy.unavailable(WeatherDataKind.LOCATION),
@@ -245,10 +259,15 @@ fun NowScreen(
                     sourceLabel = WeatherDataStatusPolicy.unavailable(WeatherDataKind.RADAR),
                     footerLabel = WeatherDataStatusPolicy.unavailable(WeatherDataKind.RADAR),
                 )
-                is ForecastUiState.Ready -> NowForecastContent(state.forecast, metrics,
+                is ForecastUiState.Ready -> NowForecastContent(displayedState.forecast, metrics,
                     refreshOrRetryLocation, weather, visibleWeatherMetrics, compassAppearance, graphAppearance,
                     refreshStatus, visitGeneration, selectedLocationKey,
-                    onChartTimeSelected, currentLocationMessage)
+                    onChartTimeSelected,
+                    if (featureTourScenario != null) featureTourScenario.forecast.sourceLabel else null,
+                    if (featureTourScenario != null) null else currentLocationMessage,
+                    screenActive,
+                    onFeatureTourTarget,
+                )
             }
         }
     }
@@ -373,7 +392,12 @@ private fun NowForecastContent(forecast: ForecastSnapshot, metrics: NowLayoutMet
     refresh: () -> Unit, weather: CurrentWeather?, visibleWeatherMetrics: Set<NowWeatherMetric>,
     compassAppearance: NowCardAppearance, graphAppearance: NowCardAppearance,
     refreshStatus: NowRefreshStatus, visitGeneration: Int, selectedLocationKey: String?,
-    onChartTimeSelected: (Double) -> Unit, locationNotice: String? = null) {
+    onChartTimeSelected: (Double) -> Unit,
+    exampleLabel: String? = null,
+    locationNotice: String? = null,
+    featureTourTargetsEnabled: Boolean = false,
+    onFeatureTourTarget: (FeatureTourTargetBounds) -> Unit = {},
+) {
     val series = forecast.nowcastSeries
     val analysis = series?.let(RainMinuteSeriesAnalyzer::analyze)
     val age = series?.let { NowSourceClock.ageMinutes(it, Instant.now().epochSecond) } ?: 0L
@@ -410,7 +434,7 @@ private fun NowForecastContent(forecast: ForecastSnapshot, metrics: NowLayoutMet
             forecast.sourceLabel.contains("OPERA", true) -> stringResource(R.string.now_source_estimate)
         else -> stringResource(R.string.now_source_radar)
     }
-    val source = locationNotice ?: "$sourceKind · $freshness$coverage"
+    val source = locationNotice ?: exampleLabel ?: "$sourceKind · $freshness$coverage"
     val context = LocalContext.current
     val animationsEnabled = remember(context) {
         runCatching {
@@ -429,10 +453,24 @@ private fun NowForecastContent(forecast: ForecastSnapshot, metrics: NowLayoutMet
     NowCardTheme(compassAppearance) {
         RainCompass(series, analysis, conciseTitle, source, refresh, refreshStatus, visibleProgress, animationsEnabled,
             weather, visibleWeatherMetrics,
-            Modifier.fillMaxWidth().height(metrics.compassHeightDp.dp))
+            Modifier.fillMaxWidth().height(metrics.compassHeightDp.dp)
+                .featureTourTarget(
+                    FeatureTourTarget.NOW_COMPASS,
+                    enabled = featureTourTargetsEnabled,
+                    cornerRadiusDp = 28f,
+                    paddingDp = 3f,
+                    onBounds = onFeatureTourTarget,
+                ))
     }
     NowCardTheme(graphAppearance) {
-        RainTimeline(series, Modifier.fillMaxWidth().height(metrics.chartHeightDp.dp),
+        RainTimeline(series, Modifier.fillMaxWidth().height(metrics.chartHeightDp.dp)
+            .featureTourTarget(
+                FeatureTourTarget.NOW_GRAPH,
+                enabled = featureTourTargetsEnabled,
+                cornerRadiusDp = 24f,
+                paddingDp = 3f,
+                onBounds = onFeatureTourTarget,
+            ),
             visibleProgress, onChartTimeSelected)
     }
 }
