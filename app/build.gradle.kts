@@ -12,8 +12,8 @@ android {
         applicationId = "com.rainalarm.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 18
-        versionName = "0.4.0"
+        versionCode = 19
+        versionName = "0.4.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -124,6 +124,7 @@ tasks.register<JavaExec>("directDebugUnitTest") {
         "com.rainalarm.app.ui.WeatherUiWiringTest",
         "com.rainalarm.app.ui.NowSourceClockTest",
         "com.rainalarm.app.domain.RadarPresentationTest",
+        "com.rainalarm.app.domain.EntryTransitionTest",
         "com.rainalarm.app.data.LocationNameResolverTest",
         "com.rainalarm.app.data.CurrentLocationSelectionPolicyTest",
         "com.rainalarm.app.ui.RadarLiveSessionPolicyTest",

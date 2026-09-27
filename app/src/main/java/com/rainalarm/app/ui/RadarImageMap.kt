@@ -23,6 +23,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -70,6 +71,11 @@ import com.rainalarm.app.domain.RadarEntryFocusCompletionPolicy
 import com.rainalarm.app.domain.WebMercator
 import com.rainalarm.app.domain.RadarTimelineBracket
 import com.rainalarm.app.domain.RadarEntryFocusPolicy
+import com.rainalarm.app.domain.EntryTransitionPhase
+import com.rainalarm.app.domain.EntryTransitionState
+import com.rainalarm.app.domain.RadarEntryFrameHandshake
+import com.rainalarm.app.domain.RadarEntryFramePolicy
+import com.rainalarm.app.domain.RadarNativePresentationGate
 import com.rainalarm.app.domain.RainAlarmPalette
 import org.maplibre.android.MapLibre
 import org.maplibre.android.offline.OfflineManager
@@ -1660,6 +1666,15 @@ private class MapViewLifecycle(private val mapView: MapView) : DefaultLifecycleO
     }
 }
 
+private data class RadarNativeEntryPreparation(
+    val generation: Int,
+    val intentToken: Long,
+    val place: SavedPlace,
+    val target: RadarCameraTarget,
+    val start: RadarCameraTarget,
+    val retainedStyleWasCoherent: Boolean,
+)
+
 @Composable
 internal fun RadarImageMap(
     session: RadarSession?,
@@ -1694,9 +1709,10 @@ internal fun RadarImageMap(
     onMapStyleError: (String?) -> Unit = {},
     onWindViewportChanged: (WindViewport) -> Unit = {},
     onRadarTierChanged: (RadarResolutionTier) -> Unit = {},
-    entryFocusGeneration: Int = 0,
+    entryTransition: EntryTransitionState = EntryTransitionState(0, EntryTransitionPhase.SETTLED),
     entryFocusEnabled: Boolean = true,
     entryFocusDurationMillis: Int = RadarEntryFocusPolicy.DURATION_MILLIS,
+    onEntryAnimationStart: (Int, Boolean) -> Unit = { _, _ -> },
     markerScale: Float = 1f,
 ) {
     RadarImageMapInstance(
@@ -1732,9 +1748,10 @@ internal fun RadarImageMap(
         onMapStyleError,
         onWindViewportChanged,
         onRadarTierChanged,
-        entryFocusGeneration,
+        entryTransition,
         entryFocusEnabled,
         entryFocusDurationMillis,
+        onEntryAnimationStart,
         markerScale,
     )
 }
@@ -1773,9 +1790,10 @@ private fun RadarImageMapInstance(
     onMapStyleError: (String?) -> Unit,
     onWindViewportChanged: (WindViewport) -> Unit,
     onRadarTierChanged: (RadarResolutionTier) -> Unit,
-    entryFocusGeneration: Int,
+    entryTransition: EntryTransitionState,
     entryFocusEnabled: Boolean,
     entryFocusDurationMillis: Int,
+    onEntryAnimationStart: (Int, Boolean) -> Unit,
     markerScale: Float,
 ) {
     val context = LocalContext.current
@@ -1961,7 +1979,12 @@ private fun RadarImageMapInstance(
     val mapLifecycle = remember(mapView) { MapViewLifecycle(mapView) }
     val mapRevealGate = remember(mapView) { RadarMapRevealGate() }
     val mapCover = remember(mapView) {
-        View(context).apply { setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(mapStyle)) }
+        View(context).apply {
+            setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(mapStyle))
+            // Radar uses its own TextureView with positive Z. Child order alone cannot reliably
+            // conceal that surface on every compositor, so the native cover must sit above it.
+            translationZ = density * 2f
+        }
     }
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
     var mapContainer by remember { mutableStateOf<FrameLayout?>(null) }
@@ -1977,7 +2000,46 @@ private fun RadarImageMapInstance(
     var lastMarker by remember(mapView) { mutableStateOf<SavedPlace?>(null) }
     val cameraIntentOwner = remember(mapView) { RadarCameraIntentOwner() }
     var activeEntryFocusToken by remember(mapView) { mutableStateOf<Long?>(null) }
+    val entryFrameHandshake = remember(mapView) { RadarEntryFrameHandshake() }
+    val nativePresentationGate = remember(mapView) { RadarNativePresentationGate() }
+    var nativeEntryPreparation by remember(mapView) {
+        mutableStateOf<RadarNativeEntryPreparation?>(null)
+    }
+    var readyEntryGeneration by remember(mapView) { mutableStateOf<Int?>(null) }
+    var failedEntryGeneration by remember(mapView) { mutableStateOf<Int?>(null) }
+    var cancelledEntryGeneration by remember(mapView) { mutableStateOf<Int?>(null) }
+    var finishedEntryGeneration by remember(mapView) { mutableStateOf<Int?>(null) }
     val latestFollowLive by rememberUpdatedState(followLive)
+    val latestEntryTransition by rememberUpdatedState(entryTransition)
+    val latestEntryFocusEnabled by rememberUpdatedState(entryFocusEnabled)
+    val latestEntryFocusDurationMillis by rememberUpdatedState(entryFocusDurationMillis)
+    val latestRadarPresentationVisible by rememberUpdatedState(radarPresentationVisible)
+    val currentEntryAnimationStart by rememberUpdatedState(onEntryAnimationStart)
+
+    fun hideNativePresentation(generation: Int) {
+        if (!nativePresentationGate.prepare(generation) &&
+            !nativePresentationGate.isHiddenFor(generation)) return
+        mapCover.visibility = View.VISIBLE
+        mapCover.bringToFront()
+        activeRadarSlot?.setVisible(false)
+        pendingRadarSlot?.setVisible(false)
+        baseMarkerView.visibility = View.INVISIBLE
+        windView.visibility = View.INVISIBLE
+        windView.setRenderEligible(false)
+    }
+
+    fun revealNativePresentation(generation: Int) {
+        if (!nativePresentationGate.reveal(generation)) return
+        mapCover.visibility = View.GONE
+        activeRadarSlot?.setVisible(latestRadarPresentationVisible)
+        pendingRadarSlot?.setVisible(latestRadarPresentationVisible)
+        baseMarkerView.visibility = if (activeRadarSlot == null ||
+            !latestRadarPresentationVisible) View.VISIBLE else View.GONE
+        windView.visibility = View.VISIBLE
+        windView.bringToFront()
+        windView.setRenderEligible(true)
+        currentMapStyleError(null)
+    }
     val satelliteBuffers = remember(mapView) {
         SatelliteLayerBuffers(
             onLayerError = { layer, message ->
@@ -2004,7 +2066,6 @@ private fun RadarImageMapInstance(
     }
     val latestBracket by rememberUpdatedState(bracket)
     val latestPlaying by rememberUpdatedState(isPlaying)
-    val latestRadarPresentationVisible by rememberUpdatedState(radarPresentationVisible)
     val slotStatusHandler by rememberUpdatedState<(RadarSessionOverlaySlot, RadarRendererStatus) -> Unit> {
             slot, status ->
         val isRelevant = slot === pendingRadarSlot ||
@@ -2020,13 +2081,15 @@ private fun RadarImageMapInstance(
             val outgoing = activeRadarSlot
             activeRadarSlot = slot
             pendingRadarSlot = null
-            slot.setVisible(latestRadarPresentationVisible)
-            baseMarkerView.visibility = if (latestRadarPresentationVisible) View.GONE else View.VISIBLE
+            slot.setVisible(latestRadarPresentationVisible && !nativePresentationGate.isHidden)
+            baseMarkerView.visibility = if (nativePresentationGate.isHidden) View.INVISIBLE
+            else if (latestRadarPresentationVisible) View.GONE else View.VISIBLE
             outgoing?.removeFrom(mapContainer)
             outgoing?.dispose()
             map?.style?.let {
                 coverageMask.reconcile(it, slot.session, mapStyle, coverageMaskDarkness)
             }
+            windView.visibility = if (nativePresentationGate.isHidden) View.INVISIBLE else View.VISIBLE
             windView.bringToFront()
             if (mapCover.visibility == View.VISIBLE) mapCover.bringToFront()
         }
@@ -2086,16 +2149,50 @@ private fun RadarImageMapInstance(
 
     val startingListener = remember(mapView, teardown) {
         MapView.OnWillStartRenderingFrameListener {
-            if (!teardown.isClosed) mapRevealGate.frameStarted()
+            if (!teardown.isClosed) {
+                mapRevealGate.frameStarted()
+                entryFrameHandshake.frameStarted()
+            }
         }
     }
     val renderedListener = remember(mapView, teardown) {
         MapView.OnDidFinishRenderingFrameListener { fully, _, _ ->
             if (fully && !teardown.isClosed) satelliteBuffers.onFullyRendered()
+            val preparation = nativeEntryPreparation
+            val readyMap = map
+            val cameraMatchesStart = if (preparation != null && readyMap != null) {
+                val position = readyMap.cameraPosition
+                val center = position.target
+                center != null && RadarEntryFramePolicy.cameraMatchesStart(
+                    RadarCameraTarget(center.latitude, center.longitude, position.zoom),
+                    preparation.start,
+                )
+            } else false
+            val acknowledgedEntry = if (!teardown.isClosed) {
+                entryFrameHandshake.frameRendered(
+                    fully = fully,
+                    cameraMatchesStart = cameraMatchesStart,
+                    retainedStyleWasCoherent = preparation?.retainedStyleWasCoherent == true,
+                )
+            } else null
+            if (acknowledgedEntry != null && preparation?.generation == acknowledgedEntry) {
+                readyEntryGeneration = acknowledgedEntry
+            }
             val revealCurrentStyle = !teardown.isClosed && mapView.width > 0 && mapView.height > 0 &&
                 mapRevealGate.frameRendered(fully)
-            if (revealCurrentStyle) mapView.post {
-                if (!teardown.isClosed && !mapRevealGate.isCovered) {
+            if (revealCurrentStyle || acknowledgedEntry != null) mapView.post {
+                val transition = latestEntryTransition
+                val entryStillWaiting = transition.phase == EntryTransitionPhase.PLAY_REQUESTED &&
+                    nativeEntryPreparation?.generation == transition.generation &&
+                    readyEntryGeneration != transition.generation
+                val failedOpenFrameReady = acknowledgedEntry != null &&
+                    finishedEntryGeneration == acknowledgedEntry && activeEntryFocusToken == null
+                if (!teardown.isClosed && failedOpenFrameReady) {
+                    revealNativePresentation(acknowledgedEntry)
+                    nativeEntryPreparation = null
+                } else if (!teardown.isClosed && !nativePresentationGate.isHidden &&
+                    !mapRevealGate.isCovered && !entryStillWaiting
+                ) {
                     mapCover.visibility = View.GONE
                     windView.bringToFront()
                     windView.setRenderEligible(true)
@@ -2107,6 +2204,7 @@ private fun RadarImageMapInstance(
     val failedListener = remember(mapView, teardown) {
         MapView.OnDidFailLoadingMapListener { reason ->
             val showFailure = !teardown.isClosed && mapRevealGate.markFailed()
+            nativeEntryPreparation?.let { failedEntryGeneration = it.generation }
             if (showFailure) mapView.post {
                 if (!teardown.isClosed && mapRevealGate.hasFailed) {
                     Log.w("RainRadarMap", "Base map failed to load: $reason")
@@ -2168,8 +2266,16 @@ private fun RadarImageMapInstance(
                     val initialPlace = latestMapPlace
                     val target = cameraMemory.target(initialPlace, mapWidth, latestRecenterSignal)
                     appliedPlace = initialPlace
-                    ready.cameraPosition = northUpCamera(target)
-                    saveCamera(ready, initialPlace)
+                    val pendingEntry = latestEntryFocusEnabled &&
+                        latestEntryTransition.generation > 0 &&
+                        latestEntryTransition.phase != EntryTransitionPhase.SETTLED &&
+                        latestEntryFocusDurationMillis > 0
+                    ready.cameraPosition = northUpCamera(
+                        if (pendingEntry) {
+                            target.copy(zoom = RadarEntryFocusPolicy.startZoom(target.zoom))
+                        } else target,
+                    )
+                    if (!pendingEntry) saveCamera(ready, initialPlace)
                     val listener = MapLibreMap.OnCameraMoveListener {
                         appliedPlace?.let { saveCamera(ready, it) }
                         activeRadarSlot?.onCameraMoved()
@@ -2188,8 +2294,16 @@ private fun RadarImageMapInstance(
                     ready.addOnCameraMoveListener(listener)
                     val startListener = MapLibreMap.OnCameraMoveStartedListener { reason ->
                         if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
+                            nativeEntryPreparation?.let { preparation ->
+                                cancelledEntryGeneration = preparation.generation
+                                finishedEntryGeneration = preparation.generation
+                                entryFrameHandshake.cancel(preparation.generation)
+                                revealNativePresentation(preparation.generation)
+                                currentEntryAnimationStart(preparation.generation, false)
+                            }
                             cameraIntentOwner.invalidate()
                             activeEntryFocusToken = null
+                            nativeEntryPreparation = null
                             currentManualGesture()
                         }
                     }
@@ -2231,6 +2345,12 @@ private fun RadarImageMapInstance(
             mapContainer = container
             container.setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(mapStyle))
             mapView.setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(mapStyle))
+            val pendingEntryGeneration = entryTransition.generation.takeIf {
+                entryFocusEnabled && it > 0 && entryFocusDurationMillis > 0 &&
+                    entryTransition.phase != EntryTransitionPhase.SETTLED &&
+                    cancelledEntryGeneration != it && finishedEntryGeneration != it
+            }
+            pendingEntryGeneration?.let(::hideNativePresentation)
             when {
                 desiredRadarSlot == null -> {
                     pendingRadarSlot?.removeFrom(container)
@@ -2248,7 +2368,9 @@ private fun RadarImageMapInstance(
                     pendingRadarSlot?.dispose()
                     pendingRadarSlot = desiredRadarSlot
                     desiredRadarSlot.addTo(container)
-                    desiredRadarSlot.setVisible(radarPresentationVisible)
+                    desiredRadarSlot.setVisible(
+                        radarPresentationVisible && !nativePresentationGate.isHidden,
+                    )
                     map?.let(desiredRadarSlot::attachMap)
                     latestBracket?.let { desiredRadarSlot.setState(it, latestPlaying, latestMarkerPlace) }
                     desiredRadarSlot.setMarker(latestMarkerPlace)
@@ -2258,9 +2380,10 @@ private fun RadarImageMapInstance(
             }
             baseMarkerView.update(markerPlace)
             baseMarkerView.setMarkerScale(markerScale)
-            activeRadarSlot?.setVisible(radarPresentationVisible)
-            pendingRadarSlot?.setVisible(radarPresentationVisible)
-            baseMarkerView.visibility = if (activeRadarSlot == null) View.VISIBLE
+            activeRadarSlot?.setVisible(radarPresentationVisible && !nativePresentationGate.isHidden)
+            pendingRadarSlot?.setVisible(radarPresentationVisible && !nativePresentationGate.isHidden)
+            baseMarkerView.visibility = if (nativePresentationGate.isHidden) View.INVISIBLE
+            else if (activeRadarSlot == null) View.VISIBLE
             else if (!radarPresentationVisible) View.VISIBLE else View.GONE
             activeRadarSlot?.setMarkerScale(markerScale)
             pendingRadarSlot?.setMarkerScale(markerScale)
@@ -2286,6 +2409,7 @@ private fun RadarImageMapInstance(
             windView.setObservationCallback { token, count ->
                 currentWindRenderObservation(token, count)
             }
+            windView.visibility = if (nativePresentationGate.isHidden) View.INVISIBLE else View.VISIBLE
             windView.update(displayedWindGrid, windRenderToken, windArrowScale)
             // Preference-only changes replace the scrim source/layer in-place. They do not
             // recreate the style, radar session, camera, timeline or ancillary data.
@@ -2380,8 +2504,28 @@ private fun RadarImageMapInstance(
             appliedPlace = mapPlace
             return@LaunchedEffect
         }
+        nativeEntryPreparation?.let { preparation ->
+            entryFrameHandshake.cancel(preparation.generation)
+            if (entryTransition.phase == EntryTransitionPhase.PREPARED &&
+                preparation.generation == entryTransition.generation
+            ) {
+                // A place chosen while Radar is retained off-screen replaces the pending entry
+                // target. Keep this generation armed so the new place still receives its normal
+                // focus animation when Radar is revealed.
+                cancelledEntryGeneration = null
+                finishedEntryGeneration = null
+            } else {
+                cancelledEntryGeneration = preparation.generation
+                finishedEntryGeneration = preparation.generation
+                revealNativePresentation(preparation.generation)
+                currentEntryAnimationStart(preparation.generation, false)
+            }
+        }
         cameraIntentOwner.invalidate()
         activeEntryFocusToken = null
+        nativeEntryPreparation = null
+        readyEntryGeneration = null
+        failedEntryGeneration = null
         ready.cancelTransitions()
         oldPlace?.let { saveCamera(ready, it) }
         val mapWidth = mapView.width.takeIf { it > 0 } ?: mapView.resources.displayMetrics.widthPixels
@@ -2392,30 +2536,190 @@ private fun RadarImageMapInstance(
         saveCamera(ready, cameraPlace)
     }
 
-    LaunchedEffect(map, entryFocusGeneration, entryFocusEnabled, mapPlace.id) {
+    LaunchedEffect(
+        map,
+        entryTransition.generation,
+        entryFocusEnabled,
+        entryFocusDurationMillis,
+        mapPlace.id,
+    ) {
         val ready = map ?: return@LaunchedEffect
-        if (!entryFocusEnabled || entryFocusGeneration <= 0 || entryFocusDurationMillis <= 0 ||
-            teardown.isClosed) return@LaunchedEffect
+        val generation = entryTransition.generation
+        if (!entryFocusEnabled || generation <= 0 || teardown.isClosed ||
+            entryTransition.phase == EntryTransitionPhase.SETTLED ||
+            cancelledEntryGeneration == generation || finishedEntryGeneration == generation
+        ) return@LaunchedEffect
         val mapWidth = mapView.width.takeIf { it > 0 } ?: mapView.resources.displayMetrics.widthPixels
         val cameraPlace = if (mapPlace.isCurrentLocation) latestMarkerPlace else mapPlace
         val target = cameraMemory.target(cameraPlace, mapWidth, recenterSignal)
+        if (entryFocusDurationMillis <= 0) {
+            ready.cancelTransitions()
+            ready.cameraPosition = northUpCamera(target)
+            appliedPlace = cameraPlace
+            activeEntryFocusToken = null
+            nativeEntryPreparation = null
+            readyEntryGeneration = generation
+            finishedEntryGeneration = generation
+            saveCamera(ready, cameraPlace)
+            currentEntryAnimationStart(generation, false)
+            return@LaunchedEffect
+        }
         val starting = target.copy(zoom = RadarEntryFocusPolicy.startZoom(target.zoom))
         val intentToken = cameraIntentOwner.claim()
         activeEntryFocusToken = intentToken
+        cancelledEntryGeneration = null
+        finishedEntryGeneration = null
+        readyEntryGeneration = null
+        failedEntryGeneration = null
+        val retainedStyleWasCoherent = !mapRevealGate.isCovered && !mapRevealGate.hasFailed
+        nativeEntryPreparation = RadarNativeEntryPreparation(
+            generation = generation,
+            intentToken = intentToken,
+            place = cameraPlace,
+            target = target,
+            start = starting,
+            retainedStyleWasCoherent = retainedStyleWasCoherent,
+        )
+        hideNativePresentation(generation)
+        entryFrameHandshake.prepare(generation)
         appliedPlace = cameraPlace
         ready.cancelTransitions()
         ready.cameraPosition = northUpCamera(starting)
+    }
+
+    LaunchedEffect(
+        map,
+        entryTransition.generation,
+        entryTransition.phase,
+        entryFocusEnabled,
+        entryFocusDurationMillis,
+    ) {
+        val generation = entryTransition.generation
+        if (map != null || entryTransition.phase != EntryTransitionPhase.PLAY_REQUESTED ||
+            !entryFocusEnabled || entryFocusDurationMillis <= 0
+        ) return@LaunchedEffect
+        delay(RadarEntryFramePolicy.PLAY_READINESS_FAILURE_TIMEOUT_MILLIS)
+        if (map == null && latestEntryTransition.generation == generation &&
+            latestEntryTransition.phase == EntryTransitionPhase.PLAY_REQUESTED
+        ) {
+            // MapLibre startup itself can fail independently of frame rendering. Do not leave the
+            // Compose title/marker presentation gated forever; a later map startup will observe
+            // the settled phase and open directly at the authoritative camera target.
+            finishedEntryGeneration = generation
+            currentEntryAnimationStart(generation, false)
+        }
+    }
+
+    LaunchedEffect(
+        map,
+        entryTransition.generation,
+        entryTransition.phase,
+        entryFocusEnabled,
+        entryFocusDurationMillis,
+        nativeEntryPreparation,
+        readyEntryGeneration,
+        failedEntryGeneration,
+        cancelledEntryGeneration,
+        finishedEntryGeneration,
+    ) {
+        val ready = map ?: return@LaunchedEffect
+        val generation = entryTransition.generation
+        if (entryTransition.phase != EntryTransitionPhase.PLAY_REQUESTED ||
+            !entryFocusEnabled || generation <= 0 || teardown.isClosed
+        ) return@LaunchedEffect
+
+        if (finishedEntryGeneration == generation) return@LaunchedEffect
+
+        if (cancelledEntryGeneration == generation) {
+            currentEntryAnimationStart(generation, false)
+            return@LaunchedEffect
+        }
+        if (entryFocusDurationMillis <= 0) return@LaunchedEffect
+
+        val preparation = nativeEntryPreparation?.takeIf { it.generation == generation }
+        if (preparation == null || readyEntryGeneration != generation) {
+            hideNativePresentation(generation)
+            if (failedEntryGeneration != generation) {
+                delay(RadarEntryFramePolicy.PLAY_READINESS_FAILURE_TIMEOUT_MILLIS)
+            }
+            val current = nativeEntryPreparation?.takeIf { it.generation == generation }
+            if (current == null) {
+                if (latestEntryTransition.generation == generation &&
+                    latestEntryTransition.phase == EntryTransitionPhase.PLAY_REQUESTED &&
+                    finishedEntryGeneration != generation
+                ) {
+                    val mapWidth = mapView.width.takeIf { it > 0 }
+                        ?: mapView.resources.displayMetrics.widthPixels
+                    val cameraPlace = if (mapPlace.isCurrentLocation) latestMarkerPlace else mapPlace
+                    val target = cameraMemory.target(cameraPlace, mapWidth, recenterSignal)
+                    cameraIntentOwner.invalidate()
+                    ready.cancelTransitions()
+                    ready.cameraPosition = northUpCamera(target)
+                    activeEntryFocusToken = null
+                    appliedPlace = cameraPlace
+                    finishedEntryGeneration = generation
+                    nativeEntryPreparation = RadarNativeEntryPreparation(
+                        generation = generation,
+                        intentToken = cameraIntentOwner.claim(),
+                        place = cameraPlace,
+                        target = target,
+                        start = target,
+                        retainedStyleWasCoherent = !mapRevealGate.isCovered &&
+                            !mapRevealGate.hasFailed,
+                    )
+                    entryFrameHandshake.prepare(generation)
+                    saveCamera(ready, cameraPlace)
+                    currentEntryAnimationStart(generation, false)
+                }
+                return@LaunchedEffect
+            }
+            if (readyEntryGeneration == generation ||
+                !cameraIntentOwner.owns(current.intentToken) ||
+                latestEntryTransition.generation != generation ||
+                latestEntryTransition.phase != EntryTransitionPhase.PLAY_REQUESTED
+            ) return@LaunchedEffect
+
+            // A missing native frame or an explicit MapLibre failure must not hold Compose's
+            // navigation state forever. Settle at the authoritative target, but keep every native
+            // weather child concealed until MapLibre later produces a coherent frame there.
+            entryFrameHandshake.cancel(generation)
+            cancelledEntryGeneration = generation
+            finishedEntryGeneration = generation
+            ready.cancelTransitions()
+            ready.cameraPosition = northUpCamera(current.target)
+            activeEntryFocusToken = null
+            nativeEntryPreparation = current.copy(start = current.target)
+            entryFrameHandshake.prepare(generation)
+            readyEntryGeneration = null
+            appliedPlace = current.place
+            saveCamera(ready, current.place)
+            currentEntryAnimationStart(generation, false)
+            return@LaunchedEffect
+        }
+
+        if (!cameraIntentOwner.owns(preparation.intentToken)) return@LaunchedEffect
+        revealNativePresentation(generation)
+        currentEntryAnimationStart(generation, true)
+        // Let Compose publish the matching marker/title start before native camera easing begins.
+        withFrameNanos { }
+        if (!cameraIntentOwner.owns(preparation.intentToken) ||
+            latestEntryTransition.generation != generation ||
+            latestEntryTransition.phase != EntryTransitionPhase.PLAY_REQUESTED
+        ) return@LaunchedEffect
+
         var completed = false
         try {
             ready.easeCamera(
-                CameraUpdateFactory.newCameraPosition(northUpCamera(target)),
+                CameraUpdateFactory.newCameraPosition(northUpCamera(preparation.target)),
                 entryFocusDurationMillis,
             )
             delay(entryFocusDurationMillis + 20L)
             completed = true
         } finally {
-            val ownsCamera = cameraIntentOwner.owns(intentToken) &&
-                activeEntryFocusToken == intentToken && !teardown.isClosed
+            val settledByPresentation = latestEntryTransition.generation == generation &&
+                latestEntryTransition.phase == EntryTransitionPhase.SETTLED
+            val ownsCamera = cameraIntentOwner.owns(preparation.intentToken) &&
+                activeEntryFocusToken == preparation.intentToken && !teardown.isClosed
             if (ownsCamera) {
                 // Stop a cancelled native ease before releasing capture suppression. A normal
                 // return retains the exact panned target; only Travel may finish on a newer fix.
@@ -2424,14 +2728,17 @@ private fun RadarImageMapInstance(
                     latestFollowLive && mapPlace.isCurrentLocation
                 }
                 val finalTarget = RadarEntryFocusCompletionPolicy.finalTarget(
-                    entryTarget = target,
-                    completed = completed,
+                    entryTarget = preparation.target,
+                    completed = completed || settledByPresentation,
                     ownsCamera = true,
                     followTarget = followTarget,
                 )
                 activeEntryFocusToken = null
+                nativeEntryPreparation = null
+                finishedEntryGeneration = generation
+                entryFrameHandshake.cancel(generation)
                 if (finalTarget != null) {
-                    val finalPlace = followTarget ?: cameraPlace
+                    val finalPlace = followTarget ?: preparation.place
                     ready.cameraPosition = northUpCamera(finalTarget)
                     appliedPlace = finalPlace
                     saveCamera(ready, finalPlace)

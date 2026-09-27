@@ -92,7 +92,10 @@ class RadarMapRevealGateTest {
         assertTrue(source.contains("val desiredRadarSlot = remember(session)"))
         assertTrue(source.contains("val teardown = remember(mapView)"))
         assertTrue(source.contains("private class RadarBaseMarkerView"))
-        assertTrue(source.contains("baseMarkerView.visibility = if (activeRadarSlot == null)"))
+        assertTrue(source.contains("baseMarkerView.visibility = if (nativePresentationGate.isHidden)"))
+        assertTrue(source.contains("activeRadarSlot?.setVisible(false)"))
+        assertTrue(source.contains("pendingRadarSlot?.setVisible(false)"))
+        assertTrue(source.contains("translationZ = density * 2f"))
         assertTrue(source.contains("addView(mapCover"))
         assertTrue(source.indexOf("addView(mapCover") < source.indexOf("mapView.getMapAsync"))
         val mapAttach = requireNotNull(Regex("addView\\(\\s*mapView,").find(source)).range.first

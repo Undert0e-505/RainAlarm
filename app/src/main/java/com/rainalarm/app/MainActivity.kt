@@ -81,6 +81,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -166,6 +167,8 @@ import com.rainalarm.app.data.CurrentWeather
 import com.rainalarm.app.data.WeatherLayerRepository
 import com.rainalarm.app.data.forecastSelectionKey
 import com.rainalarm.app.domain.RadarCameraMemory
+import com.rainalarm.app.domain.EntryTransitionPolicy
+import com.rainalarm.app.domain.EntryTransitionState
 import com.rainalarm.app.ui.LiveRadarScreen
 import com.rainalarm.app.ui.RadarChartTimeRequest
 import com.rainalarm.app.ui.RadarChartTimeLink
@@ -1473,10 +1476,16 @@ private fun RainAlarmApp(
     var radarPageDragChannel by remember { mutableStateOf<Channel<Float>?>(null) }
     var radarPageDragJob by remember { mutableStateOf<Job?>(null) }
     var radarPageSettleJob by remember { mutableStateOf<Job?>(null) }
+    var pagerNavigationJob by remember { mutableStateOf<Job?>(null) }
     var radarPageTransitionActive by remember { mutableStateOf(false) }
     var radarPageSwipeBounds by remember { mutableStateOf(Rect.Zero) }
-    var nowVisitGeneration by remember { mutableIntStateOf(0) }
-    var radarEntryGeneration by remember { mutableIntStateOf(0) }
+    var nowEntryTransition by remember {
+        mutableStateOf(EntryTransitionPolicy.initial(active = true))
+    }
+    var radarEntryTransition by remember {
+        mutableStateOf(EntryTransitionPolicy.initial(active = false))
+    }
+    var navigationGeneration by remember { mutableIntStateOf(0) }
     var chartRequestSerial by remember { mutableIntStateOf(0) }
     var pendingChartTime by remember { mutableStateOf<RadarChartTimeRequest?>(null) }
     var placePickerVisible by rememberSaveable { mutableStateOf(false) }
@@ -1490,19 +1499,46 @@ private fun RainAlarmApp(
         radarPageSettleJob = null
         radarPageTransitionActive = false
     }
+    fun prepareEntry(destination: Destination) {
+        when (destination) {
+            Destination.NOW -> nowEntryTransition = EntryTransitionPolicy.prepare(nowEntryTransition)
+            Destination.RADAR -> radarEntryTransition = EntryTransitionPolicy.prepare(radarEntryTransition)
+            else -> Unit
+        }
+    }
+    fun requestEntryPlayback(destination: Destination) {
+        when (destination) {
+            Destination.NOW -> nowEntryTransition = EntryTransitionPolicy.requestPlay(nowEntryTransition)
+            Destination.RADAR -> radarEntryTransition = EntryTransitionPolicy.requestPlay(radarEntryTransition)
+            else -> Unit
+        }
+    }
     fun navigateTo(next: Destination) {
         if (radarPageTransitionActive) cancelRadarPageTransition()
         val previous = destination
         if (previous == next) return
+        pagerNavigationJob?.cancel()
+        pagerNavigationJob = null
+        val requestGeneration = ++navigationGeneration
         if (RadarChartTimeLink.shouldDiscard(pendingChartTime, pendingChartTime?.selectedPlaceId.orEmpty(),
                 previous == Destination.RADAR && next != Destination.RADAR)) pendingChartTime = null
-        if (next == Destination.RADAR) radarEntryGeneration++
+        val requiresPagerMove = pagerState.settledPage != next.ordinal || pagerState.isScrollInProgress
+        if (requiresPagerMove) prepareEntry(next) else requestEntryPlayback(next)
         destination = next
-        if (pagerState.currentPage != next.ordinal) {
-            navigationScope.launch { pagerState.animateScrollToPage(next.ordinal) }
+        if (requiresPagerMove) {
+            pagerNavigationJob = navigationScope.launch {
+                // Give the retained destination one frame to publish its prepared state. Playback
+                // and pager motion then begin together, so the first revealed frame is never the
+                // previous settled presentation.
+                withFrameNanos { }
+                if (requestGeneration == navigationGeneration && destination == next) {
+                    requestEntryPlayback(next)
+                    pagerState.animateScrollToPage(next.ordinal)
+                }
+                if (requestGeneration == navigationGeneration) pagerNavigationJob = null
+            }
         }
         if (NowEntryRefreshPolicy.entersNow(previous, next) && featureTourStageName == null) {
-            nowVisitGeneration++
             viewModel.refreshOnNowEntry()
         }
     }
@@ -1525,6 +1561,26 @@ private fun RainAlarmApp(
                     if (destination != next) navigateTo(next)
                 }
             }
+    }
+    LaunchedEffect(pagerState) {
+        snapshotFlow {
+            Triple(
+                pagerState.layoutInfo.visiblePagesInfo.map { it.index }.toSet(),
+                pagerState.isScrollInProgress,
+                pagerState.settledPage,
+            )
+        }.distinctUntilChanged().collect { (visiblePages, scrolling, settledPage) ->
+            if (visiblePages.isEmpty()) return@collect
+            listOf(Destination.NOW, Destination.RADAR).forEach { animatedPage ->
+                if (animatedPage.ordinal !in visiblePages) {
+                    prepareEntry(animatedPage)
+                } else if (scrolling && animatedPage.ordinal != settledPage) {
+                    // Incoming drag/swipe pages were prepared while fully off-screen. Playback can
+                    // now start without ever exposing their previous settled presentation.
+                    requestEntryPlayback(animatedPage)
+                }
+            }
+        }
     }
     val state by viewModel.state.collectAsStateWithLifecycle()
     val refreshStatus by viewModel.refreshStatus.collectAsStateWithLifecycle()
@@ -1839,7 +1895,13 @@ private fun RainAlarmApp(
                             compassAppearance = resolvedAppearance.compass,
                             graphAppearance = resolvedAppearance.graph,
                             refreshStatus = refreshStatus,
-                            visitGeneration = nowVisitGeneration,
+                            entryTransition = nowEntryTransition,
+                            onEntrySettled = { generation ->
+                                nowEntryTransition = EntryTransitionPolicy.settle(
+                                    nowEntryTransition,
+                                    generation,
+                                )
+                            },
                             selectedLocationKey = selectedPlace?.let(::forecastSelectionKey),
                             onChartTimeSelected = { epochSeconds ->
                                 if (selectedPlace != null) {
@@ -1895,7 +1957,13 @@ private fun RainAlarmApp(
                             onProviderSelection = viewModel::reportProviderSelection,
                             onPageSwipeBoundsChanged = { radarPageSwipeBounds = it },
                             screenActive = destination == Destination.RADAR,
-                            entryFocusGeneration = radarEntryGeneration,
+                            entryTransition = radarEntryTransition,
+                            onEntrySettled = { generation ->
+                                radarEntryTransition = EntryTransitionPolicy.settle(
+                                    radarEntryTransition,
+                                    generation,
+                                )
+                            },
                             featureTourScenario = featureTourScenario?.takeIf {
                                 featureTourProgress?.stage == FeatureTourStage.RADAR
                             },

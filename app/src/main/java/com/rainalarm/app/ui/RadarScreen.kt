@@ -152,6 +152,9 @@ import com.rainalarm.app.domain.RadarTimelineBracket
 import com.rainalarm.app.domain.RadarTimelineTicks
 import com.rainalarm.app.domain.FeatureTourRadarField
 import com.rainalarm.app.domain.RadarTimelineLabelLayout
+import com.rainalarm.app.domain.EntryTransitionPhase
+import com.rainalarm.app.domain.EntryTransitionPolicy
+import com.rainalarm.app.domain.EntryTransitionState
 import com.rainalarm.app.domain.RadarEntryFocusPolicy
 import com.rainalarm.app.domain.RadarEntryFocusActivationPolicy
 import com.rainalarm.app.domain.RadarMarkerFocusAction
@@ -488,6 +491,11 @@ private data class PendingFollowRefresh(
     val requestGeneration: Int,
 )
 
+private data class RadarEntryStartSignal(
+    val generation: Int,
+    val animate: Boolean,
+)
+
 private fun WindGridAcquisitionState.windDiagnosticState(): String = when (this) {
     is WindGridAcquisitionState.Disabled -> "disabled"
     is WindGridAcquisitionState.AwaitingViewport -> "awaiting_viewport"
@@ -537,7 +545,8 @@ fun LiveRadarScreen(
     onProviderSelection: (SavedPlace, RadarProviderSelection) -> Unit = { _, _ -> },
     onPageSwipeBoundsChanged: (Rect) -> Unit = {},
     screenActive: Boolean = true,
-    entryFocusGeneration: Int = 0,
+    entryTransition: EntryTransitionState = EntryTransitionPolicy.initial(active = true),
+    onEntrySettled: (Int) -> Unit = {},
     featureTourScenario: FeatureTourScenario? = null,
     onFeatureTourTarget: (FeatureTourTargetBounds) -> Unit = {},
 ) {
@@ -552,26 +561,44 @@ fun LiveRadarScreen(
         }.getOrDefault(1f).coerceIn(0f, 10f)
     }
     val animationsEnabled = platformAnimatorScale > 0f
-    val entryFocusProgress = remember { Animatable(1f) }
+    val entryFocusProgress = remember(entryTransition.generation) {
+        Animatable(if (entryTransition.phase == EntryTransitionPhase.SETTLED) 1f else 0f)
+    }
     val markerFocusProgress = remember { Animatable(1f) }
     val markerFocusScope = rememberCoroutineScope()
     var markerFocusToken by remember { mutableIntStateOf(0) }
     var markerFocusRequest by remember { mutableStateOf<RadarMarkerFocusRequest?>(null) }
-    val entryFocusEnabled = RadarEntryFocusActivationPolicy.shouldAnimate(
-        screenActive = screenActive,
-        entryGeneration = entryFocusGeneration,
+    var nativeEntryStart by remember(entryTransition.generation) {
+        mutableStateOf<RadarEntryStartSignal?>(null)
+    }
+    val entryFocusEnabled = RadarEntryFocusActivationPolicy.shouldPrepare(
+        entryPending = entryTransition.phase != EntryTransitionPhase.SETTLED,
+        entryGeneration = entryTransition.generation,
         hasResolvedPlace = place != null,
         waitingForInitialCurrentFix = place?.isCurrentLocation == true &&
             locationState is LocationUiState.Locating,
     )
-    LaunchedEffect(entryFocusGeneration, entryFocusEnabled, animationsEnabled) {
-        if (entryFocusEnabled && animationsEnabled) {
-            entryFocusProgress.snapTo(0f)
-            entryFocusProgress.animateTo(
-                1f,
-                tween(RadarEntryFocusPolicy.DURATION_MILLIS, easing = FastOutSlowInEasing),
-            )
-        } else entryFocusProgress.snapTo(1f)
+    LaunchedEffect(
+        entryTransition.generation,
+        entryTransition.phase,
+        nativeEntryStart,
+        animationsEnabled,
+    ) {
+        when (entryTransition.phase) {
+            EntryTransitionPhase.PREPARED -> entryFocusProgress.snapTo(0f)
+            EntryTransitionPhase.PLAY_REQUESTED -> {
+                val start = nativeEntryStart?.takeIf { it.generation == entryTransition.generation }
+                    ?: return@LaunchedEffect
+                if (start.animate && animationsEnabled) {
+                    entryFocusProgress.animateTo(
+                        1f,
+                        tween(RadarEntryFocusPolicy.DURATION_MILLIS, easing = FastOutSlowInEasing),
+                    )
+                } else entryFocusProgress.snapTo(1f)
+                onEntrySettled(entryTransition.generation)
+            }
+            EntryTransitionPhase.SETTLED -> entryFocusProgress.snapTo(1f)
+        }
     }
     LaunchedEffect(place?.id, markerFocusRequest?.token, animationsEnabled) {
         val request = markerFocusRequest ?: return@LaunchedEffect
@@ -1538,9 +1565,14 @@ fun LiveRadarScreen(
                 refreshProgress = progress,
                 refreshError = error,
                 externalNotice = providerMapNotice,
-                entryFocusGeneration = entryFocusGeneration,
-                entryFocusEnabled = entryFocusEnabled && animationsEnabled,
+                entryTransition = entryTransition,
+                entryFocusEnabled = entryFocusEnabled,
                 entryFocusDurationMillis = RadarEntryFocusPolicy.mapDurationMillis(platformAnimatorScale),
+                onEntryAnimationStart = { generation, animate ->
+                    if (generation == entryTransition.generation) {
+                        nativeEntryStart = RadarEntryStartSignal(generation, animate)
+                    }
+                },
                 markerScale = maxOf(
                     RadarEntryFocusPolicy.markerScale(entryFocusProgress.value),
                     RadarEntryFocusPolicy.markerScale(markerFocusProgress.value),
@@ -1878,9 +1910,10 @@ private fun ColumnScope.RadarPlayer(
     refreshProgress: Pair<Int, Int>,
     refreshError: String?,
     externalNotice: RadarMapNotice?,
-    entryFocusGeneration: Int,
+    entryTransition: EntryTransitionState,
     entryFocusEnabled: Boolean,
     entryFocusDurationMillis: Int,
+    onEntryAnimationStart: (Int, Boolean) -> Unit,
     markerScale: Float,
     onMapBoundsChanged: (Rect) -> Unit,
     featureTourScenario: FeatureTourScenario? = null,
@@ -2122,9 +2155,10 @@ private fun ColumnScope.RadarPlayer(
                 onMapStyleError = { mapStyleError = it },
                 onWindViewportChanged = onWindViewportChanged,
                 onRadarTierChanged = { displayedRadarTier = it },
-                entryFocusGeneration = entryFocusGeneration,
+                entryTransition = entryTransition,
                 entryFocusEnabled = entryFocusEnabled,
                 entryFocusDurationMillis = entryFocusDurationMillis,
+                onEntryAnimationStart = onEntryAnimationStart,
                 markerScale = markerScale,
             )
             featureTourScenario?.let { scenario ->

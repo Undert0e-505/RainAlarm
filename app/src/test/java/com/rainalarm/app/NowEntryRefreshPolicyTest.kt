@@ -41,6 +41,8 @@ class NowEntryRefreshPolicyTest {
         assertTrue(source.contains("forecastRefreshVersion.value == request.refreshVersion"))
         val nowSource = listOf(File("src/main/java/com/rainalarm/app/ui/NowScreen.kt"),
             File("app/src/main/java/com/rainalarm/app/ui/NowScreen.kt")).first(File::isFile).readText()
-        assertTrue(nowSource.contains("val entryProgress = remember(visitGeneration, selectedLocationKey)"))
+        assertTrue(nowSource.contains(
+            "val entryProgress = remember(entryTransition.generation, selectedLocationKey)",
+        ))
     }
 }

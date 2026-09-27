@@ -48,7 +48,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -94,6 +96,9 @@ import com.rainalarm.app.data.FeatureTourScenario
 import com.rainalarm.app.data.PlaceCollection
 import com.rainalarm.app.data.CurrentWeather
 import com.rainalarm.app.data.NowWeatherMetric
+import com.rainalarm.app.domain.EntryTransitionPhase
+import com.rainalarm.app.domain.EntryTransitionPolicy
+import com.rainalarm.app.domain.EntryTransitionState
 import com.rainalarm.app.data.NowCardAppearance
 import com.rainalarm.app.data.CurrentLocationSelectionPolicy
 import com.rainalarm.app.domain.NowVisualGeometry
@@ -146,7 +151,8 @@ fun NowScreen(
     compassAppearance: NowCardAppearance = NowCardAppearance.FOLLOW_APP,
     graphAppearance: NowCardAppearance = NowCardAppearance.FOLLOW_APP,
     refreshStatus: NowRefreshStatus = NowRefreshStatus.Idle,
-    visitGeneration: Int = 0,
+    entryTransition: EntryTransitionState = EntryTransitionPolicy.initial(active = true),
+    onEntrySettled: (Int) -> Unit = {},
     selectedLocationKey: String? = null,
     onChartTimeSelected: (Double) -> Unit = {},
     screenActive: Boolean = true,
@@ -261,7 +267,7 @@ fun NowScreen(
                 )
                 is ForecastUiState.Ready -> NowForecastContent(displayedState.forecast, metrics,
                     refreshOrRetryLocation, weather, visibleWeatherMetrics, compassAppearance, graphAppearance,
-                    refreshStatus, visitGeneration, selectedLocationKey,
+                    refreshStatus, entryTransition, onEntrySettled, selectedLocationKey, screenActive,
                     onChartTimeSelected,
                     if (featureTourScenario != null) featureTourScenario.forecast.sourceLabel else null,
                     if (featureTourScenario != null) null else currentLocationMessage,
@@ -391,7 +397,11 @@ private fun NowCardHeader(status: String, source: String, refresh: (() -> Unit)?
 private fun NowForecastContent(forecast: ForecastSnapshot, metrics: NowLayoutMetrics,
     refresh: () -> Unit, weather: CurrentWeather?, visibleWeatherMetrics: Set<NowWeatherMetric>,
     compassAppearance: NowCardAppearance, graphAppearance: NowCardAppearance,
-    refreshStatus: NowRefreshStatus, visitGeneration: Int, selectedLocationKey: String?,
+    refreshStatus: NowRefreshStatus,
+    entryTransition: EntryTransitionState,
+    onEntrySettled: (Int) -> Unit,
+    selectedLocationKey: String?,
+    screenActive: Boolean,
     onChartTimeSelected: (Double) -> Unit,
     exampleLabel: String? = null,
     locationNotice: String? = null,
@@ -443,11 +453,43 @@ private fun NowForecastContent(forecast: ForecastSnapshot, metrics: NowLayoutMet
             ) > 0f
         }.getOrDefault(true)
     }
-    val entryProgress = remember(visitGeneration, selectedLocationKey) { Animatable(0f) }
-    LaunchedEffect(visitGeneration, selectedLocationKey, animationsEnabled) {
-        if (animationsEnabled) entryProgress.animateTo(
-            1f, tween(NowMotionPolicy.durationMillis, easing = FastOutSlowInEasing),
-        ) else entryProgress.snapTo(1f)
+    var animatedLocationKey by remember { mutableStateOf(selectedLocationKey) }
+    val locationChanged = animatedLocationKey != selectedLocationKey
+    val entryProgress = remember(entryTransition.generation, selectedLocationKey) {
+        Animatable(
+            if (entryTransition.phase == EntryTransitionPhase.SETTLED && !locationChanged) 1f else 0f,
+        )
+    }
+    LaunchedEffect(
+        entryTransition.generation,
+        entryTransition.phase,
+        selectedLocationKey,
+        animationsEnabled,
+    ) {
+        val shouldAnimateLocationChange = animatedLocationKey != selectedLocationKey
+        animatedLocationKey = selectedLocationKey
+        when (entryTransition.phase) {
+            EntryTransitionPhase.PREPARED -> entryProgress.snapTo(0f)
+            EntryTransitionPhase.PLAY_REQUESTED -> {
+                if (animationsEnabled) {
+                    entryProgress.animateTo(
+                        1f,
+                        tween(NowMotionPolicy.durationMillis, easing = FastOutSlowInEasing),
+                    )
+                } else entryProgress.snapTo(1f)
+                onEntrySettled(entryTransition.generation)
+            }
+            EntryTransitionPhase.SETTLED -> {
+                // A selected-place change intentionally receives the same focus motion, while an
+                // ordinary refresh/recomposition reuses the already-settled Animatable.
+                if (shouldAnimateLocationChange && screenActive && animationsEnabled) {
+                    entryProgress.animateTo(
+                        1f,
+                        tween(NowMotionPolicy.durationMillis, easing = FastOutSlowInEasing),
+                    )
+                } else entryProgress.snapTo(1f)
+            }
+        }
     }
     val visibleProgress = if (animationsEnabled) entryProgress.value else 1f
     NowCardTheme(compassAppearance) {

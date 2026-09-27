@@ -55,7 +55,7 @@ class RadarLiveMapWiringTest {
         assertTrue(screen.contains("onValueChange = {\n                chartTimeRequest?.let"))
         assertTrue(screen.contains("cursor = it.takeIf { value -> value.isFinite() }"))
         assertTrue(screen.contains("playing = false"))
-        assertTrue(screen.contains("RadarEntryFocusActivationPolicy.shouldAnimate("))
+        assertTrue(screen.contains("RadarEntryFocusActivationPolicy.shouldPrepare("))
         assertTrue(!screen.contains("!followLive && !(place.isCurrentLocation"))
     }
 }

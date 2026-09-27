@@ -90,7 +90,7 @@ class BacklogFeatureWiringTest {
     @Test fun `Travel focus and Radar edge gesture wiring use retained live screen state`() {
         val radar = source("app/src/main/java/com/rainalarm/app/ui/RadarScreen.kt")
         val map = source("app/src/main/java/com/rainalarm/app/ui/RadarImageMap.kt")
-        assertTrue(radar.contains("entryFocusGeneration"))
+        assertTrue(radar.contains("entryTransition: EntryTransitionState"))
         assertTrue(radar.contains("RadarPageGestureExclusions(radarMapBounds, screenActive)"))
         assertTrue(radar.contains("RadarPageSwipePolicy.destinationDelta"))
         assertTrue(radar.contains("RadarPageSwipeEvent.Begin"))
@@ -100,7 +100,7 @@ class BacklogFeatureWiringTest {
         assertTrue(radar.contains("R.string.radar_travel_mode"))
         assertTrue(radar.contains("activateTravelMode"))
         assertTrue(map.contains("RadarEntryFocusPolicy.startZoom"))
-        assertTrue(map.contains("entryFocusGeneration"))
+        assertTrue(map.contains("RadarEntryFrameHandshake"))
     }
 
     @Test fun `manifest exposes static per-app locales and pseudo locales remain debug only`() {

@@ -83,12 +83,12 @@ object RadarEntryFocusPolicy {
  * Travel state. Live GPS fixes may recompose the retained page many times without replaying it.
  */
 object RadarEntryFocusActivationPolicy {
-    fun shouldAnimate(
-        screenActive: Boolean,
+    fun shouldPrepare(
+        entryPending: Boolean,
         entryGeneration: Int,
         hasResolvedPlace: Boolean,
         waitingForInitialCurrentFix: Boolean,
-    ): Boolean = screenActive && entryGeneration > 0 && hasResolvedPlace &&
+    ): Boolean = entryPending && entryGeneration > 0 && hasResolvedPlace &&
         !waitingForInitialCurrentFix
 }
 

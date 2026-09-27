@@ -92,17 +92,17 @@ class RadarPresentationTest {
         assertEquals(500, RadarEntryFocusPolicy.mapDurationMillis(.5f))
         assertEquals(1_000, RadarEntryFocusPolicy.mapDurationMillis(1f))
         assertEquals(2_000, RadarEntryFocusPolicy.mapDurationMillis(2f))
-        assertTrue(RadarEntryFocusActivationPolicy.shouldAnimate(
-            screenActive = true,
+        assertTrue(RadarEntryFocusActivationPolicy.shouldPrepare(
+            entryPending = true,
             entryGeneration = 4,
             hasResolvedPlace = true,
             waitingForInitialCurrentFix = false,
         ))
         // Travel/follow is deliberately not an input: a retained live page still animates once
         // for each destination-entry generation, while GPS recompositions reuse that generation.
-        assertFalse(RadarEntryFocusActivationPolicy.shouldAnimate(true, 0, true, false))
-        assertFalse(RadarEntryFocusActivationPolicy.shouldAnimate(false, 4, true, false))
-        assertFalse(RadarEntryFocusActivationPolicy.shouldAnimate(true, 4, false, true))
+        assertFalse(RadarEntryFocusActivationPolicy.shouldPrepare(true, 0, true, false))
+        assertFalse(RadarEntryFocusActivationPolicy.shouldPrepare(false, 4, true, false))
+        assertFalse(RadarEntryFocusActivationPolicy.shouldPrepare(true, 4, false, true))
 
         assertEquals(-1, RadarPageSwipePolicy.destinationDelta(
             RadarPageEdge.PREVIOUS, 80f, 5f,
