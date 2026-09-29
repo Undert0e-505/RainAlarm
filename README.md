@@ -12,11 +12,13 @@ The launcher artwork is the project owner's supplied Android icon pack, included
 
 Tap a preview for the full-size image.
 
-| Now · Leeds | Radar · Leeds |
+| Radar · Dark | Radar · Light |
 | :---: | :---: |
-| [<img src="docs/screenshots/now-leeds.jpg" width="170" alt="Now screen for Leeds showing a rain-arrival compass, weather readouts, and next-47-minutes intensity chart">](docs/screenshots/now-leeds.jpg) | [<img src="docs/screenshots/radar-leeds.jpg" width="170" alt="Radar map around Leeds with blue rain overlay and a continuous observation-to-forecast timeline">](docs/screenshots/radar-leeds.jpg) |
-| Places | Settings · notifications and indicators |
-| [<img src="docs/screenshots/places.jpg" width="170" alt="Places screen with saved locations, search, and live current-location selection">](docs/screenshots/places.jpg) | [<img src="docs/screenshots/settings-notifications-providers-indicators.jpg" width="170" alt="Settings for rain notifications, radar data provider, and Now weather indicators">](docs/screenshots/settings-notifications-providers-indicators.jpg) |
+| [<img src="docs/screenshots/radar-dark-baltinglass.gif" width="250" alt="Animated dark Radar screen for Baltinglass showing a complete observation-to-forecast rain timeline sweep">](docs/screenshots/radar-dark-baltinglass.gif) | [<img src="docs/screenshots/radar-light-baltinglass.gif" width="250" alt="Animated light Radar screen for Baltinglass showing a complete observation-to-forecast rain timeline sweep">](docs/screenshots/radar-light-baltinglass.gif) |
+| Now · Baltinglass | Places |
+| [<img src="docs/screenshots/now-baltinglass.jpg" width="250" alt="Now screen for Baltinglass showing rain arrival, direction, weather readings, and the next 48 minutes">](docs/screenshots/now-baltinglass.jpg) | [<img src="docs/screenshots/places-baltinglass.jpg" width="250" alt="Places screen with Baltinglass selected, place search, map selection, and live current location">](docs/screenshots/places-baltinglass.jpg) |
+| Settings · providers and indicators | Settings · playback and appearance |
+| [<img src="docs/screenshots/settings-providers.jpg" width="250" alt="Settings for rain notifications, preferred radar provider, and Now weather indicators">](docs/screenshots/settings-providers.jpg) | [<img src="docs/screenshots/settings-appearance.jpg" width="250" alt="Settings for radar playback speed and app, map, compass, and graph appearance">](docs/screenshots/settings-appearance.jpg) |
 
 ## First launch and defaults
 
