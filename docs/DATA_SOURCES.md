@@ -298,8 +298,9 @@ References:
   ordinary Current, never Follow navigation truth, and it does not race a good
   GPS fix merely because it is newer.
 - Ordinary foreground Current requests target a 5-second interval (2-second
-  minimum). Visible Follow requests target 1 second (500 ms minimum), zero
-  batching and a briefly awaited accurate first fix. Follow requires the Fine /
+  minimum). Visible Follow requests precise fixes on a 200 ms raster, with
+  zero batching and a briefly awaited accurate first fix; Android and the GNSS
+  hardware may deliver updates more slowly. Follow requires the Fine /
   Precise permission choice, is opt-in, is not persisted, and stops when Radar
   leaves composition, Current is deselected or the app backgrounds. The screen
   is kept on only for that same visible-Follow interval. Follow adds no
