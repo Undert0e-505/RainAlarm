@@ -27,6 +27,8 @@ internal object WeatherDataStatusPolicy {
         return "${kind.label} loading$progress"
     }
 
+    fun preparing(kind: WeatherDataKind): String = "${kind.label} preparing"
+
     fun unavailable(kind: WeatherDataKind): String = "${kind.label} unavailable"
 }
 
@@ -45,6 +47,9 @@ internal fun localizedWeatherStatus(value: String): String {
         if (value.startsWith(loading)) {
             return stringResource(R.string.weather_status_loading, localizedKind,
                 value.removePrefix(loading))
+        }
+        if (value == "${kind.label} preparing") {
+            return stringResource(R.string.weather_status_preparing, localizedKind)
         }
         if (value == "${kind.label} unavailable") {
             return stringResource(R.string.weather_status_unavailable, localizedKind)
@@ -519,10 +524,14 @@ internal object WeatherReplacementPresentationPolicy {
         lastRequestedIdentity: String?,
     ): AncillaryStatus = when {
         phase == WeatherReplacementPhase.LOADING -> AncillaryStatus.Loading
-        phase == WeatherReplacementPhase.UNAVAILABLE ->
+        phase == WeatherReplacementPhase.UNAVAILABLE && source !is AncillaryStatus.Satellite ->
             AncillaryStatus.Unavailable(WeatherDataStatusPolicy.unavailable(kind))
+        // A failed replacement is not evidence that a verified, already-renderable catalog
+        // disappeared. Keep the last good imagery instead of flashing an unavailable status.
+        phase == WeatherReplacementPhase.UNAVAILABLE -> source
         staleIdentity != null && staleIdentity == lastRequestedIdentity ->
-            AncillaryStatus.Unavailable(WeatherDataStatusPolicy.unavailable(kind))
+            source.takeIf { it is AncillaryStatus.Satellite }
+                ?: AncillaryStatus.Unavailable(WeatherDataStatusPolicy.unavailable(kind))
         staleIdentity != null -> AncillaryStatus.Loading
         else -> source
     }

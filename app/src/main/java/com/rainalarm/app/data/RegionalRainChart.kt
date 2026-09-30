@@ -225,15 +225,24 @@ class RegionalRainChartService(
     private val endpoint: RegionalRainChartEndpoint = HttpRegionalRainChartEndpoint(),
     private val cache: RegionalAreaIdCache = RegionalAreaIdCache.shared,
 ) {
+    /** Small direct Now feed used by autonomous widgets before any raster fallback is considered. */
+    suspend fun load(
+        place: SavedPlace,
+        nowEpochSeconds: Long,
+        travelBearingDegrees: Double? = null,
+    ): RainMinuteSeries {
+        val areaId = cache.get(place, nowEpochSeconds) ?: RegionalRainChartParser
+            .lookupAreaId(endpoint.lookup(place)).also { cache.put(place, it, nowEpochSeconds) }
+        val chart = RegionalRainChartParser.parseChart(endpoint.chart(areaId), areaId)
+        return RegionalRainChartSeries.build(chart, nowEpochSeconds, travelBearingDegrees)
+    }
+
     suspend fun preferChart(
         place: SavedPlace,
         nowEpochSeconds: Long,
         rasterFallback: RainMinuteSeries,
     ): RainMinuteSeries = try {
-        val areaId = cache.get(place, nowEpochSeconds) ?: RegionalRainChartParser
-            .lookupAreaId(endpoint.lookup(place)).also { cache.put(place, it, nowEpochSeconds) }
-        val chart = RegionalRainChartParser.parseChart(endpoint.chart(areaId), areaId)
-        RegionalRainChartSeries.build(chart, nowEpochSeconds, rasterFallback.travelBearingDegrees)
+        load(place, nowEpochSeconds, rasterFallback.travelBearingDegrees)
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (_: Exception) {

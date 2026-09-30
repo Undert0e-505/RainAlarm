@@ -43,7 +43,7 @@
     <string name="places_edit_description">Rename %1$s</string>
     <string name="places_delete_description">Delete %1$s</string>
     <string name="places_privacy">Privacy</string>
-    <string name="places_privacy_body">No accounts, ads, analytics, billing, or background location. Saved-place alerts use stored coordinates; live coordinates stay in memory unless you save the current fix.</string>
+    <string name="places_privacy_body">No accounts, ads, analytics, billing, or background location. Saved-place alerts and widgets use stored coordinates; live coordinates stay in memory unless you save the current fix.</string>
     <string name="places_rename_title">Rename saved place</string>
     <string name="places_name_label">Place name</string>
     <string name="places_name_error">Enter 1–60 characters without control characters</string>
@@ -63,6 +63,7 @@
     <string name="settings_title">Settings</string>
     <string name="settings_subtitle">Make the radar yours</string>
     <string name="settings_rain_notification">Rain notification</string>
+    <string name="settings_lightning_notification">Lightning activity notification</string>
     <string name="settings_provider_heading">PREFERRED RADAR PROVIDER</string>
     <string name="settings_show_snow">Show likely snow</string>
     <string name="settings_indicators_heading">NOW INDICATORS</string>
@@ -136,8 +137,8 @@
     <string name="now_severe">Severe</string>
     <string name="now_medium">Medium</string>
     <string name="now_light">Light</string>
-    <string name="notification_channel_name">Rain approaching</string>
-    <string name="notification_channel_description">Low-noise alerts when radar motion suggests rain is approaching</string>
+    <string name="notification_channel_name">Rain and lightning alerts</string>
+    <string name="notification_channel_description">Low-noise alerts for approaching rain and nearby observed lightning activity</string>
     <string name="notification_rain_title">Rain approaching %1$s</string>
     <string name="notification_snow_title">Snow likely approaching %1$s</string>
     <string name="notification_eta">In %1$d min · around %2$s</string>
@@ -168,8 +169,10 @@
     <string name="settings_about_map_body">© OpenStreetMap contributors, rendered through OpenFreeMap/OpenMapTiles. Required compact map attribution remains on the map.</string>
     <string name="settings_about_model_body">Open-Meteo model/current weather and Wind are provided under CC BY 4.0.</string>
     <string name="settings_about_satellite_body">© EUMETSAT (CC BY 4.0). Clouds show cloud structures or fog/low cloud, not confirmed surface fog; Lightning shows accumulated flash areas.</string>
+    <string name="settings_about_background_monitoring_body">Lightning is a five-minute accumulated optical flash-area observation, not a strike forecast. When an alert or widget needs it, Rain Alarm checks a bounded area within 15 km of the monitored place during the approximately 15-minute background update.</string>
     <string name="settings_about_search_body">Towns use Open-Meteo/GeoNames; named places use Photon with © OpenStreetMap data and a Wikipedia/Wikimedia fallback. UK postcodes use postcodes.io. Contains Ordnance Survey, Crown, Royal Mail and National Statistics database rights.</string>
     <string name="settings_about_privacy_body">No accounts, ads or analytics. Requests expose ordinary network metadata to the selected map, weather and search services.</string>
+    <string name="settings_about_widget_privacy_body">Widgets store one saved-place snapshot and normalized weather state on this device. Saved coordinates go directly to the selected weather services; widgets never use Current location. Rain Alarm does not request background location.</string>
     <string name="settings_provider_pinned">Pinned default</string>
     <string name="settings_provider_available">Available here</string>
     <string name="settings_provider_no_coverage">No published coverage here</string>
@@ -203,13 +206,65 @@
     <string name="notification_status_unknown">%1$s: no confident radar nowcast</string>
     <string name="notification_status_network">Unavailable: network error</string>
     <string name="notification_status_radar">Unavailable: radar could not be analysed</string>
+    <string name="notification_status_lightning_detected">%1$s: lightning activity detected nearby</string>
+    <string name="notification_status_lightning_clear">%1$s: no recent lightning activity detected nearby</string>
+    <string name="notification_status_lightning_unavailable">Lightning activity unavailable</string>
+    <string name="notification_lightning_title">Lightning activity detected near %1$s</string>
+    <string name="notification_lightning_detail">Lightning activity was detected within %1$d km.</string>
+    <string name="notification_combined_title">Rain approaching %1$s · lightning activity nearby</string>
+    <string name="notification_combined_summary">%1$s · lightning activity detected nearby</string>
+    <string name="notification_combined_detail">%1$s · Lightning activity was detected within %2$d km.</string>
+    <string name="notification_rain_approaching">Rain approaching</string>
+    <string name="widget_description">Rain Alarm weather widget</string>
+    <string name="widget_tap_to_configure">Tap to configure</string>
+    <string name="widget_open_to_update">Open Rain Alarm to update this location</string>
+    <string name="widget_updating">Updating</string>
+    <string name="widget_update_unavailable">Update unavailable</string>
+    <string name="widget_update_unavailable_at">Update unavailable · last %1$s</string>
+    <string name="widget_updated_at">Updated %1$s</string>
+    <string name="widget_lightning_nearby">⚡ Lightning nearby</string>
+    <string name="widget_no_recent_lightning">No recent lightning</string>
+    <string name="widget_stops_at">Stops %1$s</string>
+    <string name="widget_graph_description">Next-hour rain intensity graph</string>
+    <string name="widget_rain_now">Rain now</string>
+    <string name="widget_rain_in">Rain in %1$d min</string>
+    <string name="widget_snow_now">Likely snow now</string>
+    <string name="widget_snow_in">Likely snow in %1$d min</string>
+    <string name="widget_dry_next_hour">Dry next hour</string>
+    <string name="widget_configure_title">Rain Alarm widget</string>
+    <string name="widget_configure_subtitle">Choose what this widget monitors and shows.</string>
+    <string name="widget_location_heading">LOCATION</string>
+    <string name="widget_no_saved_places">Add a saved place before configuring a widget.</string>
+    <string name="widget_open_places">Open Places</string>
+    <string name="widget_compact_content_heading">1×1 CONTENT</string>
+    <string name="widget_content_smart">Smart</string>
+    <string name="widget_content_rain">Rain</string>
+    <string name="widget_content_lightning">Lightning</string>
+    <string name="widget_content_temperature">Temperature</string>
+    <string name="widget_appearance_heading">APPEARANCE</string>
+    <string name="widget_background_opacity">Background opacity</string>
+    <string name="widget_percent">%1$d%%</string>
+    <string name="widget_preview_description">Widget preview at %1$d percent background opacity</string>
+    <string name="widget_preview_place">Example place</string>
+    <string name="widget_quiet_hours_heading">NOTIFICATIONS</string>
+    <string name="widget_quiet_hours">Do not disturb</string>
+    <string name="widget_quiet_off">Do not disturb · Off</string>
+    <string name="widget_quiet_summary">Do not disturb · %1$s–%2$s</string>
+    <string name="widget_quiet_start">Start</string>
+    <string name="widget_quiet_end">End</string>
+    <string name="widget_quiet_times_differ">Start and end times must differ.</string>
+    <string name="widget_quiet_help">Weather updates continue during quiet hours; only notifications are silenced.</string>
+    <string name="widget_save">Save widget</string>
+    <string name="widget_configuration_required">Choose a saved place · tap to configure</string>
+    <string name="radar_lightning_temporary_state">Temporarily enabled</string>
+    <string name="radar_lightning_temporary_notice">Lightning shown temporarily · tap to keep on</string>
     <string name="metric_temperature">Temperature</string><string name="metric_pressure">Pressure</string><string name="metric_humidity">Humidity</string><string name="metric_uv">UV index</string><string name="metric_wind">Wind</string>
     <string name="common_enabled">Enabled</string><string name="common_disabled">Disabled</string>
     <string name="layer_wind">Wind</string><string name="layer_lightning">Lightning</string><string name="layer_clouds">Clouds</string>
     <string name="direction_north_short">N</string><string name="direction_east_short">E</string><string name="direction_south_short">S</string><string name="direction_west_short">W</string>
     <string name="forecast_unavailable">Forecast unavailable. Tap refresh to try again.</string><string name="settings_save_failed">Couldn’t save this setting. Please try again.</string><string name="location_permission_unavailable">Location permission is unavailable. Select a saved place or grant foreground location.</string><string name="location_weak">Location accuracy is temporarily weak.</string><string name="location_provisional">Using a provisional location while a more accurate fix is acquired.</string><string name="location_approximate">Using approximate location. Enable precise location for Travel mode.</string>
     <string name="weather_kind_location">Location</string><string name="weather_kind_radar">Radar</string><string name="weather_kind_wind">Wind</string><string name="weather_kind_clouds">Clouds</string><string name="weather_kind_lightning">Lightning</string>
-    <string name="weather_status_loading">%1$s loading%2$s</string><string name="weather_status_unavailable">%1$s unavailable</string>
+    <string name="weather_status_loading">%1$s loading%2$s</string><string name="weather_status_preparing">%1$s preparing</string><string name="weather_status_unavailable">%1$s unavailable</string>
     <string name="now_current_radar">Current radar</string><string name="now_next_minutes">Next %1$d minutes</string><string name="now_dry_next_hour">Dry next hour</string>
     <string name="now_source_area_forecast">AREA FORECAST</string><string name="now_source_estimate">EST</string><string name="now_source_radar">RADAR</string>
     <string name="now_fresh_now">now</string><string name="now_fresh_minutes">%1$d min ago</string><string name="now_coverage_through"> · through +%1$d min</string>
@@ -263,4 +318,7 @@
     <string name="feature_tour_skip">Skip tour</string>
     <string name="feature_tour_step_count">Step %1$d of %2$d</string>
     <string name="feature_tour_pane">Rain Alarm app tour</string>
+    <string name="radar_travel_auto_badge">AUTO</string>
+    <string name="radar_travel_auto_accessibility">Travel time automatic</string>
+    <string name="radar_current_time_unavailable">Current radar time unavailable</string>
 </resources>

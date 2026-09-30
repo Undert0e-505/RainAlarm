@@ -40,6 +40,50 @@ class RadarMapRevealGateTest {
         assertFalse(gate.isCovered)
     }
 
+    @Test fun fullMapCallbackRecoversWhenPairedFrameStartEdgeIsLost() {
+        val gate = RadarMapRevealGate()
+        val generation = gate.styleRequested()
+        assertFalse(gate.mapRendered(true)) // A default/pre-style map must stay covered.
+        assertTrue(gate.styleLoaded(generation))
+        assertFalse(gate.mapRendered(false))
+        assertTrue(gate.mapRendered(true))
+        assertFalse(gate.isCovered)
+        assertFalse(gate.mapRendered(true))
+    }
+
+    @Test fun rendererRecoveryRepaintsThenRecreatesOnlyOnce() {
+        assertTrue(RadarMapRecoveryPolicy.REPAINT_AFTER_MILLIS in 1..1_999L)
+        assertTrue(
+            RadarMapRecoveryPolicy.RECREATE_AFTER_MILLIS >
+                RadarMapRecoveryPolicy.REPAINT_AFTER_MILLIS,
+        )
+        assertTrue(RadarMapRecoveryPolicy.RECREATE_AFTER_MILLIS <= 5_000L)
+        assertTrue(RadarMapRecoveryPolicy.shouldRecreate(true, 0))
+        assertFalse(RadarMapRecoveryPolicy.shouldRecreate(false, 0))
+        assertFalse(RadarMapRecoveryPolicy.shouldRecreate(true, 1))
+    }
+
+    @Test fun manualRefreshRecoversOnlyAnActuallyUnhealthyRenderer() {
+        assertFalse(
+            RadarManualRefreshPolicy.shouldRecoverRenderer(RadarRendererStatus.Ready, null),
+        )
+        assertFalse(
+            RadarManualRefreshPolicy.shouldRecoverRenderer(RadarRendererStatus.Loading, null),
+        )
+        assertTrue(
+            RadarManualRefreshPolicy.shouldRecoverRenderer(
+                RadarRendererStatus.Error("renderer failed"),
+                null,
+            ),
+        )
+        assertTrue(
+            RadarManualRefreshPolicy.shouldRecoverRenderer(
+                RadarRendererStatus.Ready,
+                "style failed",
+            ),
+        )
+    }
+
     @Test fun themeChangeRejectsSupersededStyleAndQueuedFrame() {
         val gate = RadarMapRevealGate()
         val dark = gate.styleRequested()
@@ -88,8 +132,12 @@ class RadarMapRevealGateTest {
         ).first(File::isFile).readText()
         assertFalse(source.contains("key(session)"))
         assertTrue(source.contains("session: RadarSession?"))
-        assertTrue(source.contains("val mapView = remember(density) {"))
-        assertTrue(source.contains("val desiredRadarSlot = remember(session)"))
+        assertTrue(source.contains("val mapView = remember(\n        density,\n        rendererRecoveryGeneration,"))
+        assertTrue(source.contains("val desiredRadarSlot = remember(mapView, session)"))
+        assertTrue(source.contains("var map by remember(mapView)"))
+        assertTrue(source.contains("var activeRadarSlot by remember(mapView)"))
+        assertTrue(source.contains("var pendingRadarSlot by remember(mapView)"))
+        assertTrue(source.contains("key(mapView) {\n        AndroidView("))
         assertTrue(source.contains("val teardown = remember(mapView)"))
         assertTrue(source.contains("private class RadarBaseMarkerView"))
         assertTrue(source.contains("baseMarkerView.visibility = if (nativePresentationGate.isHidden)"))
@@ -107,14 +155,19 @@ class RadarMapRevealGateTest {
         assertTrue(source.contains("mapRevealGate.styleLoaded(styleGeneration)"))
         assertTrue(source.contains("MapView.OnWillStartRenderingFrameListener"))
         assertTrue(source.contains("MapView.OnDidFinishRenderingFrameListener"))
+        assertTrue(source.contains("MapView.OnDidFinishRenderingMapListener"))
         assertTrue(source.contains("mapRevealGate.frameStarted()"))
         assertTrue(source.contains("mapRevealGate.frameRendered(fully)"))
+        assertTrue(source.contains("mapRevealGate.mapRendered(fully)"))
         assertTrue(source.contains(".foregroundLoadColor(RadarMapAppearance.rendererForegroundArgb())"))
         assertTrue(source.contains("container.setBackgroundColor(RadarMapAppearance.loadingBackgroundArgb(mapStyle))"))
         assertTrue(source.contains("mapView.removeOnWillStartRenderingFrameListener(startingListener)"))
         assertTrue(source.contains("mapView.removeOnDidFinishRenderingFrameListener(renderedListener)"))
+        assertTrue(source.contains("mapView.removeOnDidFinishRenderingMapListener(renderedMapListener)"))
         assertTrue(source.contains("mapView.removeOnDidFailLoadingMapListener(failedListener)"))
         assertTrue(source.contains("mapRevealGate.markFailed()"))
+        assertTrue(source.contains("RadarMapRecoveryPolicy.REPAINT_AFTER_MILLIS"))
+        assertTrue(source.contains("currentAutomaticRendererRecreation()"))
     }
 
     @Test fun darkAndSlateAreDistinctStyleChangesWithoutRecreatingSessionOrCamera() {

@@ -5,6 +5,7 @@ import com.rainalarm.app.data.RadarSession
 import com.rainalarm.app.data.PlaceCoordinatePolicy
 import com.rainalarm.app.data.RegionalRadarAreas
 import com.rainalarm.app.data.SavedPlace
+import com.rainalarm.app.data.forecastSelectionKey
 import com.rainalarm.app.domain.GeoQuad
 import kotlin.math.asin
 import kotlin.math.cos
@@ -26,13 +27,24 @@ internal object RadarLiveSessionPolicy {
         acquisitionAnchor: SavedPlace = session.place,
     ): Boolean {
         if (session.isReleased) return false
-        if (!selectionCompatible(acquisitionAnchor, selected)) return false
+        // A regional or retained raster is location-independent inside its published footprint.
+        // Saved -> Travel and subsequent live fixes must not discard it merely because the point
+        // moved more than the duplicate-place tolerance.
+        if (session.region == null && session.regional == null && session.detail == null &&
+            !selectionCompatible(acquisitionAnchor, selected)
+        ) return false
         return canReuse(
             loaded = acquisitionAnchor,
             selected = selected,
             regionId = session.region?.id,
             retainedBounds = session.regional?.bounds ?: session.detail?.bounds,
         )
+    }
+
+    /** Stable effect key: ordinary Travel fixes inside one feed region never restart acquisition. */
+    fun acquisitionLocationKey(selected: SavedPlace?): String? = selected?.let { place ->
+        RegionalRadarAreas.forPoint(place.latitude, place.longitude)?.id?.let { "region:$it" }
+            ?: if (place.isCurrentLocation) "current:unbounded" else forecastSelectionKey(place)
     }
 
     /**

@@ -37,8 +37,9 @@ enum class EumetProduct(
     val conceptualLayer: RadarMapLayer,
     val maxAgeSeconds: Long,
     val nominalCadenceSeconds: Long,
+    val styleName: String? = null,
 ) {
-    LIGHTNING("mtg_fd:li_afa", RadarMapLayer.LIGHTNING, 1_800L, 300L),
+    LIGHTNING("mtg_fd:li_afa", RadarMapLayer.LIGHTNING, 1_800L, 300L, "mtg_li_afa"),
     CLOUD_TYPE("mtg_fd:rgb_cloudtype", RadarMapLayer.FOG, 3_600L, 600L),
     FOG_LOW_CLOUD("mtg_fd:rgb_fog", RadarMapLayer.FOG, 3_600L, 600L),
     ;
@@ -89,7 +90,8 @@ data class EumetLayerMetadata(
     /** MapLibre's TileSet preserves this substitution token (raw URL constructors may not). */
     fun tileUrl(): String = "https://view.eumetsat.int/geoserver/wms?service=WMS&version=1.1.1" +
         "&request=GetMap&layers=${URLEncoder.encode(layerName, "UTF-8")}" +
-        "&styles=&format=image%2Fpng&transparent=true&srs=EPSG%3A3857" +
+        "&styles=${URLEncoder.encode(product.styleName.orEmpty(), "UTF-8")}" +
+        "&format=image%2Fpng&transparent=true&srs=EPSG%3A3857" +
         "&bbox={bbox-epsg-3857}&width=256&height=256" +
         "&time=${URLEncoder.encode(Instant.ofEpochSecond(validEpochSeconds).toString(), "UTF-8")}"
 
@@ -307,6 +309,29 @@ object EumetViewRepository {
             EumetCapabilities.parse(bytes, product).also { metadataCache[product] = now to it }
         }
         verifyFrameLocked(value, place, force, now)
+    }
+
+    /**
+     * Hardened capabilities-only path for bounded analytical requests. Unlike a map overlay it
+     * does not first download a second place probe; the caller validates its own exact product
+     * image before drawing any conclusion.
+     */
+    suspend fun advertisedMetadata(
+        product: EumetProduct,
+        force: Boolean = false,
+    ): EumetLayerMetadata = mutex.withLock {
+        val now = Instant.now().epochSecond
+        val cached = metadataCache[product]
+        val value = if (!force && cached != null && now - cached.first in 0..300) cached.second else {
+            val bytes = fetch(
+                "https://$HOST/geoserver/wms?service=WMS&version=1.3.0&request=GetCapabilities",
+                1024 * 1024,
+                "xml",
+            )
+            EumetCapabilities.parse(bytes, product).also { metadataCache[product] = now to it }
+        }
+        require(value.freshAt(now)) { "Satellite image is delayed" }
+        value
     }
 
     suspend fun metadata(

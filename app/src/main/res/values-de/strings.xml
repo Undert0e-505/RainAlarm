@@ -6,7 +6,7 @@
     <string name="current_location">Aktueller Standort</string><string name="selected_now">Jetzt ausgewählt</string><string name="opens_on_startup">Beim Start öffnen</string><string name="make_startup">Beim Start öffnen</string>
     <string name="places_title">Orte</string><string name="places_subtitle">Wähle, was Jetzt und Radar anzeigen.</string><string name="places_search_hint">Ort oder Postleitzahl suchen</string><string name="places_search_description">Orte suchen</string><string name="places_no_matches">Keine passenden Orte</string><string name="places_add_select">Hinzufügen und auswählen</string><string name="places_choose_map">Auf Karte wählen</string><string name="places_saved_heading">Gespeicherte Orte</string><string name="places_reorder_hint">Zum Sortieren am Griff ziehen</string>
 <string name="places_current_available">Live-Standort verfügbar</string><string name="places_current_locating">Aktueller Standort wird gesucht…</string><string name="places_current_unavailable">Aktueller Standort nicht verfügbar</string><string name="places_use_current">Aktuellen Live-Standort verwenden</string><string name="places_retry_current">Aktuellen Standort erneut suchen</string><string name="places_save_current">Diesen Standort speichern</string><string name="places_current_selected_status">Ausgewählt: aktueller Live-Standort · nicht gespeichert</string><string name="places_current_saved_status">Standort bereits gespeichert</string><string name="places_live_location_match">Entspricht dem Live-Standort</string><string name="places_not_startup">Wird nicht beim Start geöffnet</string><string name="places_startup_current_description">%1$s wird beim Start geöffnet</string><string name="places_startup_set_description">%1$s beim Start öffnen</string><string name="places_edit_description">%1$s umbenennen</string><string name="places_delete_description">%1$s löschen</string>
-    <string name="places_privacy">Datenschutz</string><string name="places_privacy_body">Keine Konten, Werbung, Analyse, Abrechnung oder Hintergrundortung. Warnungen für gespeicherte Orte verwenden gespeicherte Koordinaten; Live-Koordinaten bleiben im Speicher, sofern du den aktuellen Standort nicht speicherst.</string>
+<string name="places_privacy">Datenschutz</string><string name="places_privacy_body">Keine Konten, Werbung, Analyse, Abrechnung oder Hintergrundortung. Warnungen und Widgets für gespeicherte Orte verwenden gespeicherte Koordinaten; Live-Koordinaten bleiben im Speicher, sofern du den aktuellen Standort nicht speicherst.</string>
     <string name="places_rename_title">Gespeicherten Ort umbenennen</string><string name="places_name_label">Ortsname</string><string name="places_name_error">1–60 Zeichen ohne Steuerzeichen eingeben</string><string name="places_deleted">%1$s gelöscht</string><string name="places_delete_failed">%1$s konnte nicht gelöscht werden. Erneut versuchen.</string><string name="places_duplicate">Ein gespeicherter Ort verwendet diese Koordinaten bereits.</string><string name="places_drag_description">%1$s halten und zum Sortieren ziehen</string><string name="places_coordinates">%1$s · %2$s</string><string name="places_move_up">%1$s nach oben</string><string name="places_move_down">%1$s nach unten</string><string name="places_overflow_description">Aktionen für %1$s</string>
 <string name="picker_title">Auf Karte wählen</string><string name="picker_instruction">Karte bewegen, bis das Fadenkreuz den Ort markiert.</string><string name="picker_confirm">Diese Koordinaten verwenden</string><string name="picker_coordinate_name">Ort bei %1$.4f, %2$.4f</string><string name="picker_resolving_name">Ortsname wird gesucht…</string>
     <string name="settings_title">Einstellungen</string><string name="settings_subtitle">Radar anpassen</string><string name="settings_rain_notification">Regenbenachrichtigung</string><string name="settings_provider_heading">BEVORZUGTER RADARANBIETER</string><string name="settings_show_snow">Wahrscheinlichen Schnee anzeigen</string><string name="settings_indicators_heading">JETZT-ANZEIGEN</string><string name="settings_animation_heading">ANIMATION</string><string name="settings_playback_speed">Radar-Wiedergabegeschwindigkeit</string><string name="settings_playback_help">Startet pausiert. Geschwindigkeit beim Abspielen oder Verschieben ändern.</string><string name="settings_wind_size">Größe der Windpfeile</string>
@@ -16,7 +16,7 @@
     <string name="appearance_dark">Dunkel</string><string name="appearance_light">Hell</string><string name="appearance_slate">Schiefer</string><string name="appearance_follow_system">System folgen</string><string name="appearance_follow_app">App folgen</string>
     <string name="radar_refresh">Radar und Kartenebenen aktualisieren</string><string name="radar_follow_start">Reisemodus starten</string><string name="radar_follow_stop">Reisemodus beenden</string><string name="radar_travel_mode">Reisemodus</string><string name="radar_center_selected">Karte auf %1$s zentrieren</string><string name="radar_center_unavailable">Zentrieren erst möglich, wenn der gewählte Standort bestimmt ist</string><string name="radar_use_location">Aktuellen Gerätestandort verwenden</string><string name="radar_location_loading">Standort wird geladen</string><string name="radar_location_unavailable">Standort nicht verfügbar</string><string name="radar_save_place">Diesen Ort speichern</string><string name="radar_save_select">Speichern und auswählen</string><string name="radar_timeline">Radar-Zeitleiste</string><string name="radar_play">Radar-Zeitleiste abspielen</string><string name="radar_pause">Radar-Zeitleiste pausieren</string>
     <string name="now_refresh">Radar-Nowcast aktualisieren</string><string name="now_next_hour">Nächste Stunde</string><string name="now_now">Jetzt</string><string name="now_no_rain">Kein Regen</string><string name="now_from">Aus %1$s</string><string name="now_raining">Es regnet jetzt</string><string name="now_snow_likely">Schnee wahrscheinlich</string><string name="now_rain_in">Regen beginnt in</string><string name="now_snow_in">Schnee wahrscheinlich in</string><string name="now_no_rain_yet">Noch kein Regen erkannt</string><string name="now_no_rain_hour">In der nächsten Stunde kein Regen erwartet</string><string name="now_sunrise">Sonnenaufgang</string><string name="now_sunset">Sonnenuntergang</string><string name="now_severe">Stark</string><string name="now_medium">Mittel</string><string name="now_light">Leicht</string>
-    <string name="notification_channel_name">Regen naht</string><string name="notification_channel_description">Zurückhaltende Hinweise, wenn Radarbewegung auf nahenden Regen deutet</string><string name="notification_rain_title">Regen nähert sich %1$s</string><string name="notification_snow_title">Wahrscheinlich Schnee bei %1$s</string><string name="notification_eta">In %1$d Min. · gegen %2$s</string><string name="notification_detail">%1$s · etwa %2$d Min.; Spitzenintensität %3$d%%</string>
+<string name="notification_channel_name">Regen- und Blitzwarnungen</string><string name="notification_channel_description">Zurückhaltende Hinweise auf nahenden Regen und beobachtete Blitzaktivität in der Nähe</string><string name="notification_rain_title">Regen nähert sich %1$s</string><string name="notification_snow_title">Wahrscheinlich Schnee bei %1$s</string><string name="notification_eta">In %1$d Min. · gegen %2$s</string><string name="notification_detail">%1$s · etwa %2$d Min.; Spitzenintensität %3$d%%</string>
     <plurals name="notification_eta_plural"><item quantity="one">In %1$d Minute · gegen %2$s</item><item quantity="other">In %1$d Minuten · gegen %2$s</item></plurals>
     <string name="places_switch_description">Ort wählen; ausgewählt: %1$s</string>
     <string name="common_expanded">Ausgeklappt</string><string name="common_collapsed">Eingeklappt</string><string name="common_active_label">Aktiv</string><string name="common_source_terms">Quelle / Bedingungen</string>
@@ -34,7 +34,7 @@
     <string name="direction_north_short">N</string><string name="direction_east_short">O</string><string name="direction_south_short">S</string><string name="direction_west_short">W</string>
     <string name="forecast_unavailable">Vorhersage nicht verfügbar. Zum erneuten Versuch aktualisieren.</string><string name="settings_save_failed">Diese Einstellung konnte nicht gespeichert werden. Bitte erneut versuchen.</string><string name="location_permission_unavailable">Standortberechtigung ist nicht verfügbar. Gespeicherten Ort wählen oder Vordergrundstandort erlauben.</string><string name="location_weak">Die Standortgenauigkeit ist vorübergehend schwach.</string><string name="location_provisional">Ein vorläufiger Standort wird verwendet, während eine genauere Position gesucht wird.</string><string name="location_approximate">Ungefährer Standort wird verwendet. Für den Reisemodus genauen Standort aktivieren.</string>
     <string name="weather_kind_location">Standort</string><string name="weather_kind_radar">Radar</string><string name="weather_kind_wind">Wind</string><string name="weather_kind_clouds">Wolken</string><string name="weather_kind_lightning">Blitze</string>
-    <string name="weather_status_loading">%1$s wird geladen%2$s</string><string name="weather_status_unavailable">%1$s nicht verfügbar</string>
+    <string name="weather_status_loading">%1$s wird geladen%2$s</string><string name="weather_status_preparing">%1$s wird vorbereitet</string><string name="weather_status_unavailable">%1$s nicht verfügbar</string>
     <string name="now_current_radar">Aktuelles Radar</string><string name="now_next_minutes">Nächste %1$d Minuten</string><string name="now_dry_next_hour">Nächste Stunde trocken</string>
     <string name="now_source_area_forecast">GEBIETSPROGNOSE</string><string name="now_source_estimate">SCHÄTZ.</string><string name="now_source_radar">RADAR</string>
     <string name="now_fresh_now">jetzt</string><string name="now_fresh_minutes">vor %1$d Min.</string><string name="now_coverage_through"> · bis +%1$d Min.</string>
@@ -88,4 +88,62 @@
     <string name="feature_tour_skip">Tour überspringen</string>
     <string name="feature_tour_step_count">Schritt %1$d von %2$d</string>
     <string name="feature_tour_pane">Rain-Alarm-App-Tour</string>
+    <string name="settings_lightning_notification">Benachrichtigung bei Blitzaktivität</string>
+    <string name="notification_status_lightning_detected">Blitzaktivität bei %1$s erkannt</string>
+    <string name="notification_status_lightning_clear">Keine aktuelle Blitzaktivität bei %1$s</string>
+    <string name="notification_status_lightning_unavailable">Blitzdaten nicht verfügbar</string>
+    <string name="notification_lightning_title">Blitzaktivität bei %1$s erkannt</string>
+    <string name="notification_lightning_detail">Blitzaktivität wurde im Umkreis von %1$d km erkannt.</string>
+    <string name="notification_combined_title">Regen nähert sich %1$s · Blitzaktivität in der Nähe</string>
+    <string name="notification_combined_summary">%1$s · Blitzaktivität erkannt</string>
+    <string name="notification_combined_detail">%1$s. Blitzaktivität wurde im Umkreis von %2$d km erkannt; dies ist keine Einschlagprognose.</string>
+    <string name="notification_rain_approaching">Regen nähert sich</string>
+    <string name="widget_description">Rain-Alarm-Wetterwidget</string>
+    <string name="widget_tap_to_configure">Zum Einrichten tippen</string>
+    <string name="widget_open_to_update">Rain Alarm öffnen, um diesen Ort zu aktualisieren</string>
+    <string name="widget_updating">Wird aktualisiert</string>
+    <string name="widget_update_unavailable">Aktualisierung nicht verfügbar</string>
+    <string name="widget_update_unavailable_at">Aktualisierung nicht verfügbar · zuletzt %1$s</string>
+    <string name="widget_updated_at">Aktualisiert %1$s</string>
+    <string name="widget_lightning_nearby">⚡ Blitze in der Nähe</string>
+    <string name="widget_no_recent_lightning">Keine aktuellen Blitze</string>
+    <string name="widget_stops_at">Endet %1$s</string>
+    <string name="widget_graph_description">Regenintensität der nächsten Stunde</string>
+    <string name="widget_rain_now">Jetzt Regen</string>
+    <string name="widget_rain_in">Regen in %1$d Min.</string>
+    <string name="widget_snow_now">Wahrscheinlich jetzt Schnee</string>
+    <string name="widget_snow_in">Wahrscheinlich Schnee in %1$d Min.</string>
+    <string name="widget_dry_next_hour">Nächste Stunde trocken</string>
+    <string name="widget_configure_title">Rain-Alarm-Widget</string>
+    <string name="widget_configure_subtitle">Wähle, was dieses Widget überwacht und anzeigt.</string>
+    <string name="widget_location_heading">ORT</string>
+    <string name="widget_no_saved_places">Füge vor der Widget-Konfiguration einen gespeicherten Ort hinzu.</string>
+    <string name="widget_open_places">Orte öffnen</string>
+    <string name="widget_compact_content_heading">1×1-INHALT</string>
+    <string name="widget_content_smart">Intelligent</string>
+    <string name="widget_content_rain">Regen</string>
+    <string name="widget_content_lightning">Blitze</string>
+    <string name="widget_content_temperature">Temperatur</string>
+    <string name="widget_appearance_heading">DARSTELLUNG</string>
+    <string name="widget_background_opacity">Deckkraft des Hintergrunds</string>
+    <string name="widget_percent">%1$d%%</string>
+    <string name="widget_preview_description">Widget-Vorschau mit %1$d Prozent Hintergrunddeckkraft</string>
+    <string name="widget_preview_place">Beispielort</string>
+    <string name="widget_quiet_hours_heading">BENACHRICHTIGUNGEN</string>
+    <string name="widget_quiet_hours">Nicht stören</string>
+    <string name="widget_quiet_off">Nicht stören · Aus</string>
+    <string name="widget_quiet_summary">Nicht stören · %1$s–%2$s</string>
+    <string name="widget_quiet_start">Beginn</string>
+    <string name="widget_quiet_end">Ende</string>
+    <string name="widget_quiet_times_differ">Beginn und Ende müssen verschieden sein.</string>
+    <string name="widget_quiet_help">Wetterdaten werden in der Ruhezeit weiter aktualisiert; nur Benachrichtigungen bleiben stumm.</string>
+    <string name="widget_save">Widget speichern</string>
+    <string name="widget_configuration_required">Gespeicherten Ort wählen · zum Konfigurieren tippen</string>
+    <string name="radar_lightning_temporary_state">Vorübergehend eingeschaltet</string>
+    <string name="radar_lightning_temporary_notice">Blitze vorübergehend angezeigt · tippen, um eingeschaltet zu lassen</string>
+<string name="settings_about_background_monitoring_body">Blitzdaten sind über fünf Minuten summierte optische Blitzflächen, keine Einschlagvorhersage. Wenn ein Alarm oder Widget sie benötigt, prüft Rain Alarm beim ungefähr 15-minütigen Hintergrundupdate einen begrenzten Bereich im Umkreis von 15 km um den überwachten Ort.</string>
+<string name="settings_about_widget_privacy_body">Widgets speichern einen Schnappschuss eines gespeicherten Ortes und den normalisierten Wetterstatus auf diesem Gerät. Gespeicherte Koordinaten gehen direkt an die gewählten Wetterdienste; Widgets verwenden nie den aktuellen Standort. Rain Alarm fordert keinen Hintergrundstandort an.</string>
+    <string name="radar_travel_auto_badge">AUTO</string>
+    <string name="radar_travel_auto_accessibility">Reisezeit automatisch</string>
+    <string name="radar_current_time_unavailable">Aktuelle Radarzeit nicht verfügbar</string>
 </resources>

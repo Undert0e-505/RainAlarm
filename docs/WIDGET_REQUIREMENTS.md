@@ -1,13 +1,14 @@
 # Android home-screen widget requirements
 
-> **Status: planned, not implemented.** This document defines a future Android home-screen widget
-> and the supporting polling/alert behaviour. It does not describe the current released app.
-> Lightning observation, notification and temporary Radar-layer behaviour are specified separately
-> in [Lightning activity alert requirements](LIGHTNING_ALERT_REQUIREMENTS.md).
+> **Status: implemented in Rain Alarm 0.9.0.** This remains the normative engineering description
+> of the Android home-screen widget and supporting polling/alert behaviour. Lightning observation,
+> notification and temporary Radar-layer behaviour are specified separately in
+> [Lightning activity alert requirements](LIGHTNING_ALERT_REQUIREMENTS.md). Launcher, device and
+> live-provider validation continues on the road to 1.0.
 
 ## Objective
 
-The Rain Alarm widget will provide an answer-first view of the same selected-place Now data without
+The Rain Alarm widget provides an answer-first view of one explicitly configured saved place without
 requiring the app UI to be open. Its central visual is a compact form of the app's Compass centre
 disc, using the same classification, colour, rain/snow texture and centre text for the same weather
 state. Wider layouts add concise timing, intensity, lightning and next-hour detail.
@@ -23,6 +24,13 @@ work inexactly; it is not a continuously running service or a promise of exact u
   every launcher cell has the same pixel dimensions.
 - Intermediate widths progressively omit secondary information in a deterministic order. They must
   not calculate a different weather answer from 1×1 or 4×1.
+- From **2×1** upward, retain the same compact textual hierarchy used at 3×1: saved place, primary
+  status, maximum qualitative intensity when wet/approaching, confirmed stop time, nearby-Lightning
+  state and last-successful update. Use compact spacing rather than dropping those facts; ordinary
+  names such as **Great Baddow** must fit without truncation. The user-selectable 1×1 remains the
+  deliberately minimal exception.
+- The 2×1, 3×1 and 4×1 rows use one identical fixed mini-Compass diameter and render scale, based
+  on the 4×1 Compass. The 1×1 Compass remains an independent square-filling presentation.
 - Widget views are static snapshots. They do not continuously animate Radar, sweep the Now graph or
   run a countdown every second.
 - Tapping a valid widget opens **Radar** for that widget's exact resolved place. It does not change
@@ -30,7 +38,8 @@ work inexactly; it is not a continuously running service or a promise of exact u
 - When the displayed widget state includes nearby lightning activity, the tap uses the temporary
   Lightning deep link in
   [Lightning activity alert requirements](LIGHTNING_ALERT_REQUIREMENTS.md#notification-tap-and-temporary-radar-state).
-- A widget whose fixed place has been deleted opens reconfiguration instead of Radar.
+- A widget retains its frozen saved-place snapshot if that row is later deleted. It continues to
+  monitor and open that exact coordinate, while remaining available for explicit reconfiguration.
 
 ## Per-widget configuration
 
@@ -38,7 +47,7 @@ Every widget instance has independent persisted configuration:
 
 | Setting | Choices/default |
 | --- | --- |
-| Location | One fixed saved place, or **Follow app selection** |
+| Location | One saved place |
 | 1×1 content | **Smart** (default), Rain, Lightning or Temperature |
 | Background opacity | 0–100%, defaulting to the opacity of the app's existing cards |
 | Do Not Disturb | **Off** by default; when on, distinct local start and end times |
@@ -56,43 +65,22 @@ widget to be reconfigured.
 There is no per-widget radar-provider choice in this version. Each resolved target uses the same
 preferred-provider and geographic fallback rules as Now and Radar.
 
-### Fixed saved place
+### Saved-place target
 
-- Store the saved-place ID, not an untracked copy that silently diverges from Places.
+- Persist a self-contained target snapshot per widget: stable saved-place ID, display name,
+  coordinates and any zone information required for presentation. Acquisition must not depend on
+  MainActivity, the current app selection, a live device fix or in-memory app state.
 - Normal app navigation, changing **Selected now**, changing the startup pin or entering Travel does
   not alter the widget target.
-- A rename updates the widget label. A coordinate edit invalidates the old target result and alert
-  identity and immediately evaluates the new coordinate.
-- If the place is deleted, retain the widget instance but show **Location removed · Tap to choose**.
-  Stop location-dependent network work and alerts for it until the user reconfigures the widget. Do
-  not silently substitute Current, the startup place or another saved place.
-
-### Follow app selection
-
-- Resolve the app's active selected place at the start of each transaction. A saved selection uses
-  that saved place's current coordinates.
-- A later app selection change invalidates the widget's target cache and schedules one refresh; an
-  older in-flight result cannot overwrite the new target.
-- The widget follows **Selected now**, not the startup pin.
-- Multiple Follow widgets may use different content/opacity while sharing one weather acquisition
-  for the same resolved target.
-
-### Follow app selection with Current location
-
-Virtual **Current location** never grants the widget a background location capability. It may use
-only a lawful foreground-acquired fix within the app's existing five-minute freshness limit. It
-must not request a fix from WorkManager, start a foreground location service, or persist live
-coordinates as though they were a saved place.
-
-When that fix is stale, missing after process death or unavailable because permission was revoked:
-
-- show **Open Rain Alarm to update current location**;
-- pause rain and lightning alerts for this target;
-- retain the last successful timestamp only as history, not as current weather; and
-- never reuse the stale coordinate or fall back to a different place.
-
-Opening the app and obtaining a new foreground fix allows the next foreground publication or
-scheduled transaction to resume the widget.
+- A rename may update the displayed label while retaining the same snapshot coordinates. A place
+  coordinate edit is not silently adopted; reconfigure the widget to choose the edited target.
+- If the source saved-place row is deleted, retain the frozen name/coordinates and continue. Never
+  substitute Current, the startup place or another saved place.
+- Configuration cannot complete without a saved place. An app-styled empty state opens Places so
+  the user can create one, then the configuration reloads.
+- Legacy fixed widgets freeze their existing saved target. Legacy Follow widgets freeze the active
+  selection only when it is saved, otherwise the startup/pinned saved place; with no saved fallback
+  they show **Configuration required** and open configuration. Migration is idempotent.
 
 ## Shared weather model
 
@@ -114,8 +102,9 @@ For each resolved target, use the app's ordinary provider resolver:
 
 Provider fallback remains geographic and capability-aware. Partial, uncovered, stale,
 low-confidence or unavailable data is never padded with zeroes and never called dry. A provider
-change invalidates incompatible widget data but should retain the last coherent presentation with
-an updating label until a replacement succeeds or becomes explicitly stale.
+change invalidates incompatible widget data and shows a truthful loading state for that target
+until replacement succeeds or the completed attempt has no usable target-matching result. It must
+not show another provider/target snapshot as though it were current.
 
 ## Rain and Now presentation
 
@@ -142,17 +131,32 @@ The widget must not convert normalized display severity into invented millimetre
   rate.
 - Show a predicted stop time only when the same episode has a confirmed first dry minute inside
   actual available coverage. If the episode runs to the coverage edge, omit the stop claim.
-- Show temperature as the primary dry state only when the complete 0–60 minute series is known and
-  contains no rain. A partial dry-looking window is **Unknown**, not a temperature/clear state.
-- `Unavailable`, incomplete/no-conclusion and stale states use concise explicit wording and an em
-  dash/neutral disc. They retain a last-successful time but make no dry claim.
+- When all available samples are dry, show a fresh temperature as the current dry state where the
+  selected widget mode permits it; otherwise use the neutral **Dry now** state. An incomplete
+  horizon must not be described as a complete one-hour clear outlook or arm prior-clear alert
+  eligibility.
+- `Unavailable`, no-usable-sample and stale states use concise explicit wording and an em
+  dash/neutral disc. Partial but usable samples render normally through their real horizon and
+  retain the successful update time.
 - The 4×1 layout always shows the place and last successful update. Smaller layouts expose the
   equivalent information in their content description when it cannot fit visually.
 
-While a refresh is in flight, keep the last successful coherent state visible with **Updating**.
-After a failed refresh, keep it only with an explicit delayed/unavailable label and timestamp; do
-not run an alert decision from stale cached data. A successful replacement swaps atomically so the
-widget does not flash blank.
+While a refresh is in flight, keep the last successful coherent state visible with unobtrusive
+**Updating**. A skipped/deferred worker, resize/recomposition, a transient
+endpoint failure, or one failed optional stream must not replace it with **Update unavailable**.
+Keep its real last-success time/age and swap a successful replacement atomically so the widget does
+not flash blank. Show **Update unavailable** only when the completed acquisition has no semantically
+current, target-matching field and no usable cached field. Stale cached data never enters an alert
+decision.
+
+Compact storage retention and display validity are separate. Recalculate arrival, stop and
+intensity against the current wall clock from the stored timestamped samples. A countdown therefore
+advances between polls and becomes unavailable immediately after its real source horizon ends; the
+storage hard-expiry must never freeze text such as **Rain in 35 min**. Temperature and Lightning use
+their own freshness horizons: temperature for at most 90 minutes from its successful fetch and
+Lightning display evidence for at most 20 minutes from its observation frame. Episode/checkpoint
+semantics remain separate. Older normalized state may remain bounded on disk for recovery and
+deduplication but cannot be presented as current weather.
 
 ## Mini Compass disc
 
@@ -169,7 +173,7 @@ For the same `RainMinuteSeries`, weather and evaluation time, the widget disc mu
 - rain-droplet texture and opacity treatment for rain;
 - icy likely-snow palette and snowflake/crystal texture for supported likely snow;
 - opaque white bold centre text and contrast treatment on precipitation colours; and
-- plain branded-blue dry-temperature treatment only after a complete clear hour.
+- plain branded-blue dry treatment when available samples are dry.
 
 Do not infer snow from temperature or radar intensity. The snow treatment and accompanying visible
 text/content description must say **likely snow** and must not rely on colour alone.
@@ -186,8 +190,9 @@ that is retained must preserve north-up/source-direction semantics.
 | Wet rain now | Shared peak rain colour + droplet texture | `Now` |
 | Rain approaching | Shared peak rain colour + droplet texture | integer arrival, `min` below |
 | Likely snow now/approaching | Shared snow colour + snow texture | `Now` or integer + `min` |
-| Complete clear hour | App branded-blue dry disc | fresh rounded temperature, or `—` |
-| Partial/unknown/unavailable | Neutral unavailable treatment | `—` |
+| Dry available samples, compact 1×1 | App branded-blue dry disc | fresh rounded temperature, or `—` |
+| Dry available samples, 2×1/3×1/4×1 | App branded-blue dry disc | `—`; temperature stays in the status column |
+| No usable samples / unknown / unavailable | Neutral unavailable treatment | `—` |
 
 ## Next-hour graph
 
@@ -199,11 +204,16 @@ series as the app:
 - the average curve and available minimum/maximum envelope preserve their existing meanings;
 - the baseline is the provider wet threshold after presentation normalization, not raw zero;
 - rain and likely-snow segments use the app's existing palettes;
-- local clock labels respect the device's 12/24-hour choice and locale; and
+- render no axes, tick marks, tick labels, numbers or captions;
+- map the first available sample to the left plot edge and the last to the right, with only a
+  stroke-width anti-clipping inset, and use the full available height for normalized severity;
+- render at the launcher's actual responsive pixel bounds and density (or a safely oversampled
+  equivalent), with anti-aliased paths and no later upscaling; cache by dimensions, density,
+  palette and data so resizing cannot retain a smaller fuzzy bitmap; and
 - unavailable coverage is visually distinct from a zero/dry curve.
 
-The graph is a snapshot, not an animated Radar timeline. At narrower intermediate widths, omit
-labels and then the graph before removing the place, disc or primary status.
+The graph is a snapshot, not an animated Radar timeline. Omit the graph before removing the place,
+disc or compact textual status at narrower widths.
 
 ## Lightning in the widget
 
@@ -232,8 +242,8 @@ The user chooses one primary mode per widget:
 
 | Mode | Primary rule | Fallback |
 | --- | --- | --- |
-| **Smart** | Wet/approaching precipitation, then nearby lightning, then complete-clear temperature | Neutral em dash with unavailable/update action |
-| **Rain** | Mini Compass rain/snow/clear state | Neutral em dash when partial, unknown or unavailable |
+| **Smart** | Wet/approaching precipitation, then nearby lightning, then fresh dry-state temperature | Neutral em dash with unavailable/update action |
+| **Rain** | Mini Compass rain/snow/dry-current state | **Dry now** with a neutral dash when usable samples are dry; unavailable only when no usable state exists |
 | **Lightning** | Nearby activity, successful no-detection, or unavailable | Never substitute rain/temperature for an unavailable Lightning result |
 | **Temperature** | Fresh model temperature | Em dash when missing/stale; never infer it from the rain series |
 
@@ -250,8 +260,11 @@ Responsive layouts add content in this priority order:
 4. last successful update; and
 5. compact next-hour graph and reliable direction cue.
 
-The canonical 4×1 layout includes all five groups. Text may shorten according to localized width,
-but the underlying state and accessibility description remain identical.
+The canonical 4×1 layout includes all five groups. Both 2×1 and 3×1 include groups 1–4 with the
+same information hierarchy and the same Compass geometry as 4×1. Text may shorten according to
+localized width, but the underlying state and accessibility description remain identical. The 4×1
+row uses compact fixed Compass/status blocks and lets the graph fill all remaining width, retaining
+balanced outer padding rather than reserving dead spacer columns.
 
 ## Alerts and notification state
 
@@ -264,8 +277,11 @@ targets retain independent state.
 
 ### Rain episode arming
 
-Rain episode evidence and base arming are per target and independent of Lightning. Delivery
-eligibility and consumption are additionally per monitoring subscription:
+The app subscription and widget subscriptions deliberately have different eligibility rules. The
+app's selected-place Rain notification retains its established immediate approaching-rain
+behaviour and cooldown/event deduplication; it does **not** wait for a prior clear poll. Each widget
+monitoring subscription independently uses the following prior-clear state, separate from
+Lightning and from the app subscription:
 
 | Evaluation | Alert effect |
 | --- | --- |
@@ -275,15 +291,16 @@ eligibility and consumption are additionally per monitoring subscription:
 | Wet now | Do not issue a new approaching alert; mark the episode active/disarmed. |
 | Partial, unknown, unavailable or stale | Do not notify, arm or re-arm. |
 
-This deliberately requires at least one earlier successful complete-window dry evaluation before
-an approaching-rain notification. A fresh install or new target that is already wet/approaching
-establishes state without immediately alerting. A later complete clear hour re-arms the next
-episode.
+For a widget subscription, this deliberately requires at least one earlier successful
+complete-window dry evaluation before an approaching-rain notification. A new widget target that
+is already wet/approaching establishes state without immediately alerting. A later complete clear
+hour re-arms the next widget episode. It never changes or consumes the app subscription's legacy
+eligibility, even when both share one target acquisition.
 
-Persist the armed state, event identity and last successfully evaluated series identity once per
-target. Persist each monitoring subscription's last considered/consumed event and delivery policy
-separately. Worker, widget and foreground app paths must call one atomic decision engine so
-concurrent checks cannot duplicate an alert.
+Persist each widget subscription's armed state, event identity, last successfully evaluated series
+identity and delivery/consumed policy separately. Shared target evidence remains coalesced. Worker,
+widget and foreground app paths must call one atomic decision engine so concurrent checks cannot
+duplicate an alert.
 
 Lightning has its own no-detection/detected arming state. If both independently trigger during the
 same transaction, send one combined notification. Lightning may notify alone, or later after rain
@@ -371,8 +388,16 @@ used elsewhere.
   request. Fifteen minutes is Android's periodic minimum; actual execution is inexact and can be
   deferred by Doze, battery optimization, standby and network availability.
 - Enqueue an immediate constrained refresh after initial widget configuration, relevant
-  reconfiguration, provider change, resolved Follow-target change, and an explicit matching app
-  refresh.
+  reconfiguration, provider change and an explicit matching app refresh.
+- Persist the widget configuration, monitoring subscription and a pending-initial-refresh marker
+  atomically before scheduling that first refresh. Every newly configured saved-place widget must
+  reach data without another widget, launcher resize or app-open event waking the coordinator.
+- Configuration can finish while its Activity is still visible. Widget acquisition is independent
+  of app visibility, so the initial worker remains eligible and its durable pending marker is not
+  consumed until a usable publication or bounded terminal failure. The constrained initial work
+  uses bounded exponential backoff. A transient completed acquisition
+  failure remains retryable, while a bounded number of completed failures may end in a truthful
+  terminal unavailable state when there is no usable target-matching snapshot.
 - Do not promise a next check at an exact clock time. Force-stop prevents work until Android/the
   user starts the app again; some launchers/OEM battery controls may delay updates further.
 - Coalesce widget instances and app alerts by frozen target, resolved provider/configuration and
@@ -387,21 +412,43 @@ used elsewhere.
 - If no widgets exist and both notification switches are off, cancel unnecessary periodic weather
   work. Existing app foreground refresh remains unaffected.
 
-### While the app is visible
+### Presentation clock between acquisitions
 
-- “App open” means its activity is visible in the foreground, not merely in Recents or resident in
-  memory.
-- While visible, scheduled widget/background acquisition exits without starting redundant network
-  work.
-- Foreground app refreshes publish through the same cache to widgets that resolve to the same
-  target/provider. Lightning runs only when an enabled alert or matching widget display requires
-  it, and enters the alert decision engine only when its notification switch is on. It does not
-  create a second notification.
-- A widget targeting a different fixed place retains its cached state while the app is visible; it
-  is not secretly polled by a second background path.
-- When the app leaves the foreground, scheduled coordination resumes. It preserves cadence,
-  checkpoints and arming state and may enqueue one due catch-up check, but never resets state or
-  emits a duplicate alert merely because lifecycle changed.
+Network acquisition remains on the provider/WorkManager cadence above. It is deliberately separate
+from a single process-wide, presentation-only minute ticker used by all configured widgets. While
+the device is interactive, that ticker repaints affected widgets at local wall-clock minute
+boundaries from the latest timestamped cached series. It performs no network request, location
+request, alert evaluation or delivery, and never changes rain/Lightning episode eligibility.
+
+- Relative text is derived again from wall-clock now on every repaint: `Rain in 47 min` becomes
+  `Rain in 46 min`, reaches `Rain in 1 min`, then `Rain now`. It never displays zero or a negative
+  countdown. Current/maximum intensity and rain/likely-snow treatment move through the cached
+  samples at the same time. An absolute stop time may remain absolute.
+- **Updated HH:mm** remains the successful data-acquisition time. A presentation repaint must not
+  disguise old source data as newly fetched.
+- The ticker uses one non-wakeup, inexact platform alarm plus an in-process minute callback. It
+  does not request exact-alarm permission and does not run a foreground service. Android does not
+  expose reliable launcher-page visibility, so device-interactive is the practical visibility
+  boundary. The alarm may be batched while the screen is off; after wake or any deferred delivery,
+  the widget derives directly from the current clock rather than replaying missed minutes.
+- Only widgets whose visible cached presentation can change keep the ticker scheduled. Multiple
+  widget instances coalesce into one schedule, and removal of the final dynamic widget cancels it.
+  Reboot, package replacement, manual clock changes and time-zone changes reconcile from the new
+  device-local wall clock without carrying forward interval drift.
+- A presentation tick reads the newest snapshot at execution time. It cannot replace a concurrent
+  acquisition result with an older generation, blank a last-good state, or extend a rain series
+  after its real timestamped horizon has expired.
+
+### Independence from app lifecycle
+
+- Scheduled and initial widget acquisition remains eligible while MainActivity or the widget
+  configuration Activity is visible, while the app is backgrounded, and after process recreation.
+- Foreground app and widget requests for an identical frozen target may share safe repository work,
+  but every widget still receives a terminal state publication; an app callback is never required.
+- Widget acquisition never requests device location and still works when location permission is
+  denied. App current-location monitoring remains a separate app-only concern.
+- Lifecycle changes preserve cadence, checkpoints and arming state and never reset state or emit a
+  duplicate alert merely because visibility changed.
 
 ## Appearance and typography
 
@@ -472,8 +519,8 @@ follow the app's existing emphasis; timestamps and source/status detail use its 
 - Weather requests send the resolved target coordinate directly to the providers already described
   in [Privacy](PRIVACY.md). Lightning sends a bounded local image request to EUMETSAT as described
   in its separate requirements.
-- Update the privacy disclosure before release to describe widgets, per-widget saved IDs/config,
-  background network checks, cached display state and alert memory.
+- Keep the privacy disclosure aligned with widgets, per-widget saved IDs/config, background
+  network checks, cached display state and alert memory.
 - Persist fixed saved-place IDs, widget choices, opacity, normalized display results, timestamps
   and alert state. Do not persist a virtual Current coordinate merely to keep a widget working.
 - Reuse the existing bounded point-analysis and HTTP/disk caches. Do not download full map imagery
@@ -489,33 +536,55 @@ follow the app's existing emphasis; timestamps and source/status detail use its 
 - Persist widget configuration and last successful normalized presentation by Android widget ID.
   Recreate views after launcher/process recreation and application upgrade without waiting on a
   blank network load.
+- Persist pending-initial-refresh and bounded-failure state by Android widget ID. Successful usable
+  publication clears it; reconfiguration replaces it for the new exact target; widget deletion
+  removes it. Identical targets may share one acquisition, but coalescing must complete every
+  matching widget's pending request and must never starve the only request for a distinct target.
 - Ensure periodic work is present when the first widget or alert is enabled and reconcile it on app
   startup/update. Remove it when no widgets or enabled alerts require it.
 - Process death, reboot or app update must not re-arm rain/lightning episodes or duplicate a prior
   notification. WorkManager timing remains platform-controlled.
-- Loading keeps the last coherent state with **Updating**. Network, provider, decode and incomplete
-  coverage failures produce **Update unavailable**, not dry.
+- Loading keeps the last semantically current coherent state with **Updating**. Refresh already in
+  progress, resize, transient network/provider/decode failure and
+  a failed optional stream leave that state and its true update time intact. A Lightning failure
+  does not erase valid rain/temperature, and a rain failure does not erase fresh Lightning.
+- A stored rain series is current only while its timestamped coverage contains wall-clock now;
+  cached countdown/stop/intensity are re-derived from the remaining samples. Temperature and
+  Lightning have independent bounded freshness. The three-hour snapshot hard-expiry is storage
+  eviction/last-resort metadata, not permission to display a three-hour-old rain answer.
+- **Update unavailable** is reserved for a completed acquisition with no usable current or cached
+  field for that exact target, or a snapshot beyond hard expiry. A target change clears the old
+  target's presentation and shows loading until success/final failure.
+- A first configuration with no prior target-matching snapshot remains **Updating** while its
+  initial refresh is queued, in flight or retrying. It must not publish
+  **Update unavailable** merely because a worker was skipped or a transient first attempt failed.
 - If no successful state exists, show a neutral disc, place (when resolvable), concise unavailable
   text and tap path to Radar or reconfiguration as appropriate.
-- If provider eligibility changes for a Follow target, use normal fallback resolution. Do not move
-  the configured location to make a preferred provider work.
+- If provider eligibility changes, use normal fallback resolution. Do not move the configured
+  saved-place snapshot to make a preferred provider work.
 
 ## Acceptance criteria
 
 Automated tests must cover at least:
 
-- independent configurations for two widget IDs, fixed versus Follow targets, rename/edit/delete
-  handling and stale Current location;
+- independent saved-place snapshots for two widget IDs, rename/delete retention, legacy migration,
+  no-saved-place configuration and location-permission independence;
 - provider resolution and identical normalized results between Now and widget fixtures for
   MeteoGroup, OPERA and RainViewer;
-- available/partial/unavailable series, wet now, arrival, confirmed/unconfirmed stop and full-hour
-  clear temperature rules;
+- available/partial/unavailable series, wet now, arrival, confirmed/unconfirmed stop, dry-state
+  temperature presentation and the rule that partial dry data never arms prior-clear alerts;
 - exact mini-disc state equivalence with Now for wet threshold, peak colour, centre text, rain
   texture and RainViewer likely-snow texture/palette;
 - no invented bearing, snow, rainfall rate or dry conclusion;
-- deterministic 1×1 modes and responsive content priority through 4×1;
-- graph horizon, severity bands, rain/snow colours and unavailable coverage;
-- rain arming transitions and shared-target notification deduplication;
+- deterministic 1×1 modes and responsive content priority through 4×1, including equivalent
+  place/status/intensity/stop/update hierarchy at 2×1 and 3×1, identical Compass diameter and
+  pixel geometry at 2×1/3×1/4×1, and independent square-filling 1×1 sizing;
+- graph horizon, full-width/full-height sample mapping, actual-pixel/density render sizing,
+  resize-keyed assets, severity bands, rain/snow colours, absence of axes and unavailable coverage,
+  including a Samsung-like 4×1 bound where the graph fills the expanded remaining width without
+  colliding with ordinary status text;
+- app-immediate versus widget-prior-clear rain eligibility, widget arming transitions and
+  shared-target notification deduplication;
 - linked Lightning episode/combined-notification/deep-link behaviour;
 - Lightning display with its alert switch off, and omitted acquisition when no widget presentation
   or enabled alert requires it;
@@ -525,8 +594,17 @@ Automated tests must cover at least:
   and manual/foreground checks respecting quiet delivery while display refresh continues;
 - independent DND schedules for widgets sharing or not sharing a target, including a single
   coalesced notification when at least one eligible subscription is outside quiet hours;
-- unique-target work coalescing, overlapping generation rejection and cached-state retention;
-- foreground suppression/resume without cadence reset or duplicate alerts;
+- unique-target work coalescing, overlapping generation rejection, last-good retention through
+  resize/transient/partial failure, target-change isolation, hard expiry,
+  successful recovery, and clock advance proving a countdown cannot freeze beyond source coverage;
+- minute presentation scheduling and countdown transitions (`47` to `46` to `1` to `Now`) without
+  network/location/alert side effects, including multiple-widget coalescing, final-widget deletion,
+  acquisition races, process restoration, midnight/DST/time-zone or manual-clock changes, truthful
+  source expiry, and an unchanged last-success timestamp;
+- app-visible and process-recreated acquisition without cadence reset or duplicate alerts;
+- first-and-only saved-place widget reaching data independently, two distinct saved targets,
+  identical-target coalescing without starvation, transient initial failure followed by retry,
+  deletion before queued initial work, and operation with device-location permission denied;
 - 0%, default and 100% background opacity proving that text/icons/data colours remain opaque;
 - widget/configuration parity for resolved palette, cards, controls, icons, spacing and typography,
   with no per-widget theme selector;

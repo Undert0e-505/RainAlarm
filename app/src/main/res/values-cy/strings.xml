@@ -6,7 +6,7 @@
     <string name="current_location">Lleoliad presennol</string><string name="selected_now">Wedi’i ddewis nawr</string><string name="opens_on_startup">Yn agor wrth gychwyn</string><string name="make_startup">Agor wrth gychwyn</string>
     <string name="places_title">Lleoedd</string><string name="places_subtitle">Dewiswch beth mae Nawr a Radar yn ei ddangos.</string><string name="places_search_hint">Chwilio am le neu god post</string><string name="places_search_description">Chwilio lleoedd</string><string name="places_no_matches">Dim lleoedd cyfatebol</string><string name="places_add_select">Ychwanegu a dewis</string><string name="places_choose_map">Dewis ar y map</string><string name="places_saved_heading">Lleoedd wedi’u cadw</string><string name="places_reorder_hint">Llusgwch yr handlen i aildrefnu</string>
 <string name="places_current_available">Lleoliad byw ar gael</string><string name="places_current_locating">Yn canfod y lleoliad presennol…</string><string name="places_current_unavailable">Lleoliad presennol ddim ar gael</string><string name="places_use_current">Defnyddio’r lleoliad byw presennol</string><string name="places_retry_current">Ailgynnig y lleoliad presennol</string><string name="places_save_current">Cadw’r lleoliad hwn</string><string name="places_current_selected_status">Wedi’i ddewis: lleoliad presennol byw · heb ei gadw</string><string name="places_current_saved_status">Lleoliad wedi’i gadw eisoes</string><string name="places_live_location_match">Yn cyfateb i’r lleoliad byw</string><string name="places_not_startup">Ddim yn agor wrth gychwyn</string><string name="places_startup_current_description">Mae %1$s yn agor wrth gychwyn</string><string name="places_startup_set_description">Gosod %1$s i agor wrth gychwyn</string><string name="places_edit_description">Ailenwi %1$s</string><string name="places_delete_description">Dileu %1$s</string>
-    <string name="places_privacy">Preifatrwydd</string><string name="places_privacy_body">Dim cyfrifon, hysbysebion, dadansoddeg, bilio na lleoliad cefndir. Mae rhybuddion lleoedd wedi’u cadw yn defnyddio cyfesurynnau wedi’u storio; mae cyfesurynnau byw yn aros yn y cof oni bai eich bod yn eu cadw.</string>
+<string name="places_privacy">Preifatrwydd</string><string name="places_privacy_body">Dim cyfrifon, hysbysebion, dadansoddeg, bilio na lleoliad cefndir. Mae rhybuddion a widgets lleoedd wedi’u cadw yn defnyddio cyfesurynnau wedi’u storio; mae cyfesurynnau byw yn aros yn y cof oni bai eich bod yn eu cadw.</string>
     <string name="places_rename_title">Ailenwi lle wedi’i gadw</string><string name="places_name_label">Enw’r lle</string><string name="places_name_error">Rhowch 1–60 nod heb nodau rheoli</string><string name="places_deleted">Dilëwyd %1$s</string><string name="places_delete_failed">Methu dileu %1$s. Rhowch gynnig arall.</string><string name="places_duplicate">Mae lle wedi’i gadw eisoes yn defnyddio’r cyfesurynnau hyn.</string><string name="places_drag_description">Daliwch a llusgwch %1$s i aildrefnu</string><string name="places_coordinates">%1$s · %2$s</string><string name="places_move_up">Symud %1$s i fyny</string><string name="places_move_down">Symud %1$s i lawr</string><string name="places_overflow_description">Camau ar gyfer %1$s</string>
 <string name="picker_title">Dewis ar y map</string><string name="picker_instruction">Symudwch y map nes bod y croeslin yn nodi’r lle.</string><string name="picker_confirm">Defnyddio’r cyfesurynnau hyn</string><string name="picker_coordinate_name">Lle yn %1$.4f, %2$.4f</string><string name="picker_resolving_name">Yn chwilio am enw’r lle…</string>
     <string name="settings_title">Gosodiadau</string><string name="settings_subtitle">Addaswch y radar</string><string name="settings_rain_notification">Hysbysiad glaw</string><string name="settings_provider_heading">DARPARWR RADAR DEWISOL</string><string name="settings_show_snow">Dangos eira tebygol</string><string name="settings_indicators_heading">DANGOSYDDION NAWR</string><string name="settings_animation_heading">ANIMEIDDIO</string><string name="settings_playback_speed">Cyflymder chwarae radar</string><string name="settings_playback_help">Yn dechrau wedi’i oedi. Newidiwch y cyflymder wrth chwarae neu sgrolio.</string><string name="settings_wind_size">Maint saethau gwynt</string>
@@ -16,7 +16,7 @@
     <string name="appearance_dark">Tywyll</string><string name="appearance_light">Golau</string><string name="appearance_slate">Llechen</string><string name="appearance_follow_system">Dilyn y system</string><string name="appearance_follow_app">Dilyn yr ap</string>
     <string name="radar_refresh">Adnewyddu radar a haenau map</string><string name="radar_follow_start">Dechrau’r modd Teithio</string><string name="radar_follow_stop">Atal y modd Teithio</string><string name="radar_travel_mode">Modd Teithio</string><string name="radar_center_selected">Canoli’r map ar %1$s</string><string name="radar_center_unavailable">Methu canoli nes bod y lleoliad wedi’i ddatrys</string><string name="radar_use_location">Defnyddio lleoliad presennol y ddyfais</string><string name="radar_location_loading">Yn llwytho lleoliad</string><string name="radar_location_unavailable">Lleoliad ddim ar gael</string><string name="radar_save_place">Cadw’r lle hwn</string><string name="radar_save_select">Cadw a dewis</string><string name="radar_timeline">Llinell amser radar</string><string name="radar_play">Chwarae llinell amser radar</string><string name="radar_pause">Oedi llinell amser radar</string>
     <string name="now_refresh">Adnewyddu rhagolwg radar</string><string name="now_next_hour">Yr awr nesaf</string><string name="now_now">Nawr</string><string name="now_no_rain">Dim glaw</string><string name="now_from">O %1$s</string><string name="now_raining">Yn bwrw glaw nawr</string><string name="now_snow_likely">Eira’n debygol</string><string name="now_rain_in">Glaw yn dechrau mewn</string><string name="now_snow_in">Eira’n debygol mewn</string><string name="now_no_rain_yet">Dim glaw wedi’i ganfod eto</string><string name="now_no_rain_hour">Dim glaw disgwyliedig yn yr awr nesaf</string><string name="now_sunrise">Codiad haul</string><string name="now_sunset">Machlud haul</string><string name="now_severe">Trwm</string><string name="now_medium">Canolig</string><string name="now_light">Ysgafn</string>
-    <string name="notification_channel_name">Glaw yn agosáu</string><string name="notification_channel_description">Rhybuddion tawel pan fo symudiad radar yn awgrymu glaw yn agosáu</string><string name="notification_rain_title">Glaw yn agosáu at %1$s</string><string name="notification_snow_title">Eira tebygol yn agosáu at %1$s</string><string name="notification_eta">Mewn %1$d mun · tua %2$s</string><string name="notification_detail">%1$s · tua %2$d mun; dwysedd uchaf %3$d%%</string>
+<string name="notification_channel_name">Rhybuddion glaw a mellt</string><string name="notification_channel_description">Rhybuddion tawel am law yn agosáu a gweithgarwch mellt a welwyd gerllaw</string><string name="notification_rain_title">Glaw yn agosáu at %1$s</string><string name="notification_snow_title">Eira tebygol yn agosáu at %1$s</string><string name="notification_eta">Mewn %1$d mun · tua %2$s</string><string name="notification_detail">%1$s · tua %2$d mun; dwysedd uchaf %3$d%%</string>
     <plurals name="notification_eta_plural"><item quantity="zero">Mewn %1$d munud · tua %2$s</item><item quantity="one">Mewn %1$d munud · tua %2$s</item><item quantity="two">Mewn %1$d funud · tua %2$s</item><item quantity="few">Mewn %1$d munud · tua %2$s</item><item quantity="many">Mewn %1$d munud · tua %2$s</item><item quantity="other">Mewn %1$d munud · tua %2$s</item></plurals>
     <string name="places_switch_description">Dewis lle; wedi’i ddewis: %1$s</string>
     <string name="common_expanded">Wedi ehangu</string><string name="common_collapsed">Wedi cau</string><string name="common_active_label">Gweithredol</string><string name="common_source_terms">Ffynhonnell / telerau</string>
@@ -34,7 +34,7 @@
     <string name="direction_north_short">G</string><string name="direction_east_short">D</string><string name="direction_south_short">D</string><string name="direction_west_short">G</string>
     <string name="forecast_unavailable">Rhagolwg ddim ar gael. Adnewyddwch i roi cynnig arall.</string><string name="settings_save_failed">Methu cadw’r gosodiad hwn. Rhowch gynnig arall.</string><string name="location_permission_unavailable">Nid yw caniatâd lleoliad ar gael. Dewiswch le wedi’i gadw neu ganiatáu lleoliad blaendir.</string><string name="location_weak">Mae cywirdeb y lleoliad yn wan dros dro.</string><string name="location_provisional">Defnyddir lleoliad dros dro tra ceisir lleoliad mwy cywir.</string><string name="location_approximate">Defnyddir lleoliad bras. Galluogwch leoliad manwl ar gyfer modd Teithio.</string>
     <string name="weather_kind_location">Lleoliad</string><string name="weather_kind_radar">Radar</string><string name="weather_kind_wind">Gwynt</string><string name="weather_kind_clouds">Cymylau</string><string name="weather_kind_lightning">Mellt</string>
-    <string name="weather_status_loading">Wrthi’n llwytho %1$s%2$s</string><string name="weather_status_unavailable">Nid yw %1$s ar gael</string>
+    <string name="weather_status_loading">Wrthi’n llwytho %1$s%2$s</string><string name="weather_status_preparing">Wrthi’n paratoi %1$s</string><string name="weather_status_unavailable">Nid yw %1$s ar gael</string>
     <string name="now_current_radar">Radar presennol</string><string name="now_next_minutes">Y %1$d munud nesaf</string><string name="now_dry_next_hour">Sych am yr awr nesaf</string>
     <string name="now_source_area_forecast">RHAGOLYGON ARDAL</string><string name="now_source_estimate">AMC.</string><string name="now_source_radar">RADAR</string>
     <string name="now_fresh_now">nawr</string><string name="now_fresh_minutes">%1$d mun yn ôl</string><string name="now_coverage_through"> · hyd at +%1$d mun</string>
@@ -88,4 +88,62 @@
     <string name="feature_tour_skip">Hepgor y daith</string>
     <string name="feature_tour_step_count">Cam %1$d o %2$d</string>
     <string name="feature_tour_pane">Taith ap Rain Alarm</string>
+    <string name="settings_lightning_notification">Hysbysiad gweithgarwch mellt</string>
+    <string name="notification_status_lightning_detected">Gweithgarwch mellt wedi’i ganfod ger %1$s</string>
+    <string name="notification_status_lightning_clear">Dim gweithgarwch mellt diweddar ger %1$s</string>
+    <string name="notification_status_lightning_unavailable">Data mellt ddim ar gael</string>
+    <string name="notification_lightning_title">Gweithgarwch mellt wedi’i ganfod ger %1$s</string>
+    <string name="notification_lightning_detail">Canfuwyd gweithgarwch mellt o fewn %1$d km.</string>
+    <string name="notification_combined_title">Glaw yn nesáu at %1$s · gweithgarwch mellt gerllaw</string>
+    <string name="notification_combined_summary">%1$s · gweithgarwch mellt wedi’i ganfod</string>
+    <string name="notification_combined_detail">%1$s. Canfuwyd gweithgarwch mellt o fewn %2$d km; nid rhagolwg taro yw hwn.</string>
+    <string name="notification_rain_approaching">Glaw yn nesáu</string>
+    <string name="widget_description">Teclyn tywydd Rain Alarm</string>
+    <string name="widget_tap_to_configure">Tapiwch i ffurfweddu</string>
+    <string name="widget_open_to_update">Agorwch Rain Alarm i ddiweddaru’r lleoliad hwn</string>
+    <string name="widget_updating">Wrthi’n diweddaru</string>
+    <string name="widget_update_unavailable">Diweddariad ddim ar gael</string>
+    <string name="widget_update_unavailable_at">Diweddariad ddim ar gael · diwethaf %1$s</string>
+    <string name="widget_updated_at">Diweddarwyd %1$s</string>
+    <string name="widget_lightning_nearby">⚡ Mellt gerllaw</string>
+    <string name="widget_no_recent_lightning">Dim mellt diweddar</string>
+    <string name="widget_stops_at">Yn dod i ben %1$s</string>
+    <string name="widget_graph_description">Graff dwysedd glaw yr awr nesaf</string>
+    <string name="widget_rain_now">Glaw nawr</string>
+    <string name="widget_rain_in">Glaw mewn %1$d mun</string>
+    <string name="widget_snow_now">Eira tebygol nawr</string>
+    <string name="widget_snow_in">Eira tebygol mewn %1$d mun</string>
+    <string name="widget_dry_next_hour">Sych am yr awr nesaf</string>
+    <string name="widget_configure_title">Teclyn Rain Alarm</string>
+    <string name="widget_configure_subtitle">Dewiswch beth mae’r teclyn hwn yn ei fonitro a’i ddangos.</string>
+    <string name="widget_location_heading">LLEOLIAD</string>
+    <string name="widget_no_saved_places">Ychwanegwch le wedi’i gadw cyn ffurfweddu teclyn.</string>
+    <string name="widget_open_places">Agor Lleoedd</string>
+    <string name="widget_compact_content_heading">CYNNWYS 1×1</string>
+    <string name="widget_content_smart">Clyfar</string>
+    <string name="widget_content_rain">Glaw</string>
+    <string name="widget_content_lightning">Mellt</string>
+    <string name="widget_content_temperature">Tymheredd</string>
+    <string name="widget_appearance_heading">GOLWG</string>
+    <string name="widget_background_opacity">Didreiddedd cefndir</string>
+    <string name="widget_percent">%1$d%%</string>
+    <string name="widget_preview_description">Rhagolwg teclyn gyda chefndir %1$d y cant yn ddi-draidd</string>
+    <string name="widget_preview_place">Lle enghreifftiol</string>
+    <string name="widget_quiet_hours_heading">HYSBYSIADAU</string>
+    <string name="widget_quiet_hours">Peidiwch ag aflonyddu</string>
+    <string name="widget_quiet_off">Peidiwch ag aflonyddu · I ffwrdd</string>
+    <string name="widget_quiet_summary">Peidiwch ag aflonyddu · %1$s–%2$s</string>
+    <string name="widget_quiet_start">Dechrau</string>
+    <string name="widget_quiet_end">Gorffen</string>
+    <string name="widget_quiet_times_differ">Rhaid i’r amseroedd dechrau a gorffen fod yn wahanol.</string>
+    <string name="widget_quiet_help">Mae diweddariadau tywydd yn parhau yn ystod oriau tawel; dim ond hysbysiadau sy’n dawel.</string>
+    <string name="widget_save">Cadw’r teclyn</string>
+    <string name="widget_configuration_required">Dewiswch le wedi’i gadw · tapiwch i ffurfweddu</string>
+    <string name="radar_lightning_temporary_state">Wedi’i alluogi dros dro</string>
+    <string name="radar_lightning_temporary_notice">Mellt yn cael ei ddangos dros dro · tapiwch i’w gadw ymlaen</string>
+<string name="settings_about_background_monitoring_body">Mae Mellt yn arsylwad o ardaloedd fflach optegol wedi’u cronni dros bum munud, nid rhagolwg taro. Pan fo rhybudd neu widget ei angen, mae Rain Alarm yn gwirio ardal gyfyngedig o fewn 15 km i’r lle sy’n cael ei fonitro yn ystod y diweddariad cefndir tua bob 15 munud.</string>
+<string name="settings_about_widget_privacy_body">Mae widgets yn cadw ciplun o un lle wedi’i gadw a chyflwr tywydd wedi’i normaleiddio ar y ddyfais hon. Anfonir cyfesurynnau wedi’u cadw’n uniongyrchol at y gwasanaethau tywydd; nid yw widgets byth yn defnyddio’r lleoliad presennol. Nid yw Rain Alarm yn gofyn am leoliad cefndir.</string>
+    <string name="radar_travel_auto_badge">AWTO</string>
+    <string name="radar_travel_auto_accessibility">Amser teithio awtomatig</string>
+    <string name="radar_current_time_unavailable">Nid yw amser presennol y radar ar gael</string>
 </resources>

@@ -28,6 +28,7 @@ class WeatherDataStatusPolicyTest {
             WeatherDataStatusPolicy.loading(WeatherDataKind.RADAR, 3, 49))
         assertEquals("Radar loading 49/49",
             WeatherDataStatusPolicy.loading(WeatherDataKind.RADAR, 90, 49))
+        assertEquals("Radar preparing", WeatherDataStatusPolicy.preparing(WeatherDataKind.RADAR))
         assertEquals("Wind loading", WeatherDataStatusPolicy.loading(WeatherDataKind.WIND))
         assertEquals("Clouds loading 5/6",
             WeatherDataStatusPolicy.loading(WeatherDataKind.CLOUDS, 5, 6))
@@ -378,6 +379,33 @@ class WeatherDataStatusPolicyTest {
             WeatherDataKind.CLOUDS, source, WeatherReplacementPhase.IDLE, "old", "old",
         ) as AncillaryStatus.Unavailable
         assertEquals("Clouds unavailable", attempted.message)
+    }
+
+    @Test fun `failed satellite replacement retains a usable published catalog`() {
+        val metadata = EumetLayerMetadata(
+            choice = RadarMapLayer.FOG,
+            validEpochSeconds = 9_000L,
+            west = -15.0,
+            south = 47.0,
+            east = 6.0,
+            north = 63.0,
+            product = EumetProduct.CLOUD_TYPE,
+            availableFromEpochSeconds = 8_000L,
+            latestEpochSeconds = 9_000L,
+        )
+        val retained = AncillaryStatus.Satellite(metadata)
+        assertEquals(retained, WeatherReplacementPresentationPolicy.status(
+            WeatherDataKind.CLOUDS, retained, WeatherReplacementPhase.UNAVAILABLE,
+            staleIdentity = "old", lastRequestedIdentity = "old",
+        ))
+        assertNull(RadarPreparationStackPolicy.layerLabel(
+            RadarMapLayer.FOG, retained,
+            SatellitePreparationStatus.Failed("replacement failed", hasRenderableFallback = true),
+        ))
+        assertEquals("Clouds unavailable", RadarPreparationStackPolicy.layerLabel(
+            RadarMapLayer.FOG, retained,
+            SatellitePreparationStatus.Failed("first load failed"),
+        ))
     }
 
     @Test fun `manual refresh retries exactly enabled layers and exposes canonical loading`() {

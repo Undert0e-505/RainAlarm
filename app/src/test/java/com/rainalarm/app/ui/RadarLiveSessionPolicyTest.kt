@@ -34,6 +34,18 @@ class RadarLiveSessionPolicyTest {
             RadarLiveSessionPolicy.loadIdentity(current(53.486, -2.238)))
     }
 
+    @Test fun fiveHertzTravelFixesUseOneRegionalAcquisitionKey() {
+        val fixes = (0 until 25).map { index ->
+            current(51.5074 + index * 0.00001, -0.1278 + index * 0.00001)
+        }
+        assertEquals(1, fixes.map(RadarLiveSessionPolicy::acquisitionLocationKey).distinct().size)
+        assertEquals("region:uk", RadarLiveSessionPolicy.acquisitionLocationKey(fixes.first()))
+        assertEquals(
+            "region:nl",
+            RadarLiveSessionPolicy.acquisitionLocationKey(current(52.3676, 4.9041)),
+        )
+    }
+
     @Test fun effectiveSelectionChangesUseCoordinateToleranceThenCurrentUsesCoverage() {
         val loaded = current(53.4808, -2.2426)
         assertTrue(RadarLiveSessionPolicy.canReuse(loaded, current(53.486, -2.238), null))

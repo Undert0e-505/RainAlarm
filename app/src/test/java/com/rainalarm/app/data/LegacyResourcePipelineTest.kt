@@ -104,4 +104,18 @@ class LegacyResourcePipelineTest {
         assertEquals(listOf(10), timeline.wetForecastMinutes)
         session.release()
     }
+
+    @Test
+    fun `renderer teardown cannot release a screen retained radar session`() {
+        val lease = RadarSessionResourceLease(null, null, null)
+        assertEquals(1, lease.owners) // Initial data/screen owner.
+        lease.retain("overlay-slot")
+        assertEquals(2, lease.owners)
+        lease.release("screen-replacement")
+        assertEquals(1, lease.owners)
+        assertFalse(lease.isReleased)
+        lease.release("overlay-slot")
+        assertEquals(0, lease.owners)
+        assertTrue(lease.isReleased)
+    }
 }

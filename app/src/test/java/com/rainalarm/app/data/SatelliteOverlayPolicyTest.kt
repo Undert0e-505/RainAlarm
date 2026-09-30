@@ -1,5 +1,6 @@
 package com.rainalarm.app.data
 
+import com.rainalarm.app.ui.SatelliteRenderConfirmationPolicy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -267,6 +268,14 @@ class SatelliteOverlayPolicyTest {
             revealedAtRenderSequence = 40L, currentRenderSequence = 41L,
             fullyRendered = true,
         ))
+    }
+
+    @Test fun `bounded satellite render confirmation rejects replaced generations and plans`() {
+        assertTrue(SatelliteRenderConfirmationPolicy.fallbackMillis in 100L..2_000L)
+        assertTrue(SatelliteRenderConfirmationPolicy.matches(7L, 7L, "plan-b", "plan-b"))
+        assertFalse(SatelliteRenderConfirmationPolicy.matches(7L, 8L, "plan-b", "plan-b"))
+        assertFalse(SatelliteRenderConfirmationPolicy.matches(7L, 7L, "plan-a", "plan-b"))
+        assertFalse(SatelliteRenderConfirmationPolicy.matches(null, 7L, "plan-b", "plan-b"))
     }
 
     private fun satellite(

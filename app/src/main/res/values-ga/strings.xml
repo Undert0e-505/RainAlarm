@@ -6,7 +6,7 @@
     <string name="current_location">Suíomh reatha</string><string name="selected_now">Roghnaithe anois</string><string name="opens_on_startup">Osclaítear ag tosú</string><string name="make_startup">Oscail ag tosú</string>
     <string name="places_title">Áiteanna</string><string name="places_subtitle">Roghnaigh a dtaispeánann Anois agus Radar.</string><string name="places_search_hint">Aimsigh áit nó cód poist</string><string name="places_search_description">Cuardaigh áiteanna</string><string name="places_no_matches">Níor aimsíodh áit chomhoiriúnach</string><string name="places_add_select">Cuir leis agus roghnaigh</string><string name="places_choose_map">Roghnaigh ar an léarscáil</string><string name="places_saved_heading">Áiteanna sábháilte</string><string name="places_reorder_hint">Tarraing an hanla chun athordú</string>
 <string name="places_current_available">Suíomh beo ar fáil</string><string name="places_current_locating">Suíomh reatha á aimsiú…</string><string name="places_current_unavailable">Níl an suíomh reatha ar fáil</string><string name="places_use_current">Úsáid an suíomh beo reatha</string><string name="places_retry_current">Aimsigh an suíomh reatha arís</string><string name="places_save_current">Sábháil an suíomh seo</string><string name="places_current_selected_status">Roghnaithe: suíomh reatha beo · gan sábháil</string><string name="places_current_saved_status">Suíomh sábháilte cheana</string><string name="places_live_location_match">Meaitseálann sé an suíomh beo</string><string name="places_not_startup">Ní osclaítear ag tosú</string><string name="places_startup_current_description">Osclaítear %1$s ag tosú</string><string name="places_startup_set_description">Oscail %1$s ag tosú</string><string name="places_edit_description">Athainmnigh %1$s</string><string name="places_delete_description">Scrios %1$s</string>
-    <string name="places_privacy">Príobháideachas</string><string name="places_privacy_body">Níl cuntais, fógraí, anailísíocht, billeáil ná suíomh cúlra ann. Úsáideann foláirimh d’áiteanna sábháilte comhordanáidí stóráilte; fanann comhordanáidí beo sa chuimhne mura sábhálann tú iad.</string>
+<string name="places_privacy">Príobháideachas</string><string name="places_privacy_body">Níl cuntais, fógraí, anailísíocht, billeáil ná suíomh cúlra ann. Úsáideann foláirimh agus giuirléidí d’áiteanna sábháilte comhordanáidí stóráilte; fanann comhordanáidí beo sa chuimhne mura sábhálann tú iad.</string>
     <string name="places_rename_title">Athainmnigh áit shábháilte</string><string name="places_name_label">Ainm na háite</string><string name="places_name_error">Cuir isteach 1–60 carachtar gan carachtair rialaithe</string><string name="places_deleted">Scriosadh %1$s</string><string name="places_delete_failed">Níorbh fhéidir %1$s a scriosadh. Bain triail eile as.</string><string name="places_duplicate">Tá na comhordanáidí seo in úsáid ag áit shábháilte cheana.</string><string name="places_drag_description">Coinnigh agus tarraing %1$s chun athordú</string><string name="places_coordinates">%1$s · %2$s</string><string name="places_move_up">Bog %1$s suas</string><string name="places_move_down">Bog %1$s síos</string><string name="places_overflow_description">Gníomhartha do %1$s</string>
 <string name="picker_title">Roghnaigh ar an léarscáil</string><string name="picker_instruction">Bog an léarscáil go dtí go léiríonn an crosribín an áit.</string><string name="picker_confirm">Úsáid na comhordanáidí seo</string><string name="picker_coordinate_name">Áit ag %1$.4f, %2$.4f</string><string name="picker_resolving_name">Ainm na háite á aimsiú…</string>
     <string name="settings_title">Socruithe</string><string name="settings_subtitle">Cuir an radar in oiriúint</string><string name="settings_rain_notification">Fógra báistí</string><string name="settings_provider_heading">SOLÁTHRAÍ RADAR ROGHNAITHE</string><string name="settings_show_snow">Taispeáin sneachta dóchúil</string><string name="settings_indicators_heading">TÁSCAIRÍ ANOIS</string><string name="settings_animation_heading">BEOCHAN</string><string name="settings_playback_speed">Luas athsheinm radar</string><string name="settings_playback_help">Tosaíonn sé ar sos. Athraigh an luas agus é ag seinm nó á scrobadh.</string><string name="settings_wind_size">Méid saigheada gaoithe</string>
@@ -16,7 +16,7 @@
     <string name="appearance_dark">Dorcha</string><string name="appearance_light">Geal</string><string name="appearance_slate">Scláta</string><string name="appearance_follow_system">Lean an córas</string><string name="appearance_follow_app">Lean an aip</string>
     <string name="radar_refresh">Athnuaigh radar agus sraitheanna léarscáile</string><string name="radar_follow_start">Tosaigh Mód Taistil</string><string name="radar_follow_stop">Stop Mód Taistil</string><string name="radar_travel_mode">Mód Taistil</string><string name="radar_center_selected">Láraigh an léarscáil ar %1$s</string><string name="radar_center_unavailable">Ní féidir lárú go dtí go n-aimsítear an suíomh roghnaithe</string><string name="radar_use_location">Úsáid suíomh reatha an ghléis</string><string name="radar_location_loading">Suíomh á luchtú</string><string name="radar_location_unavailable">Níl an suíomh ar fáil</string><string name="radar_save_place">Sábháil an áit seo</string><string name="radar_save_select">Sábháil agus roghnaigh</string><string name="radar_timeline">Amlíne radar</string><string name="radar_play">Seinn amlíne radar</string><string name="radar_pause">Cuir amlíne radar ar sos</string>
     <string name="now_refresh">Athnuaigh réamhaisnéis radar</string><string name="now_next_hour">An chéad uair eile</string><string name="now_now">Anois</string><string name="now_no_rain">Gan bháisteach</string><string name="now_from">Ó %1$s</string><string name="now_raining">Tá sé ag cur báistí anois</string><string name="now_snow_likely">Sneachta dóchúil</string><string name="now_rain_in">Tosóidh báisteach i</string><string name="now_snow_in">Sneachta dóchúil i</string><string name="now_no_rain_yet">Níor braitheadh báisteach fós</string><string name="now_no_rain_hour">Níltear ag súil le báisteach sa chéad uair eile</string><string name="now_sunrise">Éirí gréine</string><string name="now_sunset">Luí gréine</string><string name="now_severe">Trom</string><string name="now_medium">Meánach</string><string name="now_light">Éadrom</string>
-    <string name="notification_channel_name">Báisteach ag teacht</string><string name="notification_channel_description">Foláirimh chiúine nuair a léiríonn gluaiseacht radar báisteach ag teacht</string><string name="notification_rain_title">Báisteach ag teacht chuig %1$s</string><string name="notification_snow_title">Sneachta dóchúil ag teacht chuig %1$s</string><string name="notification_eta">I gceann %1$d nóim · thart ar %2$s</string><string name="notification_detail">%1$s · thart ar %2$d nóim; buaicdhéine %3$d%%</string>
+<string name="notification_channel_name">Foláirimh báistí agus tintrí</string><string name="notification_channel_description">Foláirimh chiúine faoi bháisteach ag teacht agus gníomhaíocht tintrí a breathnaíodh in aice láimhe</string><string name="notification_rain_title">Báisteach ag teacht chuig %1$s</string><string name="notification_snow_title">Sneachta dóchúil ag teacht chuig %1$s</string><string name="notification_eta">I gceann %1$d nóim · thart ar %2$s</string><string name="notification_detail">%1$s · thart ar %2$d nóim; buaicdhéine %3$d%%</string>
     <plurals name="notification_eta_plural"><item quantity="one">I gceann %1$d nóiméad · thart ar %2$s</item><item quantity="two">I gceann %1$d nóiméad · thart ar %2$s</item><item quantity="few">I gceann %1$d nóiméad · thart ar %2$s</item><item quantity="many">I gceann %1$d nóiméad · thart ar %2$s</item><item quantity="other">I gceann %1$d nóiméad · thart ar %2$s</item></plurals>
     <string name="places_switch_description">Roghnaigh áit; roghnaithe: %1$s</string>
     <string name="common_expanded">Leathnaithe</string><string name="common_collapsed">Laghdaíodh</string><string name="common_active_label">Gníomhach</string><string name="common_source_terms">Foinse / téarmaí</string>
@@ -34,7 +34,7 @@
     <string name="direction_north_short">T</string><string name="direction_east_short">O</string><string name="direction_south_short">D</string><string name="direction_west_short">I</string>
     <string name="forecast_unavailable">Réamhaisnéis gan fáil. Athnuaigh chun triail eile a bhaint as.</string><string name="settings_save_failed">Níorbh fhéidir an socrú seo a shábháil. Bain triail eile as.</string><string name="location_permission_unavailable">Níl cead suímh ar fáil. Roghnaigh áit shábháilte nó ceadaigh suíomh tulra.</string><string name="location_weak">Tá cruinneas an tsuímh lag go sealadach.</string><string name="location_provisional">Tá suíomh sealadach in úsáid agus suíomh níos cruinne á fháil.</string><string name="location_approximate">Tá neasláthair in úsáid. Cumasaigh suíomh cruinn don mhód Taistil.</string>
     <string name="weather_kind_location">Suíomh</string><string name="weather_kind_radar">Radar</string><string name="weather_kind_wind">Gaoth</string><string name="weather_kind_clouds">Scamaill</string><string name="weather_kind_lightning">Tintreach</string>
-    <string name="weather_status_loading">%1$s á luchtú%2$s</string><string name="weather_status_unavailable">Níl %1$s ar fáil</string>
+    <string name="weather_status_loading">%1$s á luchtú%2$s</string><string name="weather_status_preparing">%1$s á ullmhú</string><string name="weather_status_unavailable">Níl %1$s ar fáil</string>
     <string name="now_current_radar">Radar reatha</string><string name="now_next_minutes">An chéad %1$d nóiméad eile</string><string name="now_dry_next_hour">Tirim don chéad uair eile</string>
     <string name="now_source_area_forecast">RÉAMHAISNÉIS LIMISTÉIR</string><string name="now_source_estimate">MEAST.</string><string name="now_source_radar">RADAR</string>
     <string name="now_fresh_now">anois</string><string name="now_fresh_minutes">%1$d nóim ó shin</string><string name="now_coverage_through"> · go +%1$d nóim</string>
@@ -88,4 +88,62 @@
     <string name="feature_tour_skip">Scipeáil an turas</string>
     <string name="feature_tour_step_count">Céim %1$d as %2$d</string>
     <string name="feature_tour_pane">Turas aip Rain Alarm</string>
+    <string name="settings_lightning_notification">Fógra gníomhaíochta tintrí</string>
+    <string name="notification_status_lightning_detected">Gníomhaíocht tintrí braite gar do %1$s</string>
+    <string name="notification_status_lightning_clear">Gan aon ghníomhaíocht tintrí le déanaí gar do %1$s</string>
+    <string name="notification_status_lightning_unavailable">Níl sonraí tintrí ar fáil</string>
+    <string name="notification_lightning_title">Gníomhaíocht tintrí braite gar do %1$s</string>
+    <string name="notification_lightning_detail">Braitheadh gníomhaíocht tintrí laistigh de %1$d km.</string>
+    <string name="notification_combined_title">Báisteach ag druidim le %1$s · gníomhaíocht tintrí in aice láimhe</string>
+    <string name="notification_combined_summary">%1$s · gníomhaíocht tintrí braite</string>
+    <string name="notification_combined_detail">%1$s. Braitheadh gníomhaíocht tintrí laistigh de %2$d km; ní réamhaisnéis buailte é seo.</string>
+    <string name="notification_rain_approaching">Báisteach ag druidim</string>
+    <string name="widget_description">Giuirléid aimsire Rain Alarm</string>
+    <string name="widget_tap_to_configure">Tapáil le cumrú</string>
+    <string name="widget_open_to_update">Oscail Rain Alarm chun an suíomh seo a nuashonrú</string>
+    <string name="widget_updating">Á nuashonrú</string>
+    <string name="widget_update_unavailable">Níl nuashonrú ar fáil</string>
+    <string name="widget_update_unavailable_at">Níl nuashonrú ar fáil · ceann deireanach %1$s</string>
+    <string name="widget_updated_at">Nuashonraithe %1$s</string>
+    <string name="widget_lightning_nearby">⚡ Tintreach in aice láimhe</string>
+    <string name="widget_no_recent_lightning">Gan tintreach le déanaí</string>
+    <string name="widget_stops_at">Stopann %1$s</string>
+    <string name="widget_graph_description">Graf déine báistí don chéad uair eile</string>
+    <string name="widget_rain_now">Báisteach anois</string>
+    <string name="widget_rain_in">Báisteach i gceann %1$d nóim</string>
+    <string name="widget_snow_now">Sneachta dóchúil anois</string>
+    <string name="widget_snow_in">Sneachta dóchúil i gceann %1$d nóim</string>
+    <string name="widget_dry_next_hour">Tirim don chéad uair eile</string>
+    <string name="widget_configure_title">Giuirléid Rain Alarm</string>
+    <string name="widget_configure_subtitle">Roghnaigh cad a dhéanann an ghiuirléid seo monatóireacht air agus a thaispeánann sí.</string>
+    <string name="widget_location_heading">SUÍOMH</string>
+    <string name="widget_no_saved_places">Cuir áit shábháilte leis sula gcumraíonn tú giuirléid.</string>
+    <string name="widget_open_places">Oscail Áiteanna</string>
+    <string name="widget_compact_content_heading">ÁBHAR 1×1</string>
+    <string name="widget_content_smart">Cliste</string>
+    <string name="widget_content_rain">Báisteach</string>
+    <string name="widget_content_lightning">Tintreach</string>
+    <string name="widget_content_temperature">Teocht</string>
+    <string name="widget_appearance_heading">CUMA</string>
+    <string name="widget_background_opacity">Teimhneacht an chúlra</string>
+    <string name="widget_percent">%1$d%%</string>
+    <string name="widget_preview_description">Réamhamharc giuirléide le cúlra %1$d faoin gcéad teimhneach</string>
+    <string name="widget_preview_place">Áit shamplach</string>
+    <string name="widget_quiet_hours_heading">FÓGRAÍ</string>
+    <string name="widget_quiet_hours">Ná cuir isteach</string>
+    <string name="widget_quiet_off">Ná cuir isteach · As</string>
+    <string name="widget_quiet_summary">Ná cuir isteach · %1$s–%2$s</string>
+    <string name="widget_quiet_start">Tús</string>
+    <string name="widget_quiet_end">Deireadh</string>
+    <string name="widget_quiet_times_differ">Caithfidh na hamanna tosaigh agus deiridh a bheith difriúil.</string>
+    <string name="widget_quiet_help">Leanann nuashonruithe aimsire ar aghaidh le linn uaireanta ciúine; cuirtear na fógraí ina dtost amháin.</string>
+    <string name="widget_save">Sábháil an ghiuirléid</string>
+    <string name="widget_configuration_required">Roghnaigh áit shábháilte · tapáil chun cumrú</string>
+    <string name="radar_lightning_temporary_state">Cumasaithe go sealadach</string>
+    <string name="radar_lightning_temporary_notice">Tintreach á taispeáint go sealadach · tapáil chun é a choinneáil ar siúl</string>
+<string name="settings_about_background_monitoring_body">Is breathnóireacht ar limistéir splanc optúla carntha thar chúig nóiméad í Tintreach, ní réamhaisnéis stailce. Nuair a theastaíonn sí ó fholáireamh nó giuirléid, seiceálann Rain Alarm limistéar teoranta laistigh de 15 km den áit a ndéantar monatóireacht uirthi le linn an nuashonraithe chúlra thart ar gach 15 nóiméad.</string>
+<string name="settings_about_widget_privacy_body">Coinníonn giuirléidí léargas ar áit shábháilte amháin agus an staid normalaithe aimsire ar an ngléas seo. Seoltar comhordanáidí sábháilte díreach chuig na seirbhísí aimsire roghnaithe; ní úsáideann giuirléidí an suíomh reatha riamh. Ní iarrann Rain Alarm suíomh cúlra.</string>
+    <string name="radar_travel_auto_badge">UATHOIBRÍOCH</string>
+    <string name="radar_travel_auto_accessibility">Am taistil uathoibríoch</string>
+    <string name="radar_current_time_unavailable">Níl am reatha an radair ar fáil</string>
 </resources>

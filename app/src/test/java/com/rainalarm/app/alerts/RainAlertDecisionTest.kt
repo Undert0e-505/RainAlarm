@@ -88,41 +88,42 @@ class RainAlertDecisionTest {
     }
 
     @Test
-    fun notificationSuppressesThroughInclusiveForecastEndAndGraceThenRepeatsWithoutClear() {
+    fun appNotificationIsImmediateThenUsesLegacySuppressionWindow() {
         val event = RadarAlertEvaluation.Approaching(10, 20, 100)
         val first = RainAlertDecisionEngine.decide(event, AlertMemory(), 10_000, 600)
         assertTrue(first.shouldNotify)
         assertTrue(first.nextMemory.lastEventIdentity == 100L)
-        // Minute 20 is inclusive: suppression ends at base + 21 min + 10 min grace.
-        assertEquals(11_860L, first.nextMemory.suppressedUntilEpochSeconds)
-        val duplicate = RainAlertDecisionEngine.decide(event, first.nextMemory, 11_859, 600)
+        val duplicate = RainAlertDecisionEngine.decide(event, first.nextMemory, 10_100, 600)
         assertFalse(duplicate.shouldNotify)
-        assertEquals(11_860L, duplicate.nextMemory.suppressedUntilEpochSeconds)
-        assertTrue(RainAlertDecisionEngine.decide(event, first.nextMemory, 11_860, 600).shouldNotify)
-        assertTrue(RainAlertDecisionEngine.decide(event, first.nextMemory, 11_861, 600).shouldNotify)
+        assertTrue(RainAlertDecisionEngine.decide(
+            event,
+            duplicate.nextMemory,
+            first.nextMemory.suppressedUntilEpochSeconds,
+        ).shouldNotify)
     }
 
-    @Test fun wetUnknownAndClearDoNotNotifyOrExtendTheAcceptedInterval() {
+    @Test fun wetClearAndUnknownDoNotAlterLegacyAppCooldown() {
         val memory = AlertMemory(10_000, 100, 12_000)
-        listOf(RadarAlertEvaluation.WetNow, RadarAlertEvaluation.Unknown, RadarAlertEvaluation.Clear)
-            .forEach { evaluation ->
-                val result = RainAlertDecisionEngine.decide(evaluation, memory, 20_000)
-                assertFalse(result.shouldNotify)
-                assertEquals(memory, result.nextMemory)
-            }
+        val wet = RainAlertDecisionEngine.decide(RadarAlertEvaluation.WetNow, memory, 20_000)
+        assertFalse(wet.shouldNotify)
+        assertFalse(wet.nextMemory.armed)
+        val unknown = RainAlertDecisionEngine.decide(RadarAlertEvaluation.Unknown, wet.nextMemory, 20_001)
+        assertEquals(wet.nextMemory, unknown.nextMemory)
+        val clear = RainAlertDecisionEngine.decide(RadarAlertEvaluation.Clear, unknown.nextMemory, 20_002)
+        assertFalse(clear.shouldNotify)
+        assertEquals(memory.suppressedUntilEpochSeconds, clear.nextMemory.suppressedUntilEpochSeconds)
     }
 
     @Test fun wetThenPartialDryCannotMakeThePlaceOneShot() {
         val event = RadarAlertEvaluation.Approaching(5, 15, 100)
-        val sent = RainAlertDecisionEngine.decide(event, AlertMemory(), 10_000)
+        val armed = RainAlertDecisionEngine.decide(RadarAlertEvaluation.Clear, AlertMemory(), 9_999)
+        val sent = RainAlertDecisionEngine.decide(event, armed.nextMemory, 10_000)
         val wet = RainAlertDecisionEngine.decide(RadarAlertEvaluation.WetNow, sent.nextMemory, 10_600)
         val partialDry = RainAlertDecisionEngine.decide(RadarAlertEvaluation.Unknown, wet.nextMemory, 11_200)
         assertFalse(partialDry.shouldNotify)
         assertEquals(sent.nextMemory.suppressedUntilEpochSeconds,
             partialDry.nextMemory.suppressedUntilEpochSeconds)
-        assertTrue(RainAlertDecisionEngine.decide(
-            event, partialDry.nextMemory, sent.nextMemory.suppressedUntilEpochSeconds,
-        ).shouldNotify)
+        assertTrue(RainAlertDecisionEngine.decide(event, partialDry.nextMemory, 99_999).shouldNotify)
     }
 
     @Test fun expectedStartAnchorsSuppressionAndUnconfirmedHorizonIsConservative() {
@@ -136,7 +137,7 @@ class RainAlertDecisionTest {
         assertEquals(24_260L, RainAlertDecisionEngine.suppressionUntil(event, 20_010))
     }
 
-    @Test fun legacyMemoryExpiresInsteadOfRemainingPermanentlyDisarmed() {
+    @Test fun legacyCooldownBecomesEligibleAtItsStoredBoundaryWithoutPriorClear() {
         assertEquals(17_200L, RainAlertMemoryMigration.suppressionUntil(null, 10_000))
         assertEquals(12_345L, RainAlertMemoryMigration.suppressionUntil(12_345, 10_000))
         assertEquals(0L, RainAlertMemoryMigration.suppressionUntil(null, 0))

@@ -38,6 +38,35 @@ class WeatherUiWiringTest {
         )
     }
 
+    @Test fun `foreground location and lightning changes enter the unified monitor path`() {
+        val main = source("../MainActivity.kt")
+        val coordinator = source("../alerts/WeatherMonitoringCoordinator.kt")
+        assertTrue(main.contains("fun enableLightningAlerts()"))
+        assertTrue(main.contains("monitoringCoordinator.publishForeground(place, provider, series, temperature)"))
+        assertTrue(main.contains("monitoringCoordinator.refreshForeground(place, provider)"))
+        assertTrue(main.contains("requestForegroundMonitoringRefresh(place, persistedRadarProvider.value)"))
+        assertTrue(main.contains("requestForegroundMonitoringRefresh(selected, persistedRadarProvider.value)"))
+        assertTrue(coordinator.contains("suspend fun run(initialWidgetRefreshOnly"))
+        assertTrue(coordinator.contains("suspend fun refreshForeground("))
+    }
+
+    @Test fun `widget first acquisition is durable across configuration foreground and transient failure`() {
+        val configuration = source("../widget/WidgetConfigurationActivity.kt")
+        val store = source("../widget/WidgetStore.kt")
+        val scheduler = source("../alerts/RainAlerts.kt")
+        val coordinator = source("../alerts/WeatherMonitoringCoordinator.kt")
+        assertTrue(configuration.contains("val acquisitionChanged = store.save(config)"))
+        assertTrue(configuration.contains("enqueueWidgetInitialRefresh()"))
+        assertTrue(store.contains("putBoolean(pendingKey(configuration.appWidgetId), true)"))
+        assertTrue(store.contains("remove(pendingKey(id))"))
+        assertTrue(store.contains("recordInitialFailure"))
+        assertTrue(scheduler.contains("ExistingWorkPolicy.REPLACE"))
+        assertTrue(scheduler.contains("setBackoffCriteria(BackoffPolicy.EXPONENTIAL"))
+        assertFalse(coordinator.contains("RETRY_AFTER_FOREGROUND"))
+        assertFalse(coordinator.contains("initialWidgetRefreshOnly && !hasPending"))
+        assertTrue(coordinator.contains("WidgetSnapshotCachePolicy.hasUsableData"))
+    }
+
     @Test fun `deleted place cannot be reinserted by pending UI drag order`() {
         val york = SavedPlace("York", 53.96, -1.08)
         val bath = SavedPlace("Bath", 51.38, -2.36)
@@ -113,7 +142,8 @@ class WeatherUiWiringTest {
         assertFalse(main.contains("runCatching { radarSettings.setProvider(provider) }"))
         assertTrue(forecast.contains("finally {\n            session?.release()"))
         assertTrue(map.contains("private class RadarSessionOverlaySlot"))
-        assertTrue(map.contains("session.release()"))
+        assertTrue(map.contains("session.retain(\"overlay-slot\")"))
+        assertTrue(map.contains("session.release(\"overlay-slot\")"))
         assertTrue(map.contains("releaseSession = {}"))
     }
 
@@ -408,7 +438,7 @@ class WeatherUiWiringTest {
     @Test fun `cloud toggle immediately cancels preparation and removes its rendered request`() {
         val radar = source("RadarScreen.kt")
         val map = source("RadarImageMap.kt")
-        assertTrue(radar.contains("onValueChange = { setMapLayerEnabled(layer, it) }"))
+        assertTrue(radar.contains("else setMapLayerEnabled(layer, it)"))
         assertTrue(radar.contains("if (!cloudsEnabled) {"))
         assertTrue(radar.contains("cloudsStatus = AncillaryStatus.Off"))
         assertTrue(radar.contains("enabledSatelliteLayers = enabledMapLayers.filterTo(mutableSetOf())"))
@@ -440,8 +470,8 @@ class WeatherUiWiringTest {
         val radar = source("RadarScreen.kt")
         val controls = radar.substringAfter(
             "Row(Modifier.align(Alignment.TopEnd).padding(4.dp), verticalAlignment = Alignment.CenterVertically)",
-        ).substringBefore("RadarLayerSegments(enabledMapLayers")
-        val follow = controls.indexOf("R.string.radar_follow_stop")
+        ).substringBefore("RadarLayerSegments(")
+        val follow = controls.indexOf("R.string.radar_follow_start")
         val refresh = controls.indexOf("R.string.radar_refresh")
         val centre = controls.indexOf("R.string.radar_use_location")
         assertTrue(follow >= 0)
@@ -504,8 +534,11 @@ class WeatherUiWiringTest {
         assertNull(SatellitePreparationLabelPolicy.activeLabel(
             RadarMapLayer.FOG, SatellitePreparationStatus.Ready,
         ))
-        assertEquals("Clouds loading", SatellitePreparationLabelPolicy.activeLabel(
+        assertEquals("Clouds preparing", SatellitePreparationLabelPolicy.activeLabel(
             RadarMapLayer.FOG, SatellitePreparationStatus.Rendering,
+        ))
+        assertEquals("Clouds preparing", SatellitePreparationLabelPolicy.activeLabel(
+            RadarMapLayer.FOG, SatellitePreparationStatus.Preparing(6, 6),
         ))
     }
 
@@ -542,7 +575,7 @@ class WeatherUiWiringTest {
                 RadarMapLayer.LIGHTNING to SatellitePreparationStatus.Preparing(1, 2),
             ),
         )
-        assertEquals(listOf("Radar loading", "Wind loading", "Clouds loading", "Lightning loading 1/2"),
+        assertEquals(listOf("Radar loading", "Wind loading", "Clouds preparing", "Lightning loading 1/2"),
             withoutWindProblem.map { it.label })
         assertEquals("Clouds unavailable", RadarPreparationStackPolicy.layerLabel(
             RadarMapLayer.FOG,
@@ -569,7 +602,7 @@ class WeatherUiWiringTest {
                 RadarMapLayer.LIGHTNING to SatellitePreparationStatus.Rendering,
             ),
         )
-        assertEquals(listOf("Clouds loading 5/6", "Lightning loading"),
+        assertEquals(listOf("Clouds loading 5/6", "Lightning preparing"),
             entries.map { it.label })
         assertEquals(36, RadarPreparationStackPolicy.estimatedHeightDp(entries.size))
         assertEquals(entries.map { it.label }.distinct(), entries.map { it.label })
@@ -771,7 +804,8 @@ class WeatherUiWiringTest {
         assertTrue(map.contains("SatelliteProgressiveLoadPolicy.whenReady("))
         assertTrue(map.contains("SatellitePreparationStatus.Preparing(0, requests.size)"))
         assertTrue(map.contains("currentSatellitePreparation(choice, SatellitePreparationStatus.Rendering)"))
-        assertTrue(map.contains("onFrameRendered(choice)"))
+        assertTrue(map.contains("acknowledgeFrame(choice, state, state.active?.planKey)"))
+        assertTrue(map.contains("plan.planKey,"))
         assertTrue(map.contains("currentSatellitePreparation(layer, SatellitePreparationStatus.Ready)"))
         assertFalse(map.contains("satelliteWindow.forEach { add(style"))
         assertFalse(map.contains("applySatelliteLayers("))
@@ -957,7 +991,7 @@ class WeatherUiWiringTest {
         assertTrue(main.contains("selectCoverageMaskDarkness = viewModel::setCoverageMaskDarkness"))
         assertTrue(radarScreen.contains("coverageMaskDarkness = coverageMaskDarkness"))
 
-        assertTrue(map.contains("val desiredRadarSlot = remember(session)"))
+        assertTrue(map.contains("val desiredRadarSlot = remember(mapView, session)"))
         assertFalse(map.contains("remember(session, coverageMaskDarkness)"))
         assertTrue(map.contains("coverageMask.reconcile("))
         assertTrue(map.contains("do not\n            // recreate the style, radar session, camera, timeline or ancillary data"))
@@ -1024,6 +1058,9 @@ class WeatherUiWiringTest {
         assertTrue(settings.contains("Switch(checked = showLikelySnow"))
         assertTrue(main.contains("showLikelySnow = showLikelySnow"))
         assertTrue(radar.contains(
+            "LaunchedEffect(screenActive, requestedRadarIdentity, radarAcquisitionLocationKey, reload)",
+        ))
+        assertFalse(radar.contains(
             "LaunchedEffect(screenActive, requestedRadarIdentity, radarSelectionCoordinates, reload)",
         ))
         assertTrue(radar.contains("RadarRainSessionLoadPolicy.shouldLoad("))

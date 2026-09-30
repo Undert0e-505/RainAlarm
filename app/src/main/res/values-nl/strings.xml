@@ -6,7 +6,7 @@
     <string name="current_location">Huidige locatie</string><string name="selected_now">Nu geselecteerd</string><string name="opens_on_startup">Opent bij starten</string><string name="make_startup">Openen bij starten</string>
     <string name="places_title">Plaatsen</string><string name="places_subtitle">Kies wat Nu en Radar tonen.</string><string name="places_search_hint">Zoek een plaats of postcode</string><string name="places_search_description">Plaatsen zoeken</string><string name="places_no_matches">Geen overeenkomende plaatsen</string><string name="places_add_select">Toevoegen en selecteren</string><string name="places_choose_map">Kies op kaart</string><string name="places_saved_heading">Opgeslagen plaatsen</string><string name="places_reorder_hint">Sleep de greep om te ordenen</string>
 <string name="places_current_available">Live locatie beschikbaar</string><string name="places_current_locating">Huidige locatie zoeken…</string><string name="places_current_unavailable">Huidige locatie niet beschikbaar</string><string name="places_use_current">Live huidige locatie gebruiken</string><string name="places_retry_current">Huidige locatie opnieuw proberen</string><string name="places_save_current">Deze locatie opslaan</string><string name="places_current_selected_status">Geselecteerd: live huidige locatie · niet opgeslagen</string><string name="places_current_saved_status">Locatie is al opgeslagen</string><string name="places_live_location_match">Komt overeen met live locatie</string><string name="places_not_startup">Opent niet bij opstarten</string><string name="places_startup_current_description">%1$s opent bij opstarten</string><string name="places_startup_set_description">%1$s bij opstarten openen</string><string name="places_edit_description">Naam van %1$s wijzigen</string><string name="places_delete_description">%1$s verwijderen</string>
-    <string name="places_privacy">Privacy</string><string name="places_privacy_body">Geen accounts, advertenties, analyse, facturering of achtergrondlocatie. Waarschuwingen voor opgeslagen plaatsen gebruiken opgeslagen coördinaten; live coördinaten blijven in het geheugen tenzij je de huidige locatie opslaat.</string>
+<string name="places_privacy">Privacy</string><string name="places_privacy_body">Geen accounts, advertenties, analyse, facturering of achtergrondlocatie. Waarschuwingen en widgets voor opgeslagen plaatsen gebruiken opgeslagen coördinaten; live coördinaten blijven in het geheugen tenzij je de huidige locatie opslaat.</string>
     <string name="places_rename_title">Naam van opgeslagen plaats wijzigen</string><string name="places_name_label">Plaatsnaam</string><string name="places_name_error">Voer 1–60 tekens zonder besturingstekens in</string><string name="places_deleted">%1$s verwijderd</string><string name="places_delete_failed">%1$s kon niet worden verwijderd. Probeer opnieuw.</string><string name="places_duplicate">Een opgeslagen plaats gebruikt deze coördinaten al.</string><string name="places_drag_description">Houd %1$s vast en sleep om te ordenen</string><string name="places_coordinates">%1$s · %2$s</string><string name="places_move_up">%1$s omhoog</string><string name="places_move_down">%1$s omlaag</string><string name="places_overflow_description">Acties voor %1$s</string>
 <string name="picker_title">Kies op kaart</string><string name="picker_instruction">Verplaats de kaart tot het dradenkruis de plaats markeert.</string><string name="picker_confirm">Deze coördinaten gebruiken</string><string name="picker_coordinate_name">Plaats op %1$.4f, %2$.4f</string><string name="picker_resolving_name">Plaatsnaam zoeken…</string>
     <string name="settings_title">Instellingen</string><string name="settings_subtitle">Pas de radar aan</string><string name="settings_rain_notification">Regenmelding</string><string name="settings_provider_heading">VOORKEURSRADARPROVIDER</string><string name="settings_show_snow">Waarschijnlijke sneeuw tonen</string><string name="settings_indicators_heading">INDICATOREN VOOR NU</string><string name="settings_animation_heading">ANIMATIE</string><string name="settings_playback_speed">Afspeelsnelheid radar</string><string name="settings_playback_help">Start gepauzeerd. Wijzig de snelheid tijdens afspelen of schuiven.</string><string name="settings_wind_size">Grootte windpijlen</string>
@@ -16,7 +16,7 @@
     <string name="appearance_dark">Donker</string><string name="appearance_light">Licht</string><string name="appearance_slate">Leigrijs</string><string name="appearance_follow_system">Systeem volgen</string><string name="appearance_follow_app">App volgen</string>
     <string name="radar_refresh">Radar en kaartlagen vernieuwen</string><string name="radar_follow_start">Reismodus starten</string><string name="radar_follow_stop">Reismodus stoppen</string><string name="radar_travel_mode">Reismodus</string><string name="radar_center_selected">Kaart centreren op %1$s</string><string name="radar_center_unavailable">Centreren kan pas als de geselecteerde locatie bekend is</string><string name="radar_use_location">Huidige apparaatlocatie gebruiken</string><string name="radar_location_loading">Locatie laden</string><string name="radar_location_unavailable">Locatie niet beschikbaar</string><string name="radar_save_place">Deze plaats opslaan</string><string name="radar_save_select">Opslaan en selecteren</string><string name="radar_timeline">Radartijdlijn</string><string name="radar_play">Radartijdlijn afspelen</string><string name="radar_pause">Radartijdlijn pauzeren</string>
     <string name="now_refresh">Radarnowcast vernieuwen</string><string name="now_next_hour">Volgend uur</string><string name="now_now">Nu</string><string name="now_no_rain">Geen regen</string><string name="now_from">Uit %1$s</string><string name="now_raining">Het regent nu</string><string name="now_snow_likely">Waarschijnlijk sneeuw</string><string name="now_rain_in">Regen begint over</string><string name="now_snow_in">Waarschijnlijk sneeuw over</string><string name="now_no_rain_yet">Nog geen regen gedetecteerd</string><string name="now_no_rain_hour">Geen regen verwacht in het komende uur</string><string name="now_sunrise">Zonsopkomst</string><string name="now_sunset">Zonsondergang</string><string name="now_severe">Zwaar</string><string name="now_medium">Matig</string><string name="now_light">Licht</string>
-    <string name="notification_channel_name">Regen op komst</string><string name="notification_channel_description">Rustige meldingen wanneer radarbeweging naderende regen aangeeft</string><string name="notification_rain_title">Regen op komst in %1$s</string><string name="notification_snow_title">Waarschijnlijk sneeuw op komst in %1$s</string><string name="notification_eta">Over %1$d min · rond %2$s</string><string name="notification_detail">%1$s · ongeveer %2$d min; piekintensiteit %3$d%%</string>
+<string name="notification_channel_name">Regen- en bliksemmeldingen</string><string name="notification_channel_description">Rustige meldingen voor naderende regen en waargenomen bliksemactiviteit in de buurt</string><string name="notification_rain_title">Regen op komst in %1$s</string><string name="notification_snow_title">Waarschijnlijk sneeuw op komst in %1$s</string><string name="notification_eta">Over %1$d min · rond %2$s</string><string name="notification_detail">%1$s · ongeveer %2$d min; piekintensiteit %3$d%%</string>
     <plurals name="notification_eta_plural"><item quantity="one">Over %1$d minuut · rond %2$s</item><item quantity="other">Over %1$d minuten · rond %2$s</item></plurals>
     <string name="places_switch_description">Plaats kiezen; geselecteerd: %1$s</string>
     <string name="common_expanded">Uitgevouwen</string><string name="common_collapsed">Ingevouwen</string><string name="common_active_label">Actief</string><string name="common_source_terms">Bron / voorwaarden</string>
@@ -35,7 +35,7 @@
     <string name="direction_north_short">N</string><string name="direction_east_short">O</string><string name="direction_south_short">Z</string><string name="direction_west_short">W</string>
     <string name="forecast_unavailable">Verwachting niet beschikbaar. Tik op vernieuwen om het opnieuw te proberen.</string><string name="settings_save_failed">Kan deze instelling niet opslaan. Probeer het opnieuw.</string><string name="location_permission_unavailable">Locatietoestemming is niet beschikbaar. Kies een opgeslagen plaats of geef voorgrondtoestemming.</string><string name="location_weak">De locatienauwkeurigheid is tijdelijk zwak.</string><string name="location_provisional">Een voorlopige locatie wordt gebruikt terwijl een nauwkeurigere fix wordt gezocht.</string><string name="location_approximate">Geschatte locatie wordt gebruikt. Schakel precieze locatie in voor Reismodus.</string>
     <string name="weather_kind_location">Locatie</string><string name="weather_kind_radar">Radar</string><string name="weather_kind_wind">Wind</string><string name="weather_kind_clouds">Bewolking</string><string name="weather_kind_lightning">Bliksem</string>
-    <string name="weather_status_loading">%1$s laden%2$s</string><string name="weather_status_unavailable">%1$s niet beschikbaar</string>
+    <string name="weather_status_loading">%1$s laden%2$s</string><string name="weather_status_preparing">%1$s voorbereiden</string><string name="weather_status_unavailable">%1$s niet beschikbaar</string>
     <string name="now_current_radar">Huidige radar</string><string name="now_next_minutes">Volgende %1$d minuten</string><string name="now_dry_next_hour">Komend uur droog</string>
     <string name="now_source_area_forecast">GEBIEDSVERWACHTING</string><string name="now_source_estimate">SCHAT.</string><string name="now_source_radar">RADAR</string>
     <string name="now_fresh_now">nu</string><string name="now_fresh_minutes">%1$d min geleden</string><string name="now_coverage_through"> · tot +%1$d min</string>
@@ -89,4 +89,62 @@
     <string name="feature_tour_skip">Rondleiding overslaan</string>
     <string name="feature_tour_step_count">Stap %1$d van %2$d</string>
     <string name="feature_tour_pane">Rondleiding door Rain Alarm</string>
+    <string name="settings_lightning_notification">Melding voor bliksemactiviteit</string>
+    <string name="notification_status_lightning_detected">Bliksemactiviteit gedetecteerd bij %1$s</string>
+    <string name="notification_status_lightning_clear">Geen recente bliksemactiviteit bij %1$s</string>
+    <string name="notification_status_lightning_unavailable">Bliksemgegevens niet beschikbaar</string>
+    <string name="notification_lightning_title">Bliksemactiviteit gedetecteerd bij %1$s</string>
+    <string name="notification_lightning_detail">Bliksemactiviteit is binnen %1$d km gedetecteerd.</string>
+    <string name="notification_combined_title">Regen nadert %1$s · bliksemactiviteit in de buurt</string>
+    <string name="notification_combined_summary">%1$s · bliksemactiviteit gedetecteerd</string>
+    <string name="notification_combined_detail">%1$s. Bliksemactiviteit is binnen %2$d km gedetecteerd; dit is geen inslagvoorspelling.</string>
+    <string name="notification_rain_approaching">Regen nadert</string>
+    <string name="widget_description">Weerwidget van Rain Alarm</string>
+    <string name="widget_tap_to_configure">Tik om in te stellen</string>
+    <string name="widget_open_to_update">Open Rain Alarm om deze locatie bij te werken</string>
+    <string name="widget_updating">Bijwerken</string>
+    <string name="widget_update_unavailable">Update niet beschikbaar</string>
+    <string name="widget_update_unavailable_at">Update niet beschikbaar · laatste %1$s</string>
+    <string name="widget_updated_at">Bijgewerkt %1$s</string>
+    <string name="widget_lightning_nearby">⚡ Bliksem in de buurt</string>
+    <string name="widget_no_recent_lightning">Geen recente bliksem</string>
+    <string name="widget_stops_at">Stopt %1$s</string>
+    <string name="widget_graph_description">Grafiek met regenintensiteit voor het komende uur</string>
+    <string name="widget_rain_now">Nu regen</string>
+    <string name="widget_rain_in">Regen over %1$d min</string>
+    <string name="widget_snow_now">Waarschijnlijk nu sneeuw</string>
+    <string name="widget_snow_in">Waarschijnlijk sneeuw over %1$d min</string>
+    <string name="widget_dry_next_hour">Komend uur droog</string>
+    <string name="widget_configure_title">Rain Alarm-widget</string>
+    <string name="widget_configure_subtitle">Kies wat deze widget bewaakt en toont.</string>
+    <string name="widget_location_heading">LOCATIE</string>
+    <string name="widget_no_saved_places">Voeg een opgeslagen plaats toe voordat je een widget instelt.</string>
+    <string name="widget_open_places">Plaatsen openen</string>
+    <string name="widget_compact_content_heading">1×1-INHOUD</string>
+    <string name="widget_content_smart">Slim</string>
+    <string name="widget_content_rain">Regen</string>
+    <string name="widget_content_lightning">Bliksem</string>
+    <string name="widget_content_temperature">Temperatuur</string>
+    <string name="widget_appearance_heading">WEERGAVE</string>
+    <string name="widget_background_opacity">Achtergronddekking</string>
+    <string name="widget_percent">%1$d%%</string>
+    <string name="widget_preview_description">Widgetvoorbeeld met %1$d procent achtergronddekking</string>
+    <string name="widget_preview_place">Voorbeeldplaats</string>
+    <string name="widget_quiet_hours_heading">MELDINGEN</string>
+    <string name="widget_quiet_hours">Niet storen</string>
+    <string name="widget_quiet_off">Niet storen · Uit</string>
+    <string name="widget_quiet_summary">Niet storen · %1$s–%2$s</string>
+    <string name="widget_quiet_start">Begin</string>
+    <string name="widget_quiet_end">Einde</string>
+    <string name="widget_quiet_times_differ">Begin- en eindtijd moeten verschillen.</string>
+    <string name="widget_quiet_help">Weerupdates gaan door tijdens stille uren; alleen meldingen worden gedempt.</string>
+    <string name="widget_save">Widget opslaan</string>
+    <string name="widget_configuration_required">Kies een opgeslagen plaats · tik om in te stellen</string>
+    <string name="radar_lightning_temporary_state">Tijdelijk ingeschakeld</string>
+    <string name="radar_lightning_temporary_notice">Bliksem tijdelijk getoond · tik om aan te houden</string>
+<string name="settings_about_background_monitoring_body">Bliksem is een waarneming van optische flitsgebieden die over vijf minuten zijn opgeteld, geen inslagvoorspelling. Als een melding of widget dit nodig heeft, controleert Rain Alarm tijdens de ongeveer 15-minuten achtergrondupdate een begrensd gebied binnen 15 km van de bewaakte plaats.</string>
+<string name="settings_about_widget_privacy_body">Widgets bewaren één momentopname van een opgeslagen plaats en genormaliseerde weerstatus op dit apparaat. Opgeslagen coördinaten gaan rechtstreeks naar de gekozen weerdiensten; widgets gebruiken nooit de huidige locatie. Rain Alarm vraagt geen achtergrondlocatie aan.</string>
+    <string name="radar_travel_auto_badge">AUTO</string>
+    <string name="radar_travel_auto_accessibility">Reistijd automatisch</string>
+    <string name="radar_current_time_unavailable">Huidige radartijd niet beschikbaar</string>
 </resources>

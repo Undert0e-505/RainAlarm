@@ -488,9 +488,17 @@ data class RadarSession(
     val denseVelocity: Map<RadarResolutionTier, DenseVelocitySet> = emptyMap(),
     val legacyArchive: LegacyRadarArchive? = null,
     val mapCoverage: RadarCoverageRaster? = null,
+    /**
+     * Bitmap ownership is shared by the retained screen state and any native renderer slots.
+     * Data-class copies deliberately carry the same lease because they only decorate one logical
+     * session (for example with the provider-selection result).
+     */
+    val resourceLease: RadarSessionResourceLease = RadarSessionResourceLease(
+        regional,
+        detail,
+        mapCoverage,
+    ),
 ) {
-    private val released = AtomicBoolean(false)
-
     init {
         require(regional != null || detail != null || legacyArchive != null) { "Radar session needs radar data" }
     }
@@ -499,7 +507,7 @@ data class RadarSession(
     val timelineFrames: List<RainViewerFrame>
         get() = legacyArchive?.frames?.map { it.frame } ?: frames.map { it.frame }
     val bounds: GeoQuad get() = (detail ?: regional)?.bounds ?: requireNotNull(region).bounds
-    val isReleased: Boolean get() = released.get()
+    val isReleased: Boolean get() = resourceLease.isReleased
 
     fun tier(tier: RadarResolutionTier): RadarTierFrames? = when (tier) {
         RadarResolutionTier.REGIONAL -> regional
@@ -508,16 +516,70 @@ data class RadarSession(
 
     fun velocity(tier: RadarResolutionTier): DenseVelocitySet? = denseVelocity[tier]
 
-    fun release() {
-        if (!released.compareAndSet(false, true)) return
-        val released = Collections.newSetFromMap(IdentityHashMap<Bitmap, Boolean>())
-        listOfNotNull(regional, detail).flatMap { it.frames }.forEach {
-            if (released.add(it.bitmap) && !it.bitmap.isRecycled) it.bitmap.recycle()
-            it.velocityBitmap?.let { velocity ->
-                if (released.add(velocity) && !velocity.isRecycled) velocity.recycle()
+    fun retain(owner: String = "renderer"): RadarSession {
+        resourceLease.retain(owner)
+        return this
+    }
+
+    fun release(owner: String = "unspecified") = resourceLease.release(owner)
+}
+
+/**
+ * Reference-counted resources for one logical radar session.
+ *
+ * RadarScreen retains one owner while each native overlay slot retains another. This lets a slot
+ * survive a state replacement until its successor is renderable, while disposing a MapView can no
+ * longer recycle data that the retained screen state will reuse on re-entry.
+ */
+class RadarSessionResourceLease(
+    regional: RadarTierFrames?,
+    detail: RadarTierFrames?,
+    mapCoverage: RadarCoverageRaster?,
+) {
+    private val ownerCount = java.util.concurrent.atomic.AtomicInteger(1)
+    private val recycled = AtomicBoolean(false)
+    private val bitmaps = buildList {
+        listOfNotNull(regional, detail).flatMapTo(this) { tier ->
+            tier.frames.flatMap { frame -> listOfNotNull(frame.bitmap, frame.velocityBitmap) }
+        }
+        mapCoverage?.bitmap?.let(::add)
+    }
+
+    val isReleased: Boolean get() = recycled.get()
+    internal val owners: Int get() = ownerCount.get()
+
+    internal fun retain(owner: String) {
+        while (true) {
+            val current = ownerCount.get()
+            check(current > 0 && !recycled.get()) {
+                "Cannot retain released radar session for $owner"
+            }
+            if (ownerCount.compareAndSet(current, current + 1)) {
+                trace("retain", owner, current + 1)
+                return
             }
         }
-        mapCoverage?.bitmap?.let { if (released.add(it) && !it.isRecycled) it.recycle() }
+    }
+
+    internal fun release(owner: String) {
+        val remaining = ownerCount.decrementAndGet()
+        check(remaining >= 0) { "Radar session released too many times by $owner" }
+        trace("release", owner, remaining)
+        if (remaining != 0 || !recycled.compareAndSet(false, true)) return
+        val unique = Collections.newSetFromMap(IdentityHashMap<Bitmap, Boolean>())
+        bitmaps.forEach { bitmap ->
+            if (unique.add(bitmap) && !bitmap.isRecycled) bitmap.recycle()
+        }
+    }
+
+    /** Keep this pure-JVM-testable without adding an Android logging dependency to the lease. */
+    private fun trace(event: String, owner: String, references: Int) {
+        runCatching {
+            android.util.Log.i(
+                "RainRadarSession",
+                "event=$event lease=${System.identityHashCode(this)} owner=$owner refs=$references",
+            )
+        }
     }
 }
 
@@ -615,48 +677,60 @@ class RadarSessionLoader(
             throw failure
         }
 
-        val regionalAnalyses = regionalDownload?.analyses.orEmpty()
-        val detailAnalyses = detailDownload?.analyses.orEmpty()
-        val regionalAggregate = estimatePhysicalAggregate(
-            regionalAnalyses.takeLast(5),
-            RadarResolutionTier.REGIONAL,
-            regionalDownload?.tierFrames?.bounds,
+        // Dense motion estimation is the named post-transfer "preparing" phase. Running it on
+        // the LaunchedEffect/Main caller previously left the UI stuck at N/N and prevented the
+        // enclosing deadline from firing until all CPU work completed.
+        data class MotionPreparation(
+            val regionalAggregate: PhysicalRadarMotion?,
+            val detailAggregate: PhysicalRadarMotion?,
+            val pairMotions: List<PhysicalRadarMotion?>,
+            val denseVelocity: Map<RadarResolutionTier, DenseVelocitySet>,
         )
-        val detailAggregate = estimatePhysicalAggregate(
-            detailAnalyses.takeLast(5),
-            RadarResolutionTier.DETAIL,
-            detailDownload?.tierFrames?.bounds,
-        )
-        val pairMotions = (0 until selectedFrames.lastIndex).map { index ->
-            val regionalPair = estimatePhysicalPair(
-                regionalAnalyses.getOrNull(index),
-                regionalAnalyses.getOrNull(index + 1),
-                RadarResolutionTier.REGIONAL,
+        val motionPreparation = withContext(Dispatchers.Default) {
+            val preparationContext = currentCoroutineContext()
+            val regionalAnalyses = regionalDownload?.analyses.orEmpty()
+            val detailAnalyses = detailDownload?.analyses.orEmpty()
+            val regionalAggregate = estimatePhysicalAggregate(
+                regionalAnalyses.takeLast(5), RadarResolutionTier.REGIONAL,
                 regionalDownload?.tierFrames?.bounds,
             )
-            val detailPair = estimatePhysicalPair(
-                detailAnalyses.getOrNull(index),
-                detailAnalyses.getOrNull(index + 1),
-                RadarResolutionTier.DETAIL,
+            val detailAggregate = estimatePhysicalAggregate(
+                detailAnalyses.takeLast(5), RadarResolutionTier.DETAIL,
                 detailDownload?.tierFrames?.bounds,
             )
-            RadarMotionPolicy.preferred(regionalPair, detailPair)
-        }
-        fun dense(download: DownloadedTier?): DenseVelocitySet? {
-            download ?: return null
-            val fields: List<RadarVelocityField?> = (0 until download.analyses.lastIndex).map { index ->
-                DenseRadarMotionEstimator.estimatePair(
-                    download.analyses[index],
-                    download.analyses[index + 1],
-                    download.tierFrames.frames[index].bitmap.width,
-                    download.tierFrames.frames[index].bitmap.height,
+            val pairMotions = (0 until selectedFrames.lastIndex).map { index ->
+                val regionalPair = estimatePhysicalPair(
+                    regionalAnalyses.getOrNull(index), regionalAnalyses.getOrNull(index + 1),
+                    RadarResolutionTier.REGIONAL, regionalDownload?.tierFrames?.bounds,
                 )
+                val detailPair = estimatePhysicalPair(
+                    detailAnalyses.getOrNull(index), detailAnalyses.getOrNull(index + 1),
+                    RadarResolutionTier.DETAIL, detailDownload?.tierFrames?.bounds,
+                )
+                RadarMotionPolicy.preferred(regionalPair, detailPair)
             }
-            return DenseVelocitySet(fields, DenseRadarMotionEstimator.aggregate(fields))
-        }
-        val denseVelocity = buildMap {
-            dense(regionalDownload)?.let { put(RadarResolutionTier.REGIONAL, it) }
-            dense(detailDownload)?.let { put(RadarResolutionTier.DETAIL, it) }
+            fun dense(download: DownloadedTier?): DenseVelocitySet? {
+                download ?: return null
+                val fields: List<RadarVelocityField?> =
+                    (0 until download.analyses.lastIndex).map { index ->
+                        preparationContext.ensureActive()
+                        DenseRadarMotionEstimator.estimatePair(
+                            download.analyses[index], download.analyses[index + 1],
+                            download.tierFrames.frames[index].bitmap.width,
+                            download.tierFrames.frames[index].bitmap.height,
+                        )
+                    }
+                return DenseVelocitySet(fields, DenseRadarMotionEstimator.aggregate(fields))
+            }
+            MotionPreparation(
+                regionalAggregate = regionalAggregate,
+                detailAggregate = detailAggregate,
+                pairMotions = pairMotions,
+                denseVelocity = buildMap {
+                    dense(regionalDownload)?.let { put(RadarResolutionTier.REGIONAL, it) }
+                    dense(detailDownload)?.let { put(RadarResolutionTier.DETAIL, it) }
+                },
+            )
         }
         val detailCoverage = coverageGridDeferred?.await()
         val mapCoverage = coverageRasterDeferred?.await()
@@ -664,13 +738,15 @@ class RadarSessionLoader(
             place = place,
             regional = regionalDownload?.tierFrames,
             detail = detailDownload?.tierFrames,
-            motion = RadarMotionPolicy.preferred(regionalAggregate, detailAggregate),
-            pairMotions = pairMotions,
+            motion = RadarMotionPolicy.preferred(
+                motionPreparation.regionalAggregate, motionPreparation.detailAggregate,
+            ),
+            pairMotions = motionPreparation.pairMotions,
             latestDetailIntensity = detailDownload?.latestSamplingGrid,
             latestDetailSnow = detailDownload?.latestSnowGrid,
             latestDetailCoverage = detailCoverage,
             detailFailureMessage = detailFailure,
-            denseVelocity = denseVelocity,
+            denseVelocity = motionPreparation.denseVelocity,
             mapCoverage = mapCoverage,
         )
     }

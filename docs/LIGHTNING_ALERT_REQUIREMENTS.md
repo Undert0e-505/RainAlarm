@@ -1,15 +1,16 @@
 # Lightning activity alert requirements
 
-> **Status: planned, not implemented.** This document defines the app-level lightning activity
-> alert and Radar deep-link behaviour for a future release. It is deliberately separate from the
-> [home-screen widget requirements](WIDGET_REQUIREMENTS.md): lightning alerts must work when no
-> widget has been added.
+> **Status: implemented in Rain Alarm 0.9.0.** This remains the normative engineering description
+> of the app-level lightning activity alert and Radar deep-link behaviour. It is deliberately
+> separate from the [home-screen widget requirements](WIDGET_REQUIREMENTS.md): lightning alerts
+> work when no widget has been added. Device and live-provider validation continues on the road to
+> 1.0.
 
 ## Objective
 
-Rain Alarm will optionally monitor recent EUMETSAT lightning observations near the same place as
-its rain alert evaluation. It will send one low-noise notification when a new nearby lightning
-episode is detected, combine that information with a rain alert when both begin together, and open
+Rain Alarm can optionally monitor recent EUMETSAT lightning observations near the same place as
+its rain alert evaluation. It sends one low-noise notification when a new nearby lightning
+episode is detected, combines that information with a rain alert when both begin together, and opens
 Radar with Lightning temporarily visible when the user follows the notification.
 
 This is an observation feature, not a strike forecast or a safety warning.
@@ -61,8 +62,12 @@ authoritative.
 - On first install and on upgrade from a version without this preference, Lightning is off.
 - Enabling it uses Android's existing notification runtime-permission flow. If permission is
   denied, the switch returns to off and Settings explains that notification permission is needed.
-- A transition from off to on begins alert eligibility unarmed. A detected episode may be shown,
-  but a successful no-detection evaluation must occur before a later episode can notify.
+- A transition from off to on makes the first valid nearby-detection episode immediately eligible.
+  It does not require a prior no-detection poll. Continuing detections in that same episode remain
+  suppressed until a successful no-detection evaluation ends/re-arms the episode.
+- If Android notification permission is unavailable, do not advance or consume the alert episode.
+  Display-only widget evidence may still update without making that event ineligible after
+  permission is granted.
 - Enabling Lightning does not change the persistent Radar Lightning layer choice. Toggling the
   Radar layer does not change the alert switch.
 - Disabling Lightning prevents lightning notifications and cancels lightning-only **alert** work.
@@ -94,10 +99,9 @@ For every target transaction:
 
 The supported target modes are:
 
-- **Fixed saved place** — resolve the current coordinates of that saved-place ID. Renaming the
-  place changes its label without creating a new weather episode; materially changing its
-  coordinates creates a new target identity for alert-state purposes.
-- **Follow app selection** — resolve whichever saved place or virtual Current location the app is
+- **Widget saved-place snapshot** — each widget persists one frozen saved-place ID, label and
+  coordinate. App navigation cannot change it; deletion of the source row does not stop it.
+- **App alert selection** — resolve whichever saved place or virtual Current location the app is
   using when the transaction begins. It must not silently fall back to the startup-pinned place.
 
 Virtual **Current location** can be evaluated only from a lawful fix obtained while the app was in
@@ -122,7 +126,8 @@ deduplicate work and notifications.
 - The newest advertised frame must be no more than 30 minutes old and no more than five minutes in
   the future, matching the existing Lightning overlay freshness envelope. Otherwise the evaluation
   is unavailable.
-- Store the last completely processed advertised frame identity per target/configuration. On each
+- Store the last completely processed advertised frame identity per coordinate/radius
+  configuration, independent of the selected rain provider. On each
   check, evaluate every new five-minute frame after that checkpoint through the latest fresh frame;
   a roughly 15-minute worker interval must not sample only the latest frame and miss intervening
   activity.
@@ -174,21 +179,22 @@ provider errors remain internal diagnostics.
 
 ## Episode state and deduplication
 
-Lightning uses an arming state separate from rain:
+Lightning uses an active-episode state separate from rain:
 
-| Input | Armed before | Notification | State after |
+| Input | Episode before | Notification | State after |
 | --- | --- | --- | --- |
-| Complete `NoDetection` | either | none | armed |
-| First `Detected` | yes | one lightning event | disarmed/active episode |
-| Continuing `Detected` | no | none | disarmed/active episode |
+| Complete `NoDetection` | either | none | inactive/re-armed |
+| First `Detected` | inactive or no prior state | one lightning event | active episode |
+| Continuing `Detected` | active | none | active episode |
 | `Unavailable` or `NoNewFrames` | either | none | unchanged |
 
 Apply this state chronologically to all newly discovered frames. Thus, a complete clear frame
-followed by a detected frame can arm and trigger within one catch-up transaction. On a first-ever
-check that contains only detected activity, record the active episode without notifying; a
-successful no-detection evaluation is required before the first alert.
+followed by a detected frame can re-arm and trigger within one catch-up transaction. A first-ever
+valid check that contains detected activity also notifies immediately. Notification permission
+must be available before this state advances, so a permission failure cannot silently consume the
+first eligible episode.
 
-Persist, per target/configuration:
+Persist, per coordinate/radius target identity (independent of the selected rain provider):
 
 - armed/active-episode state;
 - the last contiguous successful frame identity;
@@ -217,11 +223,12 @@ the notification decision path.
 - If rain and alert-enabled lightning both newly qualify in the same transaction, issue one
   combined notification rather than two alerts.
 - If rain was already notified and lightning begins later, Lightning can issue its own notification.
-- If Lightning was already notified and a separately armed rain episode later approaches, Rain can
+- If Lightning was already notified and a separately eligible rain episode later approaches, Rain can
   notify without repeating Lightning as a new event. The current nearby-lightning fact may be shown
   as secondary context, but must not sound twice.
-- A rain notification is eligible only after the separate rain state was armed by an earlier
-  successful evaluation showing no rain anywhere in the complete 0–60 minute window. See
+- The app's selected-place Rain notification keeps its established immediate approaching-rain and
+  cooldown/deduplication behaviour. Only widget monitoring subscriptions require an earlier
+  successful complete-clear 0–60 minute evaluation before their next rain episode can notify. See
   [Widget alerts](WIDGET_REQUIREMENTS.md#alerts-and-notification-state).
 - Likely-snow wording continues to come only from a provider that supports that classification.
 
@@ -301,13 +308,18 @@ ordinary tab navigation during the same lease. The Temporary icon needs a TalkBa
   neither that display demand nor an enabled Lightning alert exists, skip Lightning work entirely.
 - Scheduled work is network-constrained and approximately 15-minute, not exact. Doze, battery
   controls and force-stop can defer or prevent it.
-- While the app is visible in the foreground, redundant background/widget polling is suspended.
-  Foreground refreshes run Lightning only when an enabled alert or matching widget display requires
-  it, use the same frozen target/evaluator, and enter the atomic alert-decision path only when
-  Lightning notifications are enabled. The result then updates matching widgets.
-- “Open” means foreground and visible, not merely retained in Recents or kept in the process.
-- When the app leaves the foreground, scheduled polling resumes without clearing checkpoints,
-  re-arming an episode or generating a duplicate notification.
+- Widget polling remains eligible while the app is visible, backgrounded or process-recreated and
+  never depends on a foreground callback. Matching foreground app and widget requests may share
+  safe repository work, but every widget target receives a terminal result/publication.
+- Foreground refreshes run Lightning only when an enabled app alert requires it, use the same frozen
+  target/evaluator, and enter the atomic alert-decision path only when Lightning notifications are
+  enabled. A widget layout that needs Lightning can demand its own saved-target observation even
+  while the notification switch is off.
+- Enabling Lightning or changing the selected monitored place while the app is visible directly
+  starts that foreground app evaluation. A usable just-fetched Now series can be reused;
+  a failed rain fetch does not prevent the independent Lightning evaluation.
+- App lifecycle changes do not clear checkpoints, re-arm an episode or generate a duplicate
+  notification.
 - Only one evaluation for a target/configuration may be in flight. A stale completion cannot
   overwrite a newer foreground or worker result.
 
@@ -315,8 +327,8 @@ ordinary tab navigation during the same lease. The Temporary icon needs a TalkBa
 
 - The bounded target coordinate and image request go directly to EUMETSAT over HTTPS. Rain Alarm
   still has no account, analytics or application server.
-- The privacy disclosure and Settings **About the data** section must be updated before release to
-  describe background Lightning requests, their purpose, cadence and provider.
+- Keep the privacy disclosure and Settings **About the data** section aligned with background
+  Lightning requests, their purpose, cadence and provider.
 - Do not log precise coordinates, WMS URLs containing precise bounds, or decoded local imagery.
 - Keep cached local lightning images bounded and short-lived. Persist decisions/frame identities,
   not imagery, unless an existing bounded cache safely owns it.
@@ -335,12 +347,15 @@ Automated tests must cover at least:
 - coverage clipping, malformed/transparent/no-data images and stale/future metadata;
 - chronological catch-up across at least three five-minute frames and duplicate frame identities;
 - `NoDetection -> Detected -> Detected -> NoDetection -> Detected` episode transitions;
-- unavailable checks preserving armed/disarmed state and checkpoints;
+- unavailable checks preserving active/inactive state and checkpoints;
+- first-detection eligibility, continuation suppression, permission-unavailable non-consumption,
+  successful no-detection re-arming and provider-independent episode identity;
 - atomic deduplication across worker/foreground execution and identical widget targets;
 - combined rain/lightning, lightning-only-later and rain-only-later notification decisions;
 - per-widget DND suppression, consumed episodes with no end-of-quiet catch-up, and later
   no-detection re-arming without interrupting observation/display;
-- fixed, Follow-app and unavailable Current-location target resolution;
+- independent widget saved-place snapshots, legacy target migration and unavailable app Current
+  target resolution;
 - deep-link target isolation, deleted-place snapshot handling and unique PendingIntents;
 - ten-minute wall-clock expiry across navigation, backgrounding and process recreation;
 - Off/Temporary/On tap transitions, restoration of the persistent state and TalkBack descriptions;

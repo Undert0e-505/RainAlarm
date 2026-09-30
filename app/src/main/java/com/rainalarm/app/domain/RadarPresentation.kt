@@ -2,6 +2,7 @@ package com.rainalarm.app.domain
 
 import com.rainalarm.app.data.SavedPlace
 import java.time.Instant
+import java.time.Clock
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -37,6 +38,139 @@ object RadarEntryClock {
         return if (forecastAvailable && nowEpochSeconds in latestObservationEpochSeconds..endEpochSeconds) {
             (nowEpochSeconds - firstEpochSeconds).toFloat()
         } else latest.toFloat()
+    }
+}
+
+data class RadarTravelTimelineFrame(
+    val dataCursorSeconds: Float,
+    val displayStartEpochSeconds: Long,
+    val displayEndEpochSeconds: Long,
+    val displayCursorSeconds: Float,
+    val wallClockCovered: Boolean,
+)
+
+/** Pure mapping for Travel's rolling wall-clock timeline and fixed on-screen marker. */
+object RadarTravelTimelinePolicy {
+    const val MARKER_FRACTION = 0.64f
+
+    fun frame(
+        nowEpochSeconds: Long,
+        dataStartEpochSeconds: Long,
+        latestObservationEpochSeconds: Long,
+        dataEndEpochSeconds: Long,
+        forecastAvailable: Boolean,
+    ): RadarTravelTimelineFrame {
+        require(dataEndEpochSeconds >= dataStartEpochSeconds)
+        val usableEnd = if (forecastAvailable) dataEndEpochSeconds else latestObservationEpochSeconds
+        val covered = nowEpochSeconds in dataStartEpochSeconds..usableEnd
+        val selected = nowEpochSeconds.coerceIn(dataStartEpochSeconds, usableEnd)
+        val duration = (dataEndEpochSeconds - dataStartEpochSeconds).coerceAtLeast(1L)
+        val before = (duration * MARKER_FRACTION).toLong()
+        val displayStart = nowEpochSeconds - before
+        return RadarTravelTimelineFrame(
+            dataCursorSeconds = (selected - dataStartEpochSeconds).toFloat(),
+            displayStartEpochSeconds = displayStart,
+            displayEndEpochSeconds = displayStart + duration,
+            displayCursorSeconds = duration * MARKER_FRACTION,
+            wallClockCovered = covered,
+        )
+    }
+
+    fun dataCursorForManualSelection(
+        displayCursorSeconds: Float,
+        frame: RadarTravelTimelineFrame,
+        dataStartEpochSeconds: Long,
+        dataEndEpochSeconds: Long,
+    ): Float {
+        val epoch = frame.displayStartEpochSeconds + displayCursorSeconds.toLong()
+        return (epoch.coerceIn(dataStartEpochSeconds, dataEndEpochSeconds) - dataStartEpochSeconds)
+            .toFloat()
+    }
+}
+
+enum class RadarTravelTransitionReason {
+    USER_ENTER,
+    USER_EXIT,
+    USER_MAP_GESTURE,
+    TIMELINE_MANUAL,
+    PROGRAMMATIC_CAMERA,
+    PERMISSION_LOST,
+    TRANSIENT_FIX,
+    LIFECYCLE,
+}
+
+/** Only deliberate user exit, a genuine map gesture, or permission loss ends location follow. */
+object RadarTravelModePolicy {
+    fun next(current: Boolean, reason: RadarTravelTransitionReason): Boolean = when (reason) {
+        RadarTravelTransitionReason.USER_ENTER -> true
+        RadarTravelTransitionReason.USER_EXIT,
+        RadarTravelTransitionReason.USER_MAP_GESTURE,
+        RadarTravelTransitionReason.PERMISSION_LOST,
+        -> false
+        RadarTravelTransitionReason.TIMELINE_MANUAL,
+        RadarTravelTransitionReason.PROGRAMMATIC_CAMERA,
+        RadarTravelTransitionReason.TRANSIENT_FIX,
+        RadarTravelTransitionReason.LIFECYCLE,
+        -> current
+    }
+}
+
+/** Guards MapLibre's gesture reason with proof that this MapView owns an active pointer stream. */
+class RadarMapGestureOwnership {
+    private var pointerActive = false
+
+    fun pointerStarted(ownedByMap: Boolean = true) {
+        pointerActive = ownedByMap
+    }
+
+    fun pointerFinished() {
+        pointerActive = false
+    }
+
+    fun acceptsCameraStart(isMapGestureReason: Boolean): Boolean =
+        isMapGestureReason && pointerActive
+}
+
+/** Compose controls overlay this band; their pass-through pointer must never count as a map pan. */
+object RadarMapTouchPolicy {
+    const val topControlsExclusionDp = 64f
+
+    fun pointerOwnedByMap(pointerYpx: Float, density: Float): Boolean =
+        pointerYpx >= topControlsExclusionDp * density.coerceAtLeast(1f)
+}
+
+data class RadarTravelClockSnapshot(
+    val epochSeconds: Long,
+    val localMinuteText: String,
+)
+
+/** Exact wall-clock source for Travel AUTO; provider cadence never rounds the visible time. */
+object RadarTravelClockPolicy {
+    fun snapshot(
+        clock: Clock,
+        zoneId: ZoneId,
+        use24Hour: Boolean = true,
+        locale: Locale = Locale.getDefault(),
+    ): RadarTravelClockSnapshot = snapshotAt(
+        clock.instant().epochSecond,
+        zoneId,
+        use24Hour,
+        locale,
+    )
+
+    fun snapshotAt(
+        epochSeconds: Long,
+        zoneId: ZoneId,
+        use24Hour: Boolean = true,
+        locale: Locale = Locale.getDefault(),
+    ): RadarTravelClockSnapshot {
+        val pattern = if (use24Hour) "HH:mm" else "h:mm a"
+        return RadarTravelClockSnapshot(
+            epochSeconds,
+            DateTimeFormatter.ofPattern(pattern, locale).format(
+                Instant.ofEpochSecond(epochSeconds).atZone(zoneId),
+            ),
+        )
     }
 }
 

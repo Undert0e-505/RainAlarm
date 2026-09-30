@@ -2,7 +2,7 @@
 
 Rain Alarm is designed without user accounts, advertising, analytics, billing or embedded provider credentials. It does not operate an application server: the app talks directly to the weather, map and search services needed for the feature the user requests.
 
-This disclosure describes version 0.4.1. Provider services necessarily receive ordinary network metadata such as the connecting IP address; consult each provider's current terms and privacy policy for how it handles that traffic.
+This disclosure describes version 0.9.0. Provider services necessarily receive ordinary network metadata such as the connecting IP address; consult each provider's current terms and privacy policy for how it handles that traffic.
 
 ## Android permissions
 
@@ -18,19 +18,29 @@ Rain Alarm does not call a web location endpoint to obtain the device position. 
 
 A fresh install requests foreground location once. Denial leaves Current unavailable and allows a saved place to be selected instead. Approximate permission remains useful for provisional Current, but Travel requires Android's Precise location choice.
 
-Ordinary Current targets a five-second update interval. Travel requests precise fixes on a 200 ms raster, with actual delivery governed by Android and the GNSS hardware. Travel is opt-in, is not persisted and stops when Radar leaves composition, Current is deselected or the app backgrounds. It keeps the screen on only during that same visible active interval.
+Ordinary Current uses a battery-conscious foreground request profile. Travel asks Android for more
+frequent precise foreground fixes, but actual delivery cadence and visible smoothness are governed
+by Android, the phone and its GNSS hardware. A short-lived on-device display tracker may smooth the
+marker/camera between accepted fixes for at most 1.2 seconds; it is best effort, and its projected
+points are never stored or used for weather, radar, places or alerts. Travel is opt-in, is not
+persisted and stops when Radar leaves composition, Current is deselected or the app backgrounds. It
+keeps the screen on only during that same visible active interval.
 
 Rain Alarm requests no background-location permission, starts no location foreground service, holds no wake lock and shows no ongoing location notification. Live fixes stay in process memory unless the user explicitly saves the current location as an ordinary saved place.
 
 ### Notifications
 
-On Android 13 and later, Rain Alarm requests notification permission once after the location prompt if needed. Denial leaves Rain Notification off with a permission-needed message, and Settings can retry. It does not send a test notification merely to obtain permission.
+On Android 13 and later, Rain Alarm requests notification permission once after the location prompt if needed. Denial leaves Rain Notification and Lightning activity notification unable to deliver, with a permission-needed message, and Settings can retry. Lightning activity notification defaults off. Rain Alarm does not send a test notification merely to obtain permission.
 
-Optional alert work uses Android WorkManager. It requests no exact-alarm permission and no foreground service. See [Notification behavior](#notification-behavior) for the data it uses.
+Optional alert work uses Android WorkManager. It requests no exact-alarm permission and no foreground service. See [Notification and widget behavior](#notification-and-widget-behavior) for the data it uses.
 
 ## Network requests
 
-Requests are feature-driven. Leaving Wind, Lightning and Clouds off makes no ancillary-layer request. Search runs only after explicit submit, and disabled services or layers remain idle.
+Requests are feature-driven. Leaving Wind and Clouds off makes no request for those Radar layers.
+Lightning Radar imagery remains independent: background Lightning observations are requested only
+when Lightning activity notification is enabled or a configured widget presentation needs its
+state. If neither applies and the Radar layer is off, no Lightning request is made. Search runs only
+after explicit submit, and disabled services or layers remain idle.
 
 ### Radar and precipitation
 
@@ -54,6 +64,13 @@ Enabling Lightning or Clouds accesses EUMETSAT's public HTTPS WMS at `view.eumet
 The request contains the chosen product, advertised observation time, image dimensions and a bounded regional map extent. The selected place chooses a code-owned British Isles, Europe, North America East/West or local fallback region with roughly 200 km of margin; panning does not turn this into a new request. Leaving both satellite controls off sends no EUMETSAT request.
 
 Verified satellite PNGs are stored in an app-owned atomic least-recently-used cache capped at 128 MiB. MapLibre separately keeps up to 64 MiB of basemap cache, for an intended map/satellite disk budget of about 192 MiB. Files are keyed by product, time, bounds and region rather than a user identity.
+
+When a Lightning alert or widget needs nearby activity, Rain Alarm uses the same public EUMETSAT
+WMS but requests a separate bounded target-centred image covering a 15 km circle plus sampling
+margin. It checks every newly advertised five-minute observation since the last contiguous
+successful checkpoint, up to a bounded catch-up, and retains only compact frame identities,
+detection evidence and episode state. The background detector does not persist the downloaded
+images and does not claim that missing data is clear.
 
 ### Maps
 
@@ -87,7 +104,12 @@ The following can be stored locally on the device:
 - preferred radar provider and provider-specific options;
 - app, map, Compass and Graph appearance choices, including day/night profiles;
 - playback speed, visible Now metrics, layer toggles, wind-arrow size and coverage-mask darkness;
-- notification choice and per-place alert suppression state;
+- rain and lightning notification choices, per-target observation checkpoints and per-subscription
+  episode/delivery state;
+- each widget's self-contained saved-place snapshot, compact content choice, opacity and quiet
+  hours, plus a bounded normalized weather snapshot for non-blank refreshes;
+- a target-bound ten-minute temporary-Lightning hand-off lease when a notification or widget is
+  opened;
 - first-launch and tour completion state; and
 - bounded provider, search, map and satellite caches described above.
 
@@ -95,13 +117,31 @@ Current location is a virtual selection. Live fixes and coordinates stay in memo
 
 Rain Alarm has no account sync or cloud backup service of its own. Android or the device manufacturer may apply its normal app-backup policy outside Rain Alarm's control.
 
-## Notification behavior
+## Notification and widget behavior
 
-Rain Notification follows the active selected saved or virtual live place. WorkManager checks approximately every 15 minutes, Android's periodic minimum; execution is inexact and may be deferred by Doze.
+Rain Notification follows the active selected saved or virtual live place and configured widget
+monitoring subscriptions. Lightning activity notification is a separate default-off choice. One
+network-constrained WorkManager job checks approximately every 15 minutes, Android's periodic
+minimum; execution is inexact and may be deferred by Doze, force-stop, battery restrictions or the
+device manufacturer. Widgets therefore self-update on a best-effort schedule, not a guaranteed
+clock.
 
-An alert is sent only when available data says the place is dry now and rain is expected within 60 minutes. It contains the place, estimated arrival and local start time. Duration and peak are added only when a complete episode ends within known coverage. After an alert, that place is suppressed until the recorded wet-window end plus ten minutes.
+The app's selected-place rain alert retains its immediate approaching-rain behaviour and established
+cooldown. Widget rain subscriptions require an earlier complete dry 0–60 minute evaluation before a
+later approaching episode may notify; partial, stale or unavailable data cannot arm them. Lightning
+uses observed five-minute flash-area frames inside 15 km: the first valid detection episode after
+enabling is eligible immediately, continuing detection does not repeat, a successful no-detection
+re-arms, and unavailable data changes neither state. Rain and lightning that newly trigger together
+share one notification.
 
-Saved-place checks need no location permission. A virtual Current background check is skipped unless a lawful fresh foreground fix is already available. No background location is acquired for the alert.
+Every widget may define quiet hours. During them acquisition, widget display and episode state
+continue, but delivery is consumed rather than queued for later. Widgets sharing a target/provider
+reuse acquisition. Widget work remains eligible whether the app activity is visible, backgrounded
+or process-recreated; identical app/widget requests may safely share repository/cache work.
+
+Every widget is bound to one saved-place snapshot. It needs no location permission and never follows
+virtual Current location. App-only Current monitoring still uses only a sufficiently fresh lawful
+foreground fix. No background location is acquired for an alert or widget.
 
 ## Provider and licensing notes
 

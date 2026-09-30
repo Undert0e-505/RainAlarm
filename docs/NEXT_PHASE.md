@@ -1,55 +1,47 @@
-# Next phase
+# Road to 1.0
 
-Rain Alarm now covers the answer-first Now view, multi-provider Radar, foreground Travel mode,
-place management, automatic appearance profiles, installed-app localization and contextual
-onboarding. The work below remains deliberately deferred until real-world use justifies it.
+Rain Alarm 0.9.0 is feature-complete for its intended scope: Now, multi-provider Radar, saved
+places, independent home-screen widgets, foreground Travel, rain/Lightning alerts, appearance
+profiles, localization and contextual onboarding. Work toward 1.0 now prioritizes reliability and
+validation rather than additional features.
 
-## Product work
+## Release priorities
 
-1. **Radar validation**
-   - Tune motion thresholds against representative weather and coverage cases.
-   - Evaluate storm growth/decay modelling only with defensible validation data.
-   - Add screenshot and device tests for GLES overlay alignment, camera moves, lifecycle teardown
-     and style reloads.
-2. **Alert refinement**
-   - Validate ETA ranges and per-place deduplication against real rain bands.
-   - Consider configurable quiet hours after notification usability testing.
-   - Implement the separately specified, default-off
-     [Lightning activity alert and Radar hand-off](LIGHTNING_ALERT_REQUIREMENTS.md). This remains
-     planned work, not current app behaviour.
-3. **Home-screen widget — planned**
-   - Implement the concrete [Android widget requirements](WIDGET_REQUIREMENTS.md): independently
-     configured fixed/Follow locations, a Now-derived mini Compass disc, responsive 1×1 through
-     4×1 layouts, rain/lightning state, bounded polling and per-widget opacity.
-   - The widget remains planned, not current behaviour. It will not keep the app continuously
-     running, improve WorkManager guarantees, grant background location or bypass force-stop/Doze.
-     Current location will still require a sufficiently fresh lawful foreground fix.
-4. **Accessibility and polish**
-   - Continue TalkBack traversal and content-description review.
-   - Expand font-scale, contrast, reduced-motion, tablet, foldable and landscape QA.
-   - Add screenshot coverage for principal loading, clear, rain and unavailable states.
+1. **Real-device bug fixing**
+   - Exercise repeated foreground/background, process recreation, provider changes, map-style
+     reloads and poor-network recovery on representative Android devices.
+   - Keep last-good weather visible through replacement work and preserve truthful loading,
+     preparing and unavailable states.
+2. **Travel follow smoothness**
+   - Improve and validate real-device marker/camera cadence. Rain Alarm asks Android for frequent
+     foreground fixes, but some phones currently present movement at roughly one update per second
+     and the best-effort visual tracker does not consistently improve that on physical hardware.
+   - Preserve AUTO's exact wall-clock timeline, bounded weather anchors and the rule that only real
+     accepted fixes may affect weather, alerts, places or persistence.
+3. **Widget and notification reliability**
+   - Validate saved-place widget refresh, minute presentation updates, quiet hours and rain/
+     Lightning episode deduplication across Samsung-, Pixel- and other OEM launchers.
+   - Record Doze, force-stop, reboot, battery-restriction and transient-network behaviour without
+     promising exact WorkManager timing.
+4. **Provider validation**
+   - Continue checking coverage, freshness, fallback and local-motion behavior across MeteoGroup,
+     OPERA, RainViewer, Open-Meteo and EUMETSAT without forcing independent sources to agree.
+   - Reconfirm provider terms, attribution, capacity and store-distribution suitability before
+     wider distribution. Treat station comparisons, registered EUMETSAT per-flash data and any
+     commercial strike source as separate future adapters requiring access, licence, latency,
+     bandwidth and operating-cost review.
+5. **Accessibility and release QA**
+   - Complete TalkBack traversal, switch access, font scale, contrast, reduced-motion, landscape,
+     tablet and foldable checks.
+   - Add device screenshots for loading, clear, rain, partial, stale and unavailable states and a
+     normal Linux CI path for tests, lint, assembly and APK provenance.
 
-## Data and reliability
+## Maintained engineering references
 
-- Continue validating provider-specific motion estimates and coverage handling without forcing
-  independent radar composites to agree.
-- Add explicit retry/backoff and provider-health telemetry only with a support and privacy plan.
-- Add cache-expiry messaging and offline tests for forecast, radar and ancillary layers.
-- Reconfirm MeteoGroup/DTN, Open-Meteo, RainViewer, EUMETNET OPERA, EUMETSAT, OpenFreeMap and
-  OpenStreetMap terms, attribution, capacity and store-distribution suitability before wider
-  distribution.
-
-## Engineering
-
-- Add a small dependency-injection container if provider construction or environment-specific
-  configuration grows further.
-- Add instrumented tests for permission denial, disabled providers, stale last-known fixes,
-  process restart persistence and MapLibre style reloads.
-- Add CI on a normal Linux Android environment for assembly, lint, pure unit tests and APK
-  provenance. The current development host retains the direct JUnitCore task only as a local
-  AF_UNIX test-worker workaround.
-- Add automated dependency/licence reports and stronger reproducibility checks around the existing
-  release-signing workflow.
+- [Widget behavior](WIDGET_REQUIREMENTS.md)
+- [Lightning activity alerts and Radar hand-off](LIGHTNING_ALERT_REQUIREMENTS.md)
+- [Data sources and constraints](DATA_SOURCES.md)
+- [Development and build](DEVELOPMENT.md)
 
 ## Explicitly out of scope
 

@@ -139,7 +139,8 @@ class RadarMapNoticePolicyTest {
         assertTrue(now.contains("WeatherDataStatusPolicy.loading(WeatherDataKind.LOCATION)"))
         assertFalse(radar.contains("RadarMapNoticeKind.LOCATION"))
         assertTrue(radar.contains("locationStatus = locationOperationalStatus"))
-        assertTrue(radar.contains("travelActivationStatus = travelActivationStatus"))
+        assertTrue(radar.contains("travelNoticeActivationToken = travelNoticeActivationToken"))
+        assertTrue(radar.contains("temporaryLightningNoticePending = temporaryLightningNoticeState"))
         assertFalse(radar.contains("if (followLive) Text("))
         assertTrue(main.contains("CurrentLocationPresentationPolicy.retainCurrentForecast"))
     }

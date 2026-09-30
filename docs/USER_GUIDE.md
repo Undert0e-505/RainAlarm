@@ -1,6 +1,6 @@
 # Rain Alarm user guide
 
-Rain Alarm answers a place-specific question: when will rain reach me? **Now** summarises the next hour, while **Radar** lets you inspect the available observations, forecasts or local motion estimates. This guide describes version 0.4.1 (version code 19).
+Rain Alarm answers a place-specific question: when will rain reach me? **Now** summarises the next hour, while **Radar** lets you inspect the available observations, forecasts or local motion estimates. This guide describes version 0.9.0 (version code 20).
 
 ## First launch and installation
 
@@ -25,6 +25,7 @@ During the tour, Now and Radar show a localized **Example** presentation generat
 Unset settings use these defaults:
 
 - Rain Notification is on when permission allows.
+- Lightning activity notification is off.
 - All five Now weather indicators are visible.
 - Radar playback speed is 2×, but playback starts paused.
 - MeteoGroup is the pinned preferred radar provider.
@@ -91,11 +92,38 @@ The regional GLES renderer uploads radar and velocity data lazily, keeping at mo
 
 ### Travel mode
 
-The Travel arrow is always available. From a saved place, pressing it atomically selects virtual Current location, obtains or reuses a precise foreground fix, recentres and starts Travel without changing the startup place. A label in the bottom information rail confirms **Travel mode** for two seconds. Pressing the arrow again stops following and keep-awake automation while leaving Current selected and the camera in place.
+The Travel arrow is always available. From a saved place, pressing it atomically selects virtual Current location, obtains or reuses a precise foreground fix, recentres and starts Travel without changing the startup place. A label in the bottom information rail confirms **Travel mode** for two seconds. Pressing the arrow again reasserts Travel, recentres to the latest accepted fix and restores automatic current-time control.
 
-One foreground location engine uses Google Play services fused high-accuracy fixes where available, with Android GPS fallback. Ordinary Current targets a battery-conscious five-second interval. Travel requests precise fixes on a 200 ms raster and smoothly supersedes each camera move at the current zoom, though Android and GNSS hardware may deliver updates more slowly.
+One foreground location engine uses Google Play services fused high-accuracy fixes where available,
+with Android GPS fallback. Ordinary Current uses a battery-conscious request profile; Travel asks
+Android for more frequent precise foreground fixes. Actual delivery cadence and visible smoothness
+are controlled by Android, the phone and its GNSS hardware, and can look roughly one update per
+second on some devices. A tightly bounded presentation-only tracker may smooth movement between
+trustworthy fixes, but it is best effort and freezes when motion becomes stale or uncertain.
 
-A real pan or zoom pauses Travel. Pressing the arrow again recentres to the latest accepted accurate fix. Approximate or weak fixes never masquerade as navigation-quality data. Every accepted fix may move the marker and camera, but weather analysis and reverse geocoding move only at a bounded anchor: at least 1 km, or after two minutes with at least 250 m, plus an immediate first fix and regional-boundary correction. This avoids weather requests for every location update.
+A genuine finger pan or zoom pauses Travel. Entry focus, recentering, accepted fixes, map-style or
+provider refreshes, navigation and other programmatic camera movement do not. A transient missing,
+stale or weak fix leaves the user's Travel intent active and shows the existing locating state so it
+can resume automatically. Pressing the arrow again recentres to the latest accepted accurate fix.
+Approximate or weak fixes never masquerade as navigation-quality data. Every accepted fix may move
+the marker and camera, but weather analysis and reverse geocoding move only at a bounded anchor: at
+least 1 km, or after two minutes with at least 250 m, plus an immediate first fix and regional-boundary
+correction. This avoids weather requests for every location update.
+
+Presentation-only movement never changes the selected place, radar/weather acquisition point,
+saved places, notifications or alert radius. Those continue to use accepted Android location fixes
+only.
+
+Every Travel entry starts paused in **AUTO** time: **Forecast · HH:mm** exactly matches the device
+clock in its current local time zone, the fixed on-screen thumb represents that same instant, tick
+labels roll left once per second, and Radar renders the provider forecast/estimate valid for it.
+Provider frames may bracket or interpolate that exact time internally; their timestamps never
+replace the displayed clock time. A provider publication replaces the session without drift or a
+jump back to the latest observation. Scrubbing or pressing Play takes manual timeline control and
+removes **AUTO**, but does not turn off location-follow Travel; pressing Travel again recentres and
+restores AUTO. If a provider cannot currently cover wall-clock now, Radar clamps only to its nearest
+honest usable data and reports that current Radar time is unavailable rather than labelling a stale
+observation as current.
 
 Travel is not persisted. It keeps the screen on only while Radar is visible, Current is selected, Travel is active and the activity is foreground. It adds no background-location request, foreground service, wake lock or ongoing location notification. Pending or failed fixes remain on Radar in the compact shared status queue.
 
@@ -113,9 +141,9 @@ On initial loading, the real interactive basemap appears as soon as a selected c
 
 Loads have finite provider-aware limits. A map session has a 110-second total ceiling and point analysis an 80-second ceiling. Within that budget, MeteoGroup, OPERA and RainViewer receive bounded attempts rather than multiplied unlimited timeouts. Explicit OPERA receives a real 70-second map and 45-second analysis attempt; OPERA after failed MeteoGroup receives the bounded time remaining. Now has a 95-second overall ceiling.
 
-A timeout is shown as `Radar unavailable`, never as a dry forecast. Refresh retries it. Radar Refresh creates fresh generations for the active radar session and every enabled ancillary layer while retaining the camera. Only the latest generation may publish a result.
+A timeout is shown as `Radar unavailable`, never as a dry forecast. Refresh retries it. Radar Refresh creates fresh generations for the active radar session and every enabled ancillary layer while retaining the camera. Only the latest generation may publish a result; late cancellation or failure from a replaced request cannot overwrite a newer success.
 
-One bottom-right status queue is authoritative, ordered Location, Radar, Wind, Clouds and Lightning. Public wording is limited to `<Data> loading`, with `n/N` where useful, or `<Data> unavailable`. Internal download, validation, rendering, source and freshness diagnostics are not shown. The bottom-left information rail is reserved for map, style, renderer and chart notices. The current-location control immediately changes a location failure back to loading while retrying.
+One bottom-right status queue is authoritative, ordered Location, Radar, Wind, Clouds and Lightning. Public wording is limited to `<Data> loading`, with `n/N` during transfer where useful, `<Data> preparing` while a complete transfer is decoded and committed, or `<Data> unavailable`. Internal validation, rendering, source and freshness diagnostics are not shown. A complete semantically usable old session stays visible during replacement and through a failed retry; unavailable is reserved for having no usable session. The bottom-left information rail is reserved for map, style, renderer and chart notices. The current-location control immediately changes a location failure back to loading while retrying.
 
 ### Wind, Lightning and Clouds
 
@@ -133,6 +161,12 @@ Settings includes a persistent Wind-only arrow-size slider with live preview whe
 
 Lightning shows EUMETSAT accumulated satellite flash **areas**, not individual ground strikes. Clouds chooses MTG Cloud Type RGB during daylight and Fog / Low Clouds RGB at night, using a deterministic coordinate/time fallback when daylight facts are stale or missing. The satellite image reveals cloud structures or fog/low cloud; it does not prove fog at the surface.
 
+Lightning normally follows its persistent Radar toggle. Opening a rain/lightning notification or a
+widget that currently reports nearby activity gives the control a distinct temporary clock state for
+ten minutes at that exact place. The bottom information rail says **Lightning shown temporarily ·
+tap to keep on** for two seconds. Navigation and backgrounding do not cancel the timer. Tapping the
+temporary control makes Lightning persistently on; tapping a persistent on state turns it off.
+
 Within the observed Radar window, Lightning advances on its advertised five-minute cadence and Clouds on ten minutes. Each chooses the latest real observation at or before the cursor and holds its latest observation through forecast time rather than inventing satellite forecasts.
 
 An enabled satellite layer downloads and validates its complete finite set of unique observed regional PNG frames before displaying that set. The `n/N` counter counts provider-independent unique satellite frames. `N` may differ by radar provider because observed Radar windows have different start times and lengths, not because Clouds fetches a duplicate provider-specific set. Clouds and Lightning complete independently, with two requests shared concurrently and a hard maximum of three. A complete old set remains visible while replacement loads.
@@ -143,7 +177,7 @@ Satellite frames use a place-owned operating region: British Isles first, then E
 
 Cloud Refresh bypasses the five-minute EUMETSAT metadata/probe cache and discovers both daytime and nighttime products again, but it does not purge valid downloaded frames. Each missing, corrupt or evicted image gets up to three attempts with a five-second connection and twenty-second read timeout. Clouds accepts provider metadata up to one hour old and performs no acquisition while disabled.
 
-Expired Wind, Clouds or Lightning data starts one automatic replacement per source identity. The queue says only loading during replacement and unavailable if replacement fails; it never exposes provider or freshness jargon.
+Expired Wind, Clouds or Lightning data starts one automatic replacement per source identity. The queue uses loading/preparing while the active replacement progresses. A usable last-good layer stays rendered after a replacement failure; unavailable appears only when no usable layer exists. It never exposes provider or freshness jargon.
 
 ## Places
 
@@ -191,9 +225,99 @@ Providers are independent composites and can disagree materially about footprint
 
 ## Rain notifications
 
-Rain Notification applies to the **active selected place**, whether saved or live. It fires only when the available series says it is dry now and predicts rain within 60 minutes. The message contains place, arrival estimate and expected local start time. Duration and peak are included only when a complete rain episode ends within the known prediction window.
+Rain Notification applies to the app's **active selected place**, whether saved or live, and to any
+configured widget subscriptions. The app-selected-place alert keeps its established immediate
+approaching-rain behaviour and cooldown/event deduplication; it does not require a prior dry poll.
+Each widget subscription is stricter: a successful complete, dry 0–60 minute evaluation arms it,
+the first later approaching episode sends one notification and disarms it, and an already-wet
+result consumes that widget eligibility without sending a new approaching alert. Partial, stale or
+unavailable data is never treated as dry and cannot arm or re-arm a widget alert.
 
-After sending, that place is suppressed until the recorded forecast wet-window end plus a ten-minute grace period. Later qualifying rain can notify again without needing a completely dry forecast first. WorkManager timing is inexact. Saved-place alerts do not need location permission; a Current-location background check is skipped unless there is a lawful fresh foreground fix.
+The message contains the place and arrival estimate. Duration and peak are included only when a
+complete episode ends within known coverage. WorkManager checks approximately every 15 minutes;
+Android may defer it under Doze, battery restrictions or force-stop. Saved-place alerts do not need
+location permission. A Current-location background check is skipped unless Rain Alarm already has a
+sufficiently fresh lawful foreground fix.
+
+### Lightning activity notifications
+
+**Lightning activity notification**, directly below Rain Notification in Settings, is independent
+of the persistent Radar Lightning layer and is off by default. When enabled, Rain Alarm checks new
+EUMETSAT five-minute accumulated optical flash-area observations inside a true 15 km circle around
+the same frozen target used by that monitoring pass. This is observed activity, not a strike
+forecast, and the source cannot distinguish intracloud from cloud-to-ground lightning.
+
+A first valid nearby detection after enabling the switch is immediately eligible; no earlier clear
+poll is required. Continuing detections in that episode do not repeat, unavailable data does not
+prove clear or consume eligibility, and a later successful no-detection result re-arms the next
+episode. Rain and lightning that newly trigger together share one notification. Following a
+lightning notification opens the exact monitored place in Radar with the
+ten-minute temporary Lightning state described above, without changing the startup pin, widget
+location or persistent Radar layer choice.
+
+## Home-screen widgets
+
+Add **Rain Alarm** from the Android launcher's widget picker. The same resizable widget supports a
+compact 1×1 view, intermediate widths and a canonical 4×1 view. It is a self-updating static
+snapshot, not an animated miniature Radar screen, and Android schedules background updates
+inexactly at approximately 15-minute intervals.
+
+Every widget has its own configuration:
+
+- choose one saved place;
+- choose the compact primary content: Smart, Rain, Lightning or Temperature;
+- adjust only the card background opacity from transparent to opaque; and
+- optionally set per-widget Do Not Disturb start/end times.
+
+After configuration, the widget saves its target and queues its own initial update before the
+configuration screen closes. It shows **Updating** until that target produces usable data, and a
+transiently failed first attempt is retried automatically; adding another
+widget, resizing it or reopening the app is not required.
+
+A widget stores a self-contained snapshot of its chosen saved place and remains independent of
+in-app navigation, Current location, Travel and the startup pin. It needs no device-location
+permission and continues polling whether the app is open, closed or process-recreated. A rename may
+update its label; deleting the source row retains the frozen widget place until you reconfigure it.
+If no saved place exists, configuration links to Places and cannot finish until one is created.
+
+The mini Compass uses the same wet threshold, peak colour, rain/likely-snow texture and centre text
+as Now. It shows **Now** while wet, an integer arrival with **min** while rain approaches, and—in a
+compact temperature-capable mode—a fresh temperature when available samples are dry. Wider layouts
+keep a neutral dash in the dry Compass and place temperature in the status column. They add
+place, maximum qualitative intensity, a stop time only when confirmed inside known coverage,
+nearby-lightning state, last successful update and a compact next-hour graph. From 2×1 upward, the
+same compact text facts and same-size mini Compass remain present; 4×1 adds a graph that fills the
+remaining row width. Its crisp axis-free profile fills the usable plot from first sample to last
+without tick labels. A partial but usable dry horizon can show the current temperature or **Dry
+now**, but it is never claimed as a complete clear hour and cannot arm the widget's prior-clear
+alert rule. The square-filling 1×1 Compass remains its own compact presentation. Missing direction,
+provider snow classification and unknown future minutes are never invented.
+
+Refreshing, launcher resize and one failed optional stream preserve
+the last semantically current target-matching snapshot and its real **Updated** time. Countdown,
+stop and intensity are re-derived from timestamped samples at display time, so a stored series
+cannot freeze an old ETA after its coverage ends. **Update unavailable** appears only when no
+current target-matching rain, temperature or Lightning fact remains (or no successful snapshot ever
+existed); bounded storage retention is not treated as current weather.
+
+Weather acquisition remains approximately every 15 minutes, but relative widget presentation is
+updated separately. While the device screen is interactive, one shared local minute ticker
+repaints affected widgets from their cached timestamped series, so **Rain in N min** counts down and
+changes to **Rain now** without another network or location request. **Updated HH:mm** remains the
+real acquisition time. The ticker is non-wakeup: Android may batch it while the screen is off, and
+the next awake repaint derives directly from the current clock rather than replaying missed ticks.
+
+Widget quiet hours use the device's current local time, support same-day and overnight ranges, and
+suppress notification delivery only. Weather polling, cached state, widget rendering and episode
+tracking continue. An event first detected during quiet hours is consumed rather than queued for a
+late alert; a later successful clear/no-detection state must re-arm it. This does not change
+Android's system Do Not Disturb mode.
+
+Tapping a valid widget opens Radar for that widget's exact saved place without changing the
+widget or startup pin. If nearby lightning is part of the displayed state, Radar receives the
+temporary Lightning hand-off. Widget polling remains independent of app visibility; matching app
+and widget work may share safe repository/cache results without making the widget depend on an app
+callback.
 
 ## Appearance
 
@@ -204,6 +328,11 @@ Optional **Automatic day/night** mode exposes separate editable Day and Night pr
 At a solar boundary, the complete profile changes together, updates system-bar contrast and schedules the next boundary without polling. Automatic mode stays off on upgrade so existing manual choices remain unchanged.
 
 Appearance and in-place place-focus changes retain the resolved palette continuously. MapLibre state, Radar session, camera, playback, timeline position, layers, Travel state and coverage-mask choice remain intact.
+
+Widgets and their configuration screen use the app's currently resolved manual or automatic
+day/night palette, card shapes, controls, icons, spacing and system-sans typography. There is no
+separate widget theme. A widget's opacity control changes only its card fills; text, icons and
+weather colours stay opaque. Appearance changes republish widgets without refetching weather.
 
 ## Navigation and accessibility
 

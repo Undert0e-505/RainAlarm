@@ -136,7 +136,7 @@ internal object AppearanceGridPolicy {
 
 /** A stable near-track-height thumb in both states, with an accessible 48dp touch target. */
 @Composable
-private fun RainAlarmSwitch(
+internal fun RainAlarmSwitch(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
@@ -208,6 +208,9 @@ fun SettingsScreen(
     alertSnapshot: AlertSnapshot,
     enableAlerts: () -> Unit,
     disableAlerts: () -> Unit,
+    lightningAlertSnapshot: AlertSnapshot,
+    enableLightningAlerts: () -> Unit,
+    disableLightningAlerts: () -> Unit,
     visibleMetrics: Set<NowWeatherMetric>,
     setMetricVisible: (NowWeatherMetric, Boolean) -> Unit,
     message: String? = null,
@@ -222,9 +225,15 @@ fun SettingsScreen(
     val resources = LocalResources.current
     val locale = LocalConfiguration.current.locales[0]
     var permissionMessage by remember { mutableStateOf<String?>(null) }
+    var pendingNotificationSetting by remember { mutableStateOf("rain") }
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) { permissionMessage = null; enableAlerts() }
-        else { disableAlerts(); permissionMessage = resources.getString(R.string.settings_notification_denied) }
+        if (granted) {
+            permissionMessage = null
+            if (pendingNotificationSetting == "lightning") enableLightningAlerts() else enableAlerts()
+        } else {
+            if (pendingNotificationSetting == "lightning") disableLightningAlerts() else disableAlerts()
+            permissionMessage = resources.getString(R.string.settings_notification_denied)
+        }
     }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState())
@@ -243,8 +252,8 @@ fun SettingsScreen(
             )
         }
         val offStatus = stringResource(R.string.notification_status_off)
-        (permissionMessage ?: alertSnapshot.status.takeIf {
-            !alertSnapshot.enabled && it.isNotBlank() && it != offStatus
+        (permissionMessage ?: listOf(alertSnapshot, lightningAlertSnapshot).firstNotNullOfOrNull { snapshot ->
+            snapshot.status.takeIf { !snapshot.enabled && it.isNotBlank() && it != offStatus }
         })?.let {
             Text(it, color = LocalRainAlarmPalette.current.danger,
             fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp)) }
@@ -260,9 +269,39 @@ fun SettingsScreen(
                     else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                         ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
                         PackageManager.PERMISSION_GRANTED) {
+                        pendingNotificationSetting = "rain"
                         notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                     } else { permissionMessage = null; enableAlerts() }
                 })
+            }
+            HorizontalDivider(color = SettingsBorder)
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    stringResource(R.string.settings_lightning_notification),
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                RainAlarmSwitch(
+                    checked = lightningAlertSnapshot.enabled,
+                    onCheckedChange = { enabled ->
+                        if (!enabled) {
+                            disableLightningAlerts()
+                            permissionMessage = null
+                        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                            ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.POST_NOTIFICATIONS,
+                            ) != PackageManager.PERMISSION_GRANTED
+                        ) {
+                            pendingNotificationSetting = "lightning"
+                            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        } else {
+                            permissionMessage = null
+                            enableLightningAlerts()
+                        }
+                    },
+                )
             }
         }
         Spacer(Modifier.height(20.dp))
@@ -574,7 +613,8 @@ fun SettingsScreen(
                     )
                     AboutSourceSection(
                         stringResource(R.string.settings_satellite_source),
-                        stringResource(R.string.settings_about_satellite_body),
+                        stringResource(R.string.settings_about_satellite_body) + "\n\n" +
+                            stringResource(R.string.settings_about_background_monitoring_body),
                         listOf("EUMETSAT" to "https://www.eumetsat.int/terms-use"),
                         onOpenFailure = { permissionMessage = resources.getString(R.string.settings_no_browser) },
                     )
@@ -591,7 +631,8 @@ fun SettingsScreen(
                     )
                     AboutSourceSection(
                         stringResource(R.string.settings_privacy_source),
-                        stringResource(R.string.settings_about_privacy_body),
+                        stringResource(R.string.settings_about_privacy_body) + "\n\n" +
+                            stringResource(R.string.settings_about_widget_privacy_body),
                         listOf("Rain Alarm" to "https://github.com/Undert0e-505/RainAlarm#privacy-and-permissions"),
                         onOpenFailure = { permissionMessage = resources.getString(R.string.settings_no_browser) },
                     )

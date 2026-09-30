@@ -41,10 +41,32 @@ internal class RadarMapRevealGate {
         return true
     }
 
+    /**
+     * MapLibre may omit the matching frame-start callback for an already cached style. Its
+     * full-map callback is still authoritative once the current style generation loaded.
+     */
+    fun mapRendered(fully: Boolean): Boolean {
+        if (!fully || loadedGeneration != generation || revealed) return false
+        revealed = true
+        failed = false
+        frameStartedAfterStyle = false
+        return true
+    }
+
     /** A failed or stalled style keeps the themed cover, but makes its error visible. */
     fun markFailed(): Boolean {
         if (revealed || failed) return false
         failed = true
         return true
     }
+}
+
+/** Fast, bounded recovery for a native map that lost its render-completion edge. */
+internal object RadarMapRecoveryPolicy {
+    const val REPAINT_AFTER_MILLIS = 1_500L
+    const val RECREATE_AFTER_MILLIS = 4_000L
+    const val MAX_AUTOMATIC_RECREATIONS = 1
+
+    fun shouldRecreate(isCovered: Boolean, automaticRecreations: Int): Boolean =
+        isCovered && automaticRecreations < MAX_AUTOMATIC_RECREATIONS
 }

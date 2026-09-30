@@ -5,9 +5,119 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.Instant
+import java.time.Clock
+import java.time.Duration
 import java.time.ZoneId
+import java.util.Locale
 
 class RadarPresentationTest {
+    @Test fun `travel follow changes only for deliberate exit reasons`() {
+        assertTrue(RadarTravelModePolicy.next(false, RadarTravelTransitionReason.USER_ENTER))
+        assertFalse(RadarTravelModePolicy.next(true, RadarTravelTransitionReason.USER_EXIT))
+        assertFalse(RadarTravelModePolicy.next(true, RadarTravelTransitionReason.USER_MAP_GESTURE))
+        assertFalse(RadarTravelModePolicy.next(true, RadarTravelTransitionReason.PERMISSION_LOST))
+        listOf(
+            RadarTravelTransitionReason.TIMELINE_MANUAL,
+            RadarTravelTransitionReason.PROGRAMMATIC_CAMERA,
+            RadarTravelTransitionReason.TRANSIENT_FIX,
+            RadarTravelTransitionReason.LIFECYCLE,
+        ).forEach { reason -> assertTrue(RadarTravelModePolicy.next(true, reason)) }
+    }
+
+    @Test fun `only an owned live map pointer accepts MapLibre gesture camera start`() {
+        val ownership = RadarMapGestureOwnership()
+        assertFalse(ownership.acceptsCameraStart(isMapGestureReason = true))
+        ownership.pointerStarted(ownedByMap = false)
+        assertFalse(ownership.acceptsCameraStart(isMapGestureReason = true))
+        ownership.pointerStarted(ownedByMap = true)
+        assertTrue(ownership.acceptsCameraStart(isMapGestureReason = true))
+        assertFalse(ownership.acceptsCameraStart(isMapGestureReason = false))
+        ownership.pointerFinished()
+        assertFalse(ownership.acceptsCameraStart(isMapGestureReason = true))
+    }
+
+    @Test fun `top control pointer pass-through is excluded from map gesture ownership`() {
+        val density = 3f
+        val boundary = RadarMapTouchPolicy.topControlsExclusionDp * density
+        assertFalse(RadarMapTouchPolicy.pointerOwnedByMap(boundary - 1f, density))
+        assertTrue(RadarMapTouchPolicy.pointerOwnedByMap(boundary, density))
+        assertTrue(RadarMapTouchPolicy.pointerOwnedByMap(boundary + 200f, density))
+    }
+
+    @Test fun `travel auto clock remains exact between frames across rollover and session refresh`() {
+        val zone = ZoneId.of("Europe/London")
+        val betweenFrames = Clock.fixed(Instant.parse("2026-09-30T12:07:43Z"), zone)
+        val first = RadarTravelClockPolicy.snapshot(betweenFrames, zone, true, Locale.UK)
+        assertEquals("13:07", first.localMinuteText)
+        val rollover = RadarTravelClockPolicy.snapshot(
+            Clock.offset(betweenFrames, Duration.ofSeconds(17)), zone, true, Locale.UK,
+        )
+        assertEquals("13:08", rollover.localMinuteText)
+
+        val midnight = RadarTravelClockPolicy.snapshot(
+            Clock.fixed(Instant.parse("2026-12-31T23:59:59Z"), zone), zone, true, Locale.UK,
+        )
+        val nextDay = RadarTravelClockPolicy.snapshot(
+            Clock.fixed(Instant.parse("2027-01-01T00:00:00Z"), zone), zone, true, Locale.UK,
+        )
+        assertEquals("23:59", midnight.localMinuteText)
+        assertEquals("00:00", nextDay.localMinuteText)
+
+        val oldSession = RadarTravelTimelinePolicy.frame(
+            first.epochSeconds, first.epochSeconds - 1_800L, first.epochSeconds - 300L,
+            first.epochSeconds + 1_800L, true,
+        )
+        val refreshedSession = RadarTravelTimelinePolicy.frame(
+            first.epochSeconds, first.epochSeconds - 1_200L, first.epochSeconds - 120L,
+            first.epochSeconds + 2_400L, true,
+        )
+        assertEquals(first.epochSeconds,
+            first.epochSeconds - 1_800L + oldSession.dataCursorSeconds.toLong())
+        assertEquals(first.epochSeconds,
+            first.epochSeconds - 1_200L + refreshedSession.dataCursorSeconds.toLong())
+        assertEquals(oldSession.displayStartEpochSeconds, refreshedSession.displayStartEpochSeconds)
+    }
+
+    @Test fun `travel auto clock follows device zone rules across daylight saving fold`() {
+        val zone = ZoneId.of("Europe/London")
+        val before = RadarTravelClockPolicy.snapshot(
+            Clock.fixed(Instant.parse("2026-10-25T00:59:59Z"), zone), zone, true, Locale.UK,
+        )
+        val after = RadarTravelClockPolicy.snapshot(
+            Clock.fixed(Instant.parse("2026-10-25T01:00:00Z"), zone), zone, true, Locale.UK,
+        )
+        assertEquals("01:59", before.localMinuteText)
+        assertEquals("01:00", after.localMinuteText)
+    }
+
+    @Test fun `travel timeline holds marker x while wall clock and labels roll`() {
+        val first = RadarTravelTimelinePolicy.frame(2_000L, 1_000L, 1_900L, 2_600L, true)
+        val later = RadarTravelTimelinePolicy.frame(2_001L, 1_000L, 1_900L, 2_600L, true)
+        assertEquals(first.displayCursorSeconds, later.displayCursorSeconds, 0f)
+        assertEquals(first.displayStartEpochSeconds + 1L, later.displayStartEpochSeconds)
+        assertEquals(1_000f, first.dataCursorSeconds, 0f)
+        assertEquals(1_001f, later.dataCursorSeconds, 0f)
+        assertTrue(first.wallClockCovered)
+    }
+
+    @Test fun `travel timeline clamps honestly and manual takeover maps rolling window`() {
+        val frame = RadarTravelTimelinePolicy.frame(2_000L, 1_000L, 1_900L, 2_600L, true)
+        assertTrue(frame.wallClockCovered)
+        assertEquals(1_000f, frame.dataCursorSeconds, 0f)
+        assertEquals(
+            600f,
+            RadarTravelTimelinePolicy.dataCursorForManualSelection(
+                frame.displayCursorSeconds - 400f,
+                frame,
+                1_000L,
+                2_600L,
+            ),
+            0f,
+        )
+        assertFalse(RadarTravelTimelinePolicy.frame(
+            3_000L, 1_000L, 1_900L, 2_600L, true,
+        ).wallClockCovered)
+    }
     @Test
     fun entryOpensAtWallClockOnlyWhenForecastCoversIt() {
         val first = 1_000L

@@ -54,9 +54,9 @@ internal object RadarPlaybackRefreshPolicy {
 
 /** Keeps successive Follow camera movements smooth without building an animation queue. */
 internal object RadarFollowCameraPolicy {
-    const val defaultDurationMillis = 1_000
-    // Match the fastest requested Travel fix cadence. Each ease joins two real fixes; no
-    // synthetic GPS samples are created, and a newer accepted fix cancels the prior transition.
+    const val defaultDurationMillis = 200
+    // Match Travel's visual presentation cadence. Every target supersedes the previous ease;
+    // measured coordinates and bounded visual-only projections use the same camera path.
     const val minimumDurationMillis = 200
     const val maximumDurationMillis = 1_200
 

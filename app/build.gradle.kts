@@ -12,8 +12,8 @@ android {
         applicationId = "com.rainalarm.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 19
-        versionName = "0.4.1"
+        versionCode = 20
+        versionName = "0.9.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -69,6 +69,8 @@ dependencies {
     implementation(libs.maplibre.android)
     implementation(libs.proj4j)
     implementation(libs.androidx.work.runtime)
+    implementation(libs.androidx.glance.appwidget)
+    implementation(libs.androidx.glance.material3)
     implementation(libs.google.play.services.location)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
@@ -151,5 +153,10 @@ tasks.register<JavaExec>("directDebugUnitTest") {
         "com.rainalarm.app.data.AppLanguageTest",
         "com.rainalarm.app.data.FeatureTourTest",
         "com.rainalarm.app.BacklogFeatureWiringTest",
+        "com.rainalarm.app.alerts.LightningDetectionPolicyTest",
+        "com.rainalarm.app.alerts.MonitoringPoliciesTest",
+        "com.rainalarm.app.alerts.RadarLightningControlPolicyTest",
+        "com.rainalarm.app.widget.WidgetPoliciesTest",
+        "com.rainalarm.app.widget.WidgetInitialRefreshPolicyTest",
     )
 }

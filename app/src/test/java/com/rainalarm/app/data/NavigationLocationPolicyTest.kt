@@ -14,7 +14,14 @@ class NavigationLocationPolicyTest {
         accuracy: Float = 10f,
         source: LocationFixSource = LocationFixSource.FUSED,
         fine: Boolean = true,
-    ) = NavigationLocationFix(lat, lon, wall, elapsed, accuracy, source, fine)
+        speed: Float? = null,
+        bearing: Float? = null,
+        speedAccuracy: Float? = null,
+        bearingAccuracy: Float? = null,
+    ) = NavigationLocationFix(
+        lat, lon, wall, elapsed, accuracy, source, fine,
+        speed, bearing, speedAccuracy, bearingAccuracy,
+    )
 
     @Test fun requestProfilesFollowForegroundCurrentAndFollowState() {
         assertEquals(LocationRequestMode.OFF, LocationRequestProfiles.select(false, true, true).mode)
@@ -26,6 +33,8 @@ class NavigationLocationPolicyTest {
         assertEquals(200L, LocationRequestProfiles.Follow.intervalMillis)
         assertEquals(200L, LocationRequestProfiles.Follow.fastestIntervalMillis)
         assertEquals(0L, LocationRequestProfiles.Follow.maxDelayMillis)
+        assertEquals(0f, LocationRequestProfiles.Follow.minimumDistanceMetres, 0f)
+        assertTrue(LocationRequestProfiles.Follow.requiresFinePermission)
     }
 
     @Test fun rapidOrderedTravelFixesAreAcceptedWithoutAnArtificialCadenceGate() {
@@ -38,6 +47,184 @@ class NavigationLocationPolicyTest {
         assertTrue(NavigationFixAdjudicationPolicy.decide(
             rapid, previous, 1_000_200L, 1_200_000_000L,
         ) is LocationFixDecision.Accept)
+    }
+
+    @Test fun twoHundredMillisecondFixStreamReachesFiveAcceptedUpdatesPerSecond() {
+        val cadence = LocationCadenceAccumulator()
+        var previous: NavigationLocationFix? = null
+        repeat(16) { index ->
+            val elapsed = 1_000_000_000L + index * 200_000_000L
+            val candidate = fix(
+                lat = 51.5 + index * 0.000001,
+                wall = 1_000_000L + index * 200L,
+                elapsed = elapsed,
+            )
+            val decision = NavigationFixAdjudicationPolicy.decide(
+                candidate,
+                previous,
+                candidate.wallTimeMillis,
+                elapsed,
+            )
+            assertTrue(decision is LocationFixDecision.Accept)
+            previous = candidate
+            cadence.record(elapsed)
+        }
+        assertEquals(5, cadence.countBetween(1_000_000_000L, 2_000_000_000L))
+        assertEquals(5, cadence.countBetween(2_000_000_000L, 3_000_000_000L))
+        assertEquals(5, cadence.countBetween(3_000_000_000L, 4_000_000_000L))
+    }
+
+    @Test fun oneHertzPlatformMotionProducesBoundedTwoHundredMillisecondVisualTargets() {
+        val tracker = TravelVisualMotionTracker()
+        val sourceElapsed = 1_000_000_000L
+        tracker.accept(fix(
+            lat = 51.5,
+            lon = -0.1,
+            elapsed = sourceElapsed,
+            speed = 10f,
+            bearing = 90f,
+            speedAccuracy = 0.5f,
+            bearingAccuracy = 5f,
+        ))
+
+        val targets = (0L..800L step 200L).map { offsetMillis ->
+            requireNotNull(tracker.target(sourceElapsed + offsetMillis * 1_000_000L))
+        }
+
+        assertEquals(listOf(0L, 200L, 400L, 600L, 800L), targets.map {
+            (it.displayElapsedRealtimeNanos - sourceElapsed) / 1_000_000L
+        })
+        assertTrue(targets.drop(1).zipWithNext().all { (before, after) ->
+            distanceMetres(before.latitude, before.longitude, after.latitude, after.longitude) > 1.8
+        })
+        assertTrue(targets.drop(1).all { it.projected })
+        assertTrue(targets.all { it.motionSource == TravelVisualMotionSource.PLATFORM })
+    }
+
+    @Test fun fiveHertzRealFixesRemainThePresentationSourceWithoutCoalescing() {
+        val tracker = TravelVisualMotionTracker()
+        val targets = (0..5).map { index ->
+            val elapsed = 1_000_000_000L + index * 200_000_000L
+            val eastwardDegrees = index * 0.000029
+            tracker.accept(fix(
+                lon = -0.1 + eastwardDegrees,
+                wall = 1_000_000L + index * 200L,
+                elapsed = elapsed,
+                speed = 10f,
+                bearing = 90f,
+            ))
+            requireNotNull(tracker.target(elapsed))
+        }
+        assertEquals(6, targets.map { it.sourceFixElapsedRealtimeNanos }.distinct().size)
+        assertEquals(
+            (0..5).map { 1_000_000_000L + it * 200_000_000L },
+            targets.map { it.sourceFixElapsedRealtimeNanos },
+        )
+        assertTrue(targets.drop(1).all { it.motionSource == TravelVisualMotionSource.PLATFORM })
+    }
+
+    @Test fun projectionFreezesAtBoundAndPoorFixNeverProjects() {
+        val tracker = TravelVisualMotionTracker()
+        val sourceElapsed = 1_000_000_000L
+        tracker.accept(fix(
+            elapsed = sourceElapsed,
+            speed = 20f,
+            bearing = 0f,
+        ))
+        val atBound = requireNotNull(tracker.target(
+            sourceElapsed + TravelVisualMotionPolicy.maximumProjectionMillis * 1_000_000L,
+        ))
+        val longAfter = requireNotNull(tracker.target(sourceElapsed + 10_000_000_000L))
+        assertEquals(atBound.latitude, longAfter.latitude, 1e-10)
+        assertEquals(atBound.longitude, longAfter.longitude, 1e-10)
+
+        val beforePoor = requireNotNull(tracker.target(2_000_000_000L))
+        tracker.accept(fix(
+            lat = 52.0,
+            lon = 0.2,
+            wall = 1_001_000L,
+            elapsed = 2_000_000_000L,
+            accuracy = 100f,
+            speed = 20f,
+            bearing = 0f,
+        ))
+        val poorLater = requireNotNull(tracker.target(2_800_000_000L))
+        assertEquals(beforePoor.latitude, poorLater.latitude, 1e-10)
+        assertEquals(beforePoor.longitude, poorLater.longitude, 1e-10)
+        assertFalse(poorLater.projected)
+    }
+
+    @Test fun stationaryJitterIsSuppressedAndMotionIsNotInvented() {
+        val tracker = TravelVisualMotionTracker()
+        val first = fix(elapsed = 1_000_000_000L, speed = 0.2f, bearing = 120f)
+        val initial = requireNotNull(tracker.accept(first))
+        val jitter = fix(
+            lat = first.latitude + 0.000004,
+            lon = first.longitude - 0.000003,
+            wall = first.wallTimeMillis + 1_000L,
+            elapsed = first.elapsedRealtimeNanos + 1_000_000_000L,
+            speed = 0.1f,
+            bearing = 20f,
+        )
+        val held = requireNotNull(tracker.accept(jitter))
+        val later = requireNotNull(tracker.target(jitter.elapsedRealtimeNanos + 800_000_000L))
+        assertEquals(initial.latitude, held.latitude, 1e-10)
+        assertEquals(initial.longitude, held.longitude, 1e-10)
+        assertEquals(held.latitude, later.latitude, 1e-10)
+        assertEquals(held.longitude, later.longitude, 1e-10)
+        assertEquals(TravelVisualMotionSource.STATIONARY, later.motionSource)
+        assertFalse(later.projected)
+    }
+
+    @Test fun derivedMotionRequiresCredibleAccurateMovement() {
+        val tracker = TravelVisualMotionTracker()
+        val first = fix(lat = 51.5, lon = -0.1, elapsed = 1_000_000_000L)
+        tracker.accept(first)
+        val second = fix(
+            lat = 51.500135,
+            lon = -0.1,
+            wall = first.wallTimeMillis + 1_000L,
+            elapsed = 2_000_000_000L,
+        )
+        tracker.accept(second)
+        val projected = requireNotNull(tracker.target(2_400_000_000L))
+        assertEquals(TravelVisualMotionSource.DERIVED, projected.motionSource)
+        assertTrue(projected.projected)
+        assertTrue(projected.latitude > first.latitude)
+    }
+
+    @Test fun realFixCorrectionIsContinuousAndSettlesWithoutSnapBack() {
+        val tracker = TravelVisualMotionTracker()
+        val first = fix(
+            lat = 51.5, lon = -0.1, elapsed = 1_000_000_000L,
+            speed = 10f, bearing = 90f,
+        )
+        tracker.accept(first)
+        val before = requireNotNull(tracker.target(2_000_000_000L))
+        val next = fix(
+            lat = 51.5,
+            lon = -0.09982,
+            wall = first.wallTimeMillis + 1_000L,
+            elapsed = 2_000_000_000L,
+            speed = 10f,
+            bearing = 90f,
+        )
+        val reconciled = requireNotNull(tracker.accept(next))
+        assertTrue(distanceMetres(
+            before.latitude, before.longitude, reconciled.latitude, reconciled.longitude,
+        ) < 0.2)
+        val mid = requireNotNull(tracker.target(2_400_000_000L))
+        val settled = requireNotNull(tracker.target(2_600_000_000L))
+        assertTrue(distanceMetres(
+            reconciled.latitude, reconciled.longitude, mid.latitude, mid.longitude,
+        ) > 0.5)
+        assertTrue(distanceMetres(mid.latitude, mid.longitude, settled.latitude, settled.longitude) > 0.5)
+    }
+
+    @Test fun presentationTickAlignsToMonotonicTwoHundredMillisecondBoundaries() {
+        assertEquals(200L, TravelVisualMotionPolicy.delayUntilNextTickMillis(1_000_000_000L))
+        assertEquals(150L, TravelVisualMotionPolicy.delayUntilNextTickMillis(1_050_000_000L))
+        assertEquals(1L, TravelVisualMotionPolicy.delayUntilNextTickMillis(1_199_999_999L))
     }
 
     @Test fun precisePermissionAndAccuracyGateFollow() {

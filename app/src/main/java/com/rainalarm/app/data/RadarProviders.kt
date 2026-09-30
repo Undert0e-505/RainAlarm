@@ -22,6 +22,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
@@ -493,12 +494,36 @@ class MeteoGroupRegionalEndpoint : RegionalRadarEndpoint {
 class MeteoGroupRadarSessionLoader(
     private val endpoint: RegionalRadarEndpoint = MeteoGroupRegionalEndpoint(),
 ) {
+    /**
+     * Returns the provider's local travel direction for a lightweight Now/widget request.
+     * The public rain chart has no direction field, so sample only the newest observation's
+     * velocity texture rather than downloading a full render session. A missing/zero vector is
+     * genuinely unknown and must stay null; callers must never invent a compass marker.
+     */
+    suspend fun travelBearingDegrees(place: SavedPlace): Double? = try {
+        val area = RegionalRadarAreas.forPoint(place.latitude, place.longitude) ?: return null
+        val latest = RegionalManifestParser.parse(endpoint.manifest(area))
+            .lastOrNull { !it.forecast } ?: return null
+        val velocityFilename = latest.velocityFilename ?: return null
+        val bytes = endpoint.image(area, velocityFilename)
+        currentCoroutineContext().ensureActive()
+        validateJpeg(bytes, area)
+        sampleSelectedVelocity(bytes, area, place)?.let { (x, y) ->
+            com.rainalarm.app.domain.bearingForVector(x.toDouble(), y.toDouble())
+        }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        null
+    }
+
     suspend fun load(
         place: SavedPlace,
         maxFrames: Int? = null,
         mode: RadarLoadMode = RadarLoadMode.SCREEN_TWO_TIER,
         onProgress: (Int, Int) -> Unit = { _, _ -> },
     ): RadarSession = coroutineScope {
+        val loadStartedNanos = System.nanoTime()
         val area = requireNotNull(RegionalRadarAreas.forPoint(place.latitude, place.longitude)) {
             "No MeteoGroup regional radar covers ${place.name}"
         }
@@ -522,6 +547,20 @@ class MeteoGroupRadarSessionLoader(
             1 + if (it.velocityFilename != null && shouldLoadRegionalVelocity(mode, it, currentTimestamp)) 1 else 0
         }
         onProgress(0, total)
+        suspend fun publishTransferredResource(): Int {
+            val count = completed.incrementAndGet()
+            withContext(Dispatchers.Main.immediate) { onProgress(count, total) }
+            if (count == total) {
+                Log.i(
+                    "RainRadarProvider",
+                    "MeteoGroup phase=transfer_complete resources=$total elapsedMs=" +
+                        ((System.nanoTime() - loadStartedNanos) / 1_000_000L),
+                )
+                // Let Compose publish the named Preparing state before the last off-main decode.
+                delay(PREPARING_UI_YIELD_MILLIS)
+            }
+            return count
+        }
         val downloaded = HashMap<Long, Pair<LegacyCompressedFrame, RadarPointSample>>(selected.size)
         val dispatcher = Dispatchers.IO.limitedParallelism(MAX_DOWNLOAD_CONCURRENCY)
         for (batch in LegacyFramePriority.boundedBatches(selected, MAX_DOWNLOAD_CONCURRENCY)) {
@@ -532,7 +571,7 @@ class MeteoGroupRadarSessionLoader(
                         currentCoroutineContext().ensureActive()
                         validateJpeg(radarBytes, area)
                         if (retainRenderCache) accountBytes(compressedTotal, radarBytes.size)
-                        withContext(Dispatchers.Main.immediate) { onProgress(completed.incrementAndGet(), total) }
+                        publishTransferredResource()
                         val point = sampleSelectedPoint(radarBytes, area, place)
                         val needsVelocity = shouldLoadRegionalVelocity(mode, metadata, currentTimestamp)
                         val downloadedVelocity = metadata.velocityFilename?.takeIf { needsVelocity }?.let { filename ->
@@ -540,9 +579,7 @@ class MeteoGroupRadarSessionLoader(
                                 currentCoroutineContext().ensureActive()
                                 validateJpeg(bytes, area)
                                 if (retainRenderCache) accountBytes(compressedTotal, bytes.size)
-                                withContext(Dispatchers.Main.immediate) {
-                                    onProgress(completed.incrementAndGet(), total)
-                                }
+                                publishTransferredResource()
                             }
                         }
                         val localVelocity = downloadedVelocity?.let { sampleSelectedVelocity(it, area, place) }
@@ -577,7 +614,9 @@ class MeteoGroupRadarSessionLoader(
         )
         Log.i(
             "RainRadarProvider",
-            "MeteoGroup area=${area.id} compact session ready frames=${archive.frames.size} bytes=${archive.totalCompressedBytes}",
+            "MeteoGroup area=${area.id} phase=ready frames=${archive.frames.size} " +
+                "bytes=${archive.totalCompressedBytes} elapsedMs=" +
+                ((System.nanoTime() - loadStartedNanos) / 1_000_000L),
         )
         RadarSession(
             place = place,
@@ -737,6 +776,7 @@ class MeteoGroupRadarSessionLoader(
 
     private companion object {
         const val MAX_DOWNLOAD_CONCURRENCY = 2
+        const val PREPARING_UI_YIELD_MILLIS = 20L
         const val MAX_FILE_BYTES = 4 * 1024 * 1024
         const val MAX_SESSION_BYTES = 64L * 1024 * 1024
     }
@@ -812,7 +852,15 @@ class RadarProviderCoordinator(
                 RadarProviderKind.OPEN_RAINVIEWER -> if (isLast) remaining
                     else minOf(remaining, RadarLoadDeadline.primary(mode))
             }
-            Log.i("RainRadarProvider", "Loading $candidate for preferred=$requested")
+            // A fallback provider owns a new transfer phase. Do not leave the completed count of
+            // its predecessor visible while this candidate resolves metadata.
+            onProgress(0, 0)
+            Log.i(
+                "RainRadarProvider",
+                "phase=candidate_start provider=$candidate preferred=$requested " +
+                    "budgetMs=$candidateBudget elapsedMs=" +
+                    ((System.nanoTime() - startedNanos) / 1_000_000L),
+            )
             val attempt = RadarLoadDeadline.attemptPrimary(candidateBudget) {
                 when (candidate) {
                     RadarProviderKind.METEOGROUP_REGIONAL ->
@@ -850,11 +898,21 @@ class RadarProviderCoordinator(
                 }
                 PrimaryRadarAttempt.TimedOut -> {
                     timedOut = true
-                    Log.w("RainRadarProvider", "$candidate deadline exceeded; trying next provider")
+                    Log.w(
+                        "RainRadarProvider",
+                        "phase=candidate_timeout provider=$candidate budgetMs=$candidateBudget " +
+                            "elapsedMs=${(System.nanoTime() - startedNanos) / 1_000_000L}; " +
+                            "trying next provider",
+                    )
                 }
                 is PrimaryRadarAttempt.Failed -> {
                     lastFailure = attempt.cause
-                    Log.w("RainRadarProvider", "$candidate failed; trying next provider", attempt.cause)
+                    Log.w(
+                        "RainRadarProvider",
+                        "phase=candidate_failed provider=$candidate elapsedMs=" +
+                            "${(System.nanoTime() - startedNanos) / 1_000_000L}; trying next provider",
+                        attempt.cause,
+                    )
                 }
             }
         }

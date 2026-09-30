@@ -145,7 +145,7 @@ class PlatformLocationClient(private val context: Context) {
             .setMinUpdateIntervalMillis(profile.fastestIntervalMillis)
             .setMaxUpdateDelayMillis(profile.maxDelayMillis)
             .setMaxUpdateAgeMillis(profile.initialMaxAgeMillis)
-            .setMinUpdateDistanceMeters(0f)
+            .setMinUpdateDistanceMeters(profile.minimumDistanceMetres)
             .setWaitForAccurateLocation(profile.waitForAccurateFix && permission.fine)
             .setGranularity(if (permission.fine) Granularity.GRANULARITY_FINE else Granularity.GRANULARITY_COARSE)
             .build()
@@ -242,7 +242,11 @@ class PlatformLocationClient(private val context: Context) {
         }
         try {
             manager.requestLocationUpdates(
-                provider, profile.intervalMillis, 0f, listener, Looper.getMainLooper(),
+                provider,
+                profile.intervalMillis,
+                profile.minimumDistanceMetres,
+                listener,
+                Looper.getMainLooper(),
             )
         } catch (failure: SecurityException) {
             close(failure)
@@ -286,15 +290,31 @@ class PlatformLocationClient(private val context: Context) {
         }
     }
 
-    private fun Location.toNavigation(source: LocationFixSource, fine: Boolean) = NavigationLocationFix(
-        latitude = latitude,
-        longitude = longitude,
-        wallTimeMillis = time,
-        elapsedRealtimeNanos = elapsedRealtimeNanos,
-        accuracyMetres = if (hasAccuracy()) accuracy else Float.MAX_VALUE,
-        source = source,
-        finePermission = fine,
-    )
+    private fun Location.toNavigation(source: LocationFixSource, fine: Boolean) =
+        NavigationLocationFix(
+            latitude = latitude,
+            longitude = longitude,
+            wallTimeMillis = time,
+            elapsedRealtimeNanos = elapsedRealtimeNanos,
+            accuracyMetres = if (hasAccuracy()) accuracy else Float.MAX_VALUE,
+            source = source,
+            finePermission = fine,
+            speedMetresPerSecond = speed.takeIf { hasSpeed() && it.isFinite() && it >= 0f },
+            bearingDegrees = bearing.takeIf { hasBearing() && it.isFinite() },
+            speedAccuracyMetresPerSecond = speedAccuracyMetersPerSecond.takeIf {
+                hasSpeedAccuracy() && it.isFinite() && it >= 0f
+            },
+            bearingAccuracyDegrees = bearingAccuracyDegrees.takeIf {
+                hasBearingAccuracy() && it.isFinite() && it >= 0f
+            },
+        ).also {
+            LocationCadenceDiagnostics.record(
+                "raw",
+                source,
+                elapsedRealtimeNanos,
+                "delivered accuracy=${hasAccuracy()} speed=${hasSpeed()} bearing=${hasBearing()}",
+            )
+        }
 }
 
 private suspend fun <T> Task<T>.awaitTask(onCancel: () -> Unit = {}): T =
@@ -348,7 +368,9 @@ object ForegroundLocationSnapshot {
 
     fun setForeground(value: Boolean) {
         foreground = value
-        if (!value) { place = null; fixTimeMillis = 0 }
+        // Keep a foreground-acquired fix in memory for its normal five-minute lifetime so
+        // WorkManager can service a Follow-app widget immediately after the Activity leaves the
+        // screen. The coordinate is never persisted and no background location request is made.
     }
 
     fun update(value: SavedPlace, timeMillis: Long) {
@@ -358,5 +380,7 @@ object ForegroundLocationSnapshot {
     fun clear() { place = null; fixTimeMillis = 0 }
 
     fun freshPlace(nowMillis: Long = System.currentTimeMillis()): SavedPlace? =
-        if (foreground && LiveLocationPolicy.isFresh(fixTimeMillis, nowMillis)) place else null
+        if (LiveLocationPolicy.isFresh(fixTimeMillis, nowMillis)) place else null
+
+    fun wasAcquiredWhileForeground(): Boolean = place != null && fixTimeMillis > 0L
 }

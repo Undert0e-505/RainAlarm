@@ -444,70 +444,127 @@ class OperaRadarSessionLoader(
             }
             throw failure
         }
-        val regionalAnalyses = outputs.mapNotNull { output ->
-            output.regionalAnalysis?.let { TimedIntensityGrid(output.frame.time, it) }
-        }
-        val detailAnalyses = outputs.map { TimedIntensityGrid(it.frame.time, it.detailAnalysis) }
-        val regionalTier = regionalPlan?.let {
-            RadarTierFrames(
-                RadarResolutionTier.REGIONAL, it.bounds,
-                outputs.map { RadarBitmapFrame(it.frame, requireNotNull(it.regionalBitmap)) },
-            )
-        }
-        val detailTier = RadarTierFrames(
-            RadarResolutionTier.DETAIL, detailPlan.bounds,
-            outputs.map { RadarBitmapFrame(it.frame, it.detailBitmap) },
+        data class OperaPostProcessing(
+            val regionalTier: RadarTierFrames?,
+            val detailTier: RadarTierFrames,
+            val pairMotions: List<PhysicalRadarMotion?>,
+            val denseVelocity: Map<RadarResolutionTier, DenseVelocitySet>,
+            val preferredMotion: PhysicalRadarMotion?,
+            val wetPixels: Int,
+            val maximumPoint: GeoPoint,
         )
-        val pairMotions = (0 until outputs.lastIndex).map { index ->
-            RadarMotionPolicy.preferred(
-                regionalAnalyses.takeIf { it.size == outputs.size }?.let {
-                    physicalPair(it[index], it[index + 1], RadarResolutionTier.REGIONAL,
-                        requireNotNull(regionalPlan).bounds)
-                },
-                physicalPair(detailAnalyses[index], detailAnalyses[index + 1], RadarResolutionTier.DETAIL, detailPlan.bounds),
+        // Transfer progress is complete at this point. Keep dense motion and diagnostic raster
+        // analysis away from Main so the UI can show "Radar preparing" and the enclosing timeout
+        // can cancel a pathological preparation instead of waiting behind it.
+        val postProcessing = try {
+            withContext(Dispatchers.Default) {
+            val preparationContext = currentCoroutineContext()
+            val regionalAnalyses = outputs.mapNotNull { output ->
+                output.regionalAnalysis?.let { TimedIntensityGrid(output.frame.time, it) }
+            }
+            val detailAnalyses = outputs.map { TimedIntensityGrid(it.frame.time, it.detailAnalysis) }
+            val regionalTier = regionalPlan?.let {
+                RadarTierFrames(
+                    RadarResolutionTier.REGIONAL, it.bounds,
+                    outputs.map { output ->
+                        RadarBitmapFrame(output.frame, requireNotNull(output.regionalBitmap))
+                    },
+                )
+            }
+            val detailTier = RadarTierFrames(
+                RadarResolutionTier.DETAIL, detailPlan.bounds,
+                outputs.map { RadarBitmapFrame(it.frame, it.detailBitmap) },
             )
-        }
-        fun dense(analyses: List<TimedIntensityGrid>, width: Int, height: Int): DenseVelocitySet {
-            val fields: List<RadarVelocityField?> = analyses.zipWithNext().map { (before, after) ->
-                DenseRadarMotionEstimator.estimatePair(before, after, width, height)
+            val pairMotions = (0 until outputs.lastIndex).map { index ->
+                preparationContext.ensureActive()
+                RadarMotionPolicy.preferred(
+                    regionalAnalyses.takeIf { it.size == outputs.size }?.let {
+                        physicalPair(
+                            it[index], it[index + 1], RadarResolutionTier.REGIONAL,
+                            requireNotNull(regionalPlan).bounds,
+                        )
+                    },
+                    physicalPair(
+                        detailAnalyses[index], detailAnalyses[index + 1],
+                        RadarResolutionTier.DETAIL, detailPlan.bounds,
+                    ),
+                )
             }
-            return DenseVelocitySet(fields, DenseRadarMotionEstimator.aggregate(fields))
-        }
-        val denseVelocity = buildMap {
-            regionalPlan?.let { plan ->
-                put(RadarResolutionTier.REGIONAL, dense(regionalAnalyses, plan.width, plan.height))
+            fun dense(
+                analyses: List<TimedIntensityGrid>,
+                width: Int,
+                height: Int,
+            ): DenseVelocitySet {
+                val fields: List<RadarVelocityField?> =
+                    analyses.zipWithNext().map { (before, after) ->
+                        preparationContext.ensureActive()
+                        DenseRadarMotionEstimator.estimatePair(before, after, width, height)
+                    }
+                return DenseVelocitySet(fields, DenseRadarMotionEstimator.aggregate(fields))
             }
-            put(RadarResolutionTier.DETAIL, dense(detailAnalyses, detailPlan.width, detailPlan.height))
+            val denseVelocity = buildMap {
+                regionalPlan?.let { plan ->
+                    put(
+                        RadarResolutionTier.REGIONAL,
+                        dense(regionalAnalyses, plan.width, plan.height),
+                    )
+                }
+                put(
+                    RadarResolutionTier.DETAIL,
+                    dense(detailAnalyses, detailPlan.width, detailPlan.height),
+                )
+            }
+            val regionalMotion = regionalAnalyses.takeIf { it.isNotEmpty() }?.let {
+                physicalAggregate(
+                    it.takeLast(5), RadarResolutionTier.REGIONAL,
+                    requireNotNull(regionalPlan).bounds,
+                )
+            }
+            val detailMotion = physicalAggregate(
+                detailAnalyses.takeLast(5), RadarResolutionTier.DETAIL, detailPlan.bounds,
+            )
+            val latestRegional = outputs.last().latestRegionalSeverity
+                ?: requireNotNull(outputs.last().latestDetailSeverity)
+            val wetPixels = latestRegional.values.count {
+                it >= OpenRadarColorScale.WET_SEVERITY_THRESHOLD
+            }
+            val maximumIndex = latestRegional.values.indices.maxByOrNull {
+                latestRegional.values[it]
+            } ?: 0
+            val diagnosticBounds = regionalPlan?.bounds ?: detailPlan.bounds
+            val (worldLeft, worldTop) = WebMercator.worldFraction(diagnosticBounds.topLeft)
+            val (worldRight, worldBottom) = WebMercator.worldFraction(diagnosticBounds.bottomRight)
+            val maximumPoint = WebMercator.pointAtWorldFraction(
+                worldLeft + ((maximumIndex % latestRegional.width) + 0.5) /
+                    latestRegional.width * (worldRight - worldLeft),
+                worldTop + ((maximumIndex / latestRegional.width) + 0.5) /
+                    latestRegional.height * (worldBottom - worldTop),
+            )
+                OperaPostProcessing(
+                    regionalTier = regionalTier,
+                    detailTier = detailTier,
+                    pairMotions = pairMotions,
+                    denseVelocity = denseVelocity,
+                    preferredMotion = RadarMotionPolicy.preferred(regionalMotion, detailMotion),
+                    wetPixels = wetPixels,
+                    maximumPoint = maximumPoint,
+                )
+            }
+        } catch (failure: Throwable) {
+            outputs.forEach { output ->
+                output.regionalBitmap?.let { if (!it.isRecycled) it.recycle() }
+                if (!output.detailBitmap.isRecycled) output.detailBitmap.recycle()
+            }
+            throw failure
         }
-        val regionalMotion = regionalAnalyses.takeIf { it.isNotEmpty() }?.let {
-            physicalAggregate(it.takeLast(5), RadarResolutionTier.REGIONAL,
-                requireNotNull(regionalPlan).bounds)
-        }
-        val detailMotion = physicalAggregate(
-            detailAnalyses.takeLast(5), RadarResolutionTier.DETAIL, detailPlan.bounds,
-        )
-        val preferredMotion = RadarMotionPolicy.preferred(regionalMotion, detailMotion)
         fun futureFieldSummary(tier: RadarResolutionTier): String =
-            denseVelocity[tier]?.futureField?.let { field ->
+            postProcessing.denseVelocity[tier]?.futureField?.let { field ->
                 val (dx, dy) = field.displacementAt(0.5, 0.5)
                 "${"%.2f".format(dx)},${"%.2f".format(dy)}px/" +
                     "${field.sourceIntervalSeconds}s@${"%.2f".format(field.confidence)}"
             } ?: "none"
         val elapsedMillis = (System.nanoTime() - startedNanos) / 1_000_000L
         val cacheStats = OperaSharedSourceCache.stats()
-        val latestRegional = outputs.last().latestRegionalSeverity
-            ?: requireNotNull(outputs.last().latestDetailSeverity)
-        val wetPixels = latestRegional.values.count { it >= OpenRadarColorScale.WET_SEVERITY_THRESHOLD }
-        val maximumIndex = latestRegional.values.indices.maxByOrNull { latestRegional.values[it] } ?: 0
-        val diagnosticBounds = regionalPlan?.bounds ?: detailPlan.bounds
-        val (worldLeft, worldTop) = WebMercator.worldFraction(diagnosticBounds.topLeft)
-        val (worldRight, worldBottom) = WebMercator.worldFraction(diagnosticBounds.bottomRight)
-        val maximumPoint = WebMercator.pointAtWorldFraction(
-            worldLeft + ((maximumIndex % latestRegional.width) + 0.5) / latestRegional.width *
-                (worldRight - worldLeft),
-            worldTop + ((maximumIndex / latestRegional.width) + 0.5) / latestRegional.height *
-                (worldBottom - worldTop),
-        )
         Log.i(
             TAG,
             "OPERA area=${area?.id ?: "opera-domain"} frames=${outputs.size} tiles=${requiredTiles.size} " +
@@ -526,9 +583,10 @@ class OperaRadarSessionLoader(
                 "${"%.3f".format(detailPlan.bounds.topLeft.longitude)}.." +
                 "${"%.3f".format(detailPlan.bounds.bottomRight.latitude)}," +
                 "${"%.3f".format(detailPlan.bounds.bottomRight.longitude)} " +
-                "wetPixels=$wetPixels maxLat=${"%.2f".format(maximumPoint.latitude)} " +
-                "maxLon=${"%.2f".format(maximumPoint.longitude)} " +
-                "motion=${preferredMotion?.let {
+                "wetPixels=${postProcessing.wetPixels} " +
+                "maxLat=${"%.2f".format(postProcessing.maximumPoint.latitude)} " +
+                "maxLon=${"%.2f".format(postProcessing.maximumPoint.longitude)} " +
+                "motion=${postProcessing.preferredMotion?.let {
                     "${"%.3f".format(it.pixelsPerMinute(RadarResolutionTier.REGIONAL).first)}," +
                         "${"%.3f".format(it.pixelsPerMinute(RadarResolutionTier.REGIONAL).second)}" +
                         "pxMin@${"%.2f".format(it.confidence)}"
@@ -538,10 +596,10 @@ class OperaRadarSessionLoader(
         )
         RadarSession(
             place = place,
-            regional = regionalTier,
-            detail = detailTier,
-            motion = preferredMotion,
-            pairMotions = pairMotions,
+            regional = postProcessing.regionalTier,
+            detail = postProcessing.detailTier,
+            motion = postProcessing.preferredMotion,
+            pairMotions = postProcessing.pairMotions,
             latestDetailIntensity = requireNotNull(outputs.last().latestDetailSeverity),
             latestDetailSnow = null,
             latestDetailCoverage = requireNotNull(outputs.last().latestDetailCoverage),
@@ -550,7 +608,7 @@ class OperaRadarSessionLoader(
                 RadarProviderKind.EUMETNET_OPERA,
             ),
             region = area,
-            denseVelocity = denseVelocity,
+            denseVelocity = postProcessing.denseVelocity,
             mapCoverage = regionalPlan?.let { plan ->
                 outputs.last().latestRegionalCoverage?.let { coverage ->
                     RadarCoverageRaster(

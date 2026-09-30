@@ -1,8 +1,10 @@
 package com.rainalarm.app.data
 
 import kotlin.math.asin
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -17,11 +19,12 @@ data class LocationRequestProfile(
     val initialMaxAgeMillis: Long,
     val waitForAccurateFix: Boolean,
     val requiresFinePermission: Boolean,
+    val minimumDistanceMetres: Float,
 )
 
 /** One process-wide location request profile is selected from foreground app state. */
 object LocationRequestProfiles {
-    val Off = LocationRequestProfile(LocationRequestMode.OFF, 0, 0, 0, 0, false, false)
+    val Off = LocationRequestProfile(LocationRequestMode.OFF, 0, 0, 0, 0, false, false, 0f)
     val Current = LocationRequestProfile(
         LocationRequestMode.CURRENT,
         intervalMillis = 5_000,
@@ -30,6 +33,7 @@ object LocationRequestProfiles {
         initialMaxAgeMillis = 5_000,
         waitForAccurateFix = true,
         requiresFinePermission = false,
+        minimumDistanceMetres = 0f,
     )
     val Follow = LocationRequestProfile(
         LocationRequestMode.FOLLOW,
@@ -42,6 +46,7 @@ object LocationRequestProfiles {
         initialMaxAgeMillis = 3_000,
         waitForAccurateFix = true,
         requiresFinePermission = true,
+        minimumDistanceMetres = 0f,
     )
 
     fun select(currentSelected: Boolean, foreground: Boolean, followRequested: Boolean): LocationRequestProfile =
@@ -64,7 +69,311 @@ data class NavigationLocationFix(
     val accuracyMetres: Float,
     val source: LocationFixSource,
     val finePermission: Boolean,
+    val speedMetresPerSecond: Float? = null,
+    val bearingDegrees: Float? = null,
+    val speedAccuracyMetresPerSecond: Float? = null,
+    val bearingAccuracyDegrees: Float? = null,
 )
+
+enum class TravelVisualMotionSource { STATIONARY, PLATFORM, DERIVED }
+
+/**
+ * A visual-only Travel target. It is deliberately not a [SavedPlace] or a
+ * [NavigationLocationFix], so projected coordinates cannot become weather, alert, persistence or
+ * selection inputs by accident.
+ */
+data class TravelDisplayTarget(
+    val latitude: Double,
+    val longitude: Double,
+    val sourceFixElapsedRealtimeNanos: Long,
+    val displayElapsedRealtimeNanos: Long,
+    val source: LocationFixSource,
+    val projected: Boolean,
+    val motionSource: TravelVisualMotionSource,
+)
+
+internal object TravelVisualMotionPolicy {
+    const val tickMillis = 200L
+    const val maximumProjectionMillis = 1_200L
+    const val reconciliationMillis = 600L
+    const val maximumAccuracyMetres = 50f
+    const val stationarySpeedMetresPerSecond = 0.75
+    const val maximumSpeedMetresPerSecond = 70.0
+    const val maximumAccelerationMetresPerSecondSquared = 12.0
+    const val maximumCorrectionMetres = 35.0
+    const val minimumPublishedMovementMetres = 0.05
+    private const val maximumDerivedIntervalSeconds = 2.5
+
+    fun usableForProjection(fix: NavigationLocationFix): Boolean =
+        fix.finePermission && fix.source != LocationFixSource.NETWORK &&
+            fix.accuracyMetres.isFinite() && fix.accuracyMetres <= maximumAccuracyMetres
+
+    fun shouldPublish(previous: TravelDisplayTarget?, candidate: TravelDisplayTarget): Boolean =
+        previous == null || distanceMetres(
+            previous.latitude,
+            previous.longitude,
+            candidate.latitude,
+            candidate.longitude,
+        ) >= minimumPublishedMovementMetres
+
+    fun delayUntilNextTickMillis(nowElapsedNanos: Long): Long {
+        val periodNanos = tickMillis * 1_000_000L
+        val remainder = Math.floorMod(nowElapsedNanos, periodNanos)
+        return ((periodNanos - remainder) / 1_000_000L).coerceAtLeast(1L)
+    }
+
+    fun projectionSeconds(fixElapsedNanos: Long, nowElapsedNanos: Long): Double {
+        if (fixElapsedNanos <= 0L || nowElapsedNanos <= fixElapsedNanos) return 0.0
+        return min(
+            (nowElapsedNanos - fixElapsedNanos) / 1_000_000_000.0,
+            maximumProjectionMillis / 1_000.0,
+        )
+    }
+
+    fun derivedVelocity(
+        previous: NavigationLocationFix,
+        current: NavigationLocationFix,
+    ): Pair<Double, Double>? {
+        if (!usableForProjection(previous) || !usableForProjection(current)) return null
+        val elapsedSeconds = when {
+            current.elapsedRealtimeNanos > previous.elapsedRealtimeNanos &&
+                previous.elapsedRealtimeNanos > 0L ->
+                (current.elapsedRealtimeNanos - previous.elapsedRealtimeNanos) / 1_000_000_000.0
+            else -> (current.wallTimeMillis - previous.wallTimeMillis) / 1_000.0
+        }
+        if (elapsedSeconds <= 0.0 || elapsedSeconds > maximumDerivedIntervalSeconds) return null
+        val distance = distanceMetres(
+            previous.latitude,
+            previous.longitude,
+            current.latitude,
+            current.longitude,
+        )
+        val jitterFloor = max(
+            2.0,
+            min(10.0, max(previous.accuracyMetres, current.accuracyMetres) * 0.5),
+        )
+        if (distance < jitterFloor) return null
+        val speed = distance / elapsedSeconds
+        if (speed !in stationarySpeedMetresPerSecond..maximumSpeedMetresPerSecond) return null
+        return speed to initialBearingDegrees(
+            previous.latitude,
+            previous.longitude,
+            current.latitude,
+            current.longitude,
+        )
+    }
+
+    private fun initialBearingDegrees(
+        fromLatitude: Double,
+        fromLongitude: Double,
+        toLatitude: Double,
+        toLongitude: Double,
+    ): Double {
+        val fromLat = Math.toRadians(fromLatitude)
+        val toLat = Math.toRadians(toLatitude)
+        val deltaLon = Math.toRadians(toLongitude - fromLongitude)
+        val y = sin(deltaLon) * cos(toLat)
+        val x = cos(fromLat) * sin(toLat) - sin(fromLat) * cos(toLat) * cos(deltaLon)
+        return (Math.toDegrees(atan2(y, x)) + 360.0) % 360.0
+    }
+}
+
+/**
+ * Bounded visual dead-reckoning for Travel. Real fixes remain separately owned by the location
+ * and weather pipeline; this tracker only supplies short-lived marker/camera presentation targets.
+ */
+internal class TravelVisualMotionTracker {
+    private data class Motion(
+        val speedMetresPerSecond: Double,
+        val bearingDegrees: Double,
+        val source: TravelVisualMotionSource,
+    )
+
+    private var latestFix: NavigationLocationFix? = null
+    private var motion: Motion? = null
+    private var baseLatitude: Double? = null
+    private var baseLongitude: Double? = null
+    private var correctionLatitudeDegrees = 0.0
+    private var correctionLongitudeDegrees = 0.0
+    private var correctionStartedElapsedNanos = 0L
+
+    fun clear() {
+        latestFix = null
+        motion = null
+        baseLatitude = null
+        baseLongitude = null
+        correctionLatitudeDegrees = 0.0
+        correctionLongitudeDegrees = 0.0
+        correctionStartedElapsedNanos = 0L
+    }
+
+    fun accept(
+        fix: NavigationLocationFix,
+        receivedElapsedNanos: Long = fix.elapsedRealtimeNanos,
+    ): TravelDisplayTarget? {
+        val before = target(receivedElapsedNanos)
+        val priorFix = latestFix
+        val selectedMotion = selectMotion(priorFix, fix)
+        val usable = TravelVisualMotionPolicy.usableForProjection(fix)
+        val rawDistance = priorFix?.let {
+            distanceMetres(it.latitude, it.longitude, fix.latitude, fix.longitude)
+        }
+        val jitterRadius = priorFix?.let {
+            max(3.0, min(12.0, max(it.accuracyMetres, fix.accuracyMetres).toDouble()))
+        } ?: 0.0
+        val holdStationary = usable && before != null &&
+            (selectedMotion == null ||
+                selectedMotion.speedMetresPerSecond < TravelVisualMotionPolicy.stationarySpeedMetresPerSecond) &&
+            rawDistance != null && rawDistance <= jitterRadius
+
+        latestFix = fix
+        motion = if (usable) selectedMotion else null
+        if (!usable || holdStationary) {
+            baseLatitude = before?.latitude ?: fix.latitude
+            baseLongitude = before?.longitude ?: fix.longitude
+            correctionLatitudeDegrees = 0.0
+            correctionLongitudeDegrees = 0.0
+            correctionStartedElapsedNanos = receivedElapsedNanos
+        } else {
+            baseLatitude = fix.latitude
+            baseLongitude = fix.longitude
+            val correctionDistance = before?.let {
+                distanceMetres(it.latitude, it.longitude, fix.latitude, fix.longitude)
+            }
+            if (before != null && correctionDistance != null &&
+                correctionDistance <= TravelVisualMotionPolicy.maximumCorrectionMetres
+            ) {
+                correctionLatitudeDegrees = before.latitude - fix.latitude
+                correctionLongitudeDegrees = shortestLongitudeDelta(before.longitude, fix.longitude)
+            } else {
+                correctionLatitudeDegrees = 0.0
+                correctionLongitudeDegrees = 0.0
+            }
+            correctionStartedElapsedNanos = receivedElapsedNanos
+        }
+        return target(receivedElapsedNanos)
+    }
+
+    fun target(nowElapsedNanos: Long): TravelDisplayTarget? {
+        val fix = latestFix ?: return null
+        val startLatitude = baseLatitude ?: fix.latitude
+        val startLongitude = baseLongitude ?: fix.longitude
+        val activeMotion = motion
+        val projected = if (activeMotion != null &&
+            activeMotion.speedMetresPerSecond >= TravelVisualMotionPolicy.stationarySpeedMetresPerSecond
+        ) {
+            val seconds = TravelVisualMotionPolicy.projectionSeconds(
+                fix.elapsedRealtimeNanos,
+                nowElapsedNanos,
+            )
+            destination(
+                startLatitude,
+                startLongitude,
+                activeMotion.speedMetresPerSecond * seconds,
+                activeMotion.bearingDegrees,
+            )
+        } else startLatitude to startLongitude
+        val correctionAgeMillis = if (correctionStartedElapsedNanos > 0L &&
+            nowElapsedNanos > correctionStartedElapsedNanos
+        ) (nowElapsedNanos - correctionStartedElapsedNanos) / 1_000_000.0 else 0.0
+        val correctionFraction = (1.0 -
+            correctionAgeMillis / TravelVisualMotionPolicy.reconciliationMillis).coerceIn(0.0, 1.0)
+        val latitude = (projected.first + correctionLatitudeDegrees * correctionFraction)
+            .coerceIn(-90.0, 90.0)
+        val longitude = normalizeLongitude(
+            projected.second + correctionLongitudeDegrees * correctionFraction,
+        )
+        val isProjected = activeMotion?.speedMetresPerSecond?.let {
+            it >= TravelVisualMotionPolicy.stationarySpeedMetresPerSecond &&
+                nowElapsedNanos > fix.elapsedRealtimeNanos
+        } == true || correctionFraction > 0.0 &&
+            (correctionLatitudeDegrees != 0.0 || correctionLongitudeDegrees != 0.0)
+        return TravelDisplayTarget(
+            latitude = latitude,
+            longitude = longitude,
+            sourceFixElapsedRealtimeNanos = fix.elapsedRealtimeNanos,
+            displayElapsedRealtimeNanos = nowElapsedNanos,
+            source = fix.source,
+            projected = isProjected,
+            motionSource = activeMotion?.source ?: TravelVisualMotionSource.STATIONARY,
+        )
+    }
+
+    private fun selectMotion(
+        previous: NavigationLocationFix?,
+        current: NavigationLocationFix,
+    ): Motion? {
+        if (!TravelVisualMotionPolicy.usableForProjection(current)) return null
+        val platformSpeed = current.speedMetresPerSecond?.toDouble()?.takeIf {
+            it.isFinite() && it in 0.0..TravelVisualMotionPolicy.maximumSpeedMetresPerSecond
+        }
+        if (platformSpeed != null && platformSpeed < TravelVisualMotionPolicy.stationarySpeedMetresPerSecond) {
+            return Motion(0.0, current.bearingDegrees?.toDouble() ?: 0.0,
+                TravelVisualMotionSource.STATIONARY)
+        }
+        val platformBearing = current.bearingDegrees?.toDouble()?.takeIf { it.isFinite() }
+        val speedAccurate = current.speedAccuracyMetresPerSecond?.let {
+            it.isFinite() && platformSpeed != null && it <= max(2.5, platformSpeed * 0.6)
+        } ?: true
+        val bearingAccurate = current.bearingAccuracyDegrees?.let {
+            it.isFinite() && it <= 45f
+        } ?: true
+        val raw = if (platformSpeed != null && platformBearing != null &&
+            speedAccurate && bearingAccurate
+        ) {
+            Motion(platformSpeed, normalizeBearing(platformBearing), TravelVisualMotionSource.PLATFORM)
+        } else previous?.let { TravelVisualMotionPolicy.derivedVelocity(it, current) }
+            ?.let { Motion(it.first, it.second, TravelVisualMotionSource.DERIVED) }
+            ?: return Motion(0.0, 0.0, TravelVisualMotionSource.STATIONARY)
+
+        val old = motion
+        val elapsedSeconds = previous?.let {
+            if (current.elapsedRealtimeNanos > it.elapsedRealtimeNanos && it.elapsedRealtimeNanos > 0L) {
+                (current.elapsedRealtimeNanos - it.elapsedRealtimeNanos) / 1_000_000_000.0
+            } else (current.wallTimeMillis - it.wallTimeMillis) / 1_000.0
+        }?.coerceAtLeast(0.0) ?: 0.0
+        if (old == null || elapsedSeconds <= 0.0) return raw
+        val maximumChange = TravelVisualMotionPolicy.maximumAccelerationMetresPerSecondSquared *
+            elapsedSeconds.coerceAtMost(TravelVisualMotionPolicy.maximumProjectionMillis / 1_000.0)
+        return raw.copy(
+            speedMetresPerSecond = raw.speedMetresPerSecond.coerceIn(
+                (old.speedMetresPerSecond - maximumChange).coerceAtLeast(0.0),
+                (old.speedMetresPerSecond + maximumChange)
+                    .coerceAtMost(TravelVisualMotionPolicy.maximumSpeedMetresPerSecond),
+            ),
+        )
+    }
+
+    private fun destination(
+        latitude: Double,
+        longitude: Double,
+        distanceMetres: Double,
+        bearingDegrees: Double,
+    ): Pair<Double, Double> {
+        if (distanceMetres <= 0.0) return latitude to longitude
+        val angularDistance = distanceMetres / 6_371_000.0
+        val bearing = Math.toRadians(bearingDegrees)
+        val lat1 = Math.toRadians(latitude)
+        val lon1 = Math.toRadians(longitude)
+        val lat2 = asin(
+            sin(lat1) * cos(angularDistance) +
+                cos(lat1) * sin(angularDistance) * cos(bearing),
+        )
+        val lon2 = lon1 + atan2(
+            sin(bearing) * sin(angularDistance) * cos(lat1),
+            cos(angularDistance) - sin(lat1) * sin(lat2),
+        )
+        return Math.toDegrees(lat2) to normalizeLongitude(Math.toDegrees(lon2))
+    }
+
+    private fun shortestLongitudeDelta(from: Double, to: Double): Double =
+        normalizeLongitude(from - to)
+
+    private fun normalizeBearing(value: Double): Double = (value % 360.0 + 360.0) % 360.0
+
+    private fun normalizeLongitude(value: Double): Double =
+        (value + 540.0) % 360.0 - 180.0
+}
 
 sealed interface LocationFixDecision {
     data class Accept(val fix: NavigationLocationFix, val quality: LocationFixQuality) : LocationFixDecision
@@ -155,7 +464,7 @@ object FollowCapabilityPolicy {
     }
 }
 
-/** Separates one-second map movement from deliberately slower weather/network anchoring. */
+/** Separates frequent live map movement from deliberately slower weather/network anchoring. */
 object WeatherAnalysisAnchorPolicy {
     const val followDistanceMetres = 1_000.0
     const val followTimedDistanceMetres = 250.0

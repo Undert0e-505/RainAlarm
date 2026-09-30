@@ -14,6 +14,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
+import androidx.work.BackoffPolicy
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
@@ -21,6 +22,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import androidx.work.workDataOf
 import com.rainalarm.app.MainActivity
 import com.rainalarm.app.R
 import com.rainalarm.app.data.PlacePreferences
@@ -45,6 +47,8 @@ import com.rainalarm.app.domain.ProviderMinuteSeriesBuilder
 import com.rainalarm.app.domain.RainMinuteSeries
 import com.rainalarm.app.domain.RainMinuteSeriesAnalyzer
 import com.rainalarm.app.data.RegionalRainChartService
+import com.rainalarm.app.widget.RainAlarmWidgetStore
+import com.rainalarm.app.widget.WidgetRefreshTrace
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.first
@@ -63,6 +67,8 @@ import java.util.concurrent.TimeUnit
 private const val PREFS = "rain_alerts"
 private const val UNIQUE_PERIODIC = "rain-approaching-periodic"
 private const val UNIQUE_IMMEDIATE = "rain-approaching-immediate"
+private const val UNIQUE_WIDGET_INITIAL = "widget-initial-refresh"
+private const val KEY_WIDGET_INITIAL = "widget_initial_refresh"
 // A new channel lets existing installs receive an audible default-priority alert; Android
 // does not permit changing the importance of an already-created low-priority channel.
 private const val CHANNEL_ID = "rain_approaching_v2"
@@ -95,6 +101,7 @@ data class AlertMemory(
     val lastNotifiedEpochSeconds: Long = 0,
     val lastEventIdentity: Long = 0,
     val suppressedUntilEpochSeconds: Long = 0,
+    val armed: Boolean = false,
 )
 
 data class AlertDecision(
@@ -234,6 +241,9 @@ object RainAlertDecisionEngine {
         endGraceSeconds: Long = FORECAST_END_GRACE_SECONDS,
     ): AlertDecision = when (evaluation) {
         is RadarAlertEvaluation.Approaching -> {
+            // App notifications retain the original immediate-approach behaviour. Widgets use
+            // RainEpisodePolicy independently so a widget can require a prior complete clear
+            // window without changing the app subscription's established cooldown semantics.
             val notify = nowEpochSeconds >= memory.suppressedUntilEpochSeconds
             AlertDecision(
                 shouldNotify = notify,
@@ -246,7 +256,7 @@ object RainAlertDecisionEngine {
                         ),
                     )
                 } else {
-                    // A moving forecast must not extend the interval accepted by the user.
+                    // A moving forecast must not extend the interval already accepted by the user.
                     memory.copy(lastEventIdentity = evaluation.frameIdentity)
                 },
             )
@@ -409,6 +419,7 @@ class RainAlertPreferences(private val context: Context) {
         val lastNotified = preferences.getLong(RainAlertMemoryKeys.lastNotified(placeId), 0)
         val suppressionKey = RainAlertMemoryKeys.suppressedUntil(placeId)
         return AlertMemory(
+            armed = preferences.getBoolean(RainAlertMemoryKeys.armed(placeId), false),
             lastNotifiedEpochSeconds = lastNotified,
             lastEventIdentity = preferences.getLong(RainAlertMemoryKeys.lastEvent(placeId), 0),
             suppressedUntilEpochSeconds = RainAlertMemoryMigration.suppressionUntil(
@@ -428,7 +439,7 @@ class RainAlertPreferences(private val context: Context) {
             putLong("last_checked", nowEpochSeconds)
             putString("status", status)
             if (placeId != null && memory != null) {
-                remove(RainAlertMemoryKeys.armed(placeId))
+                putBoolean(RainAlertMemoryKeys.armed(placeId), memory.armed)
                 putLong(RainAlertMemoryKeys.lastNotified(placeId), memory.lastNotifiedEpochSeconds)
                 putLong(RainAlertMemoryKeys.lastEvent(placeId), memory.lastEventIdentity)
                 putLong(RainAlertMemoryKeys.suppressedUntil(placeId), memory.suppressedUntilEpochSeconds)
@@ -453,40 +464,22 @@ class RainAlertScheduler(private val context: Context) {
     /** Restore an enabled choice or activate the unset first-run default without resetting its cadence. */
     fun ensureScheduledOnStartup() {
         if (!preferences.hasExplicitEnabledChoice()) preferences.setEnabled(true)
-        if (!preferences.snapshot().enabled) return
-        createNotificationChannel(context)
-        val periodic = PeriodicWorkRequestBuilder<RainApproachingWorker>(15, TimeUnit.MINUTES)
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-            .build()
-        work.enqueueUniquePeriodicWork(UNIQUE_PERIODIC, ExistingPeriodicWorkPolicy.KEEP, periodic)
-        enqueueImmediate()
+        reconcile(enqueueImmediate = true, keepExistingCadence = true)
     }
 
     fun enable() {
         createNotificationChannel(context)
         preferences.setEnabled(true)
-        val constraints = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
-            .build()
-        val periodic = PeriodicWorkRequestBuilder<RainApproachingWorker>(15, TimeUnit.MINUTES)
-            .setConstraints(constraints)
-            .build()
-        work.enqueueUniquePeriodicWork(
-            UNIQUE_PERIODIC,
-            ExistingPeriodicWorkPolicy.UPDATE,
-            periodic,
-        )
-        enqueueImmediate()
+        reconcile(enqueueImmediate = true)
     }
 
     fun disable() {
         preferences.setEnabled(false)
-        work.cancelUniqueWork(UNIQUE_PERIODIC)
-        work.cancelUniqueWork(UNIQUE_IMMEDIATE)
+        reconcile(enqueueImmediate = false)
     }
 
     fun enqueueImmediate() {
-        if (!preferences.snapshot().enabled) return
+        if (!needsBackgroundWork()) return
         val request = OneTimeWorkRequestBuilder<RainApproachingWorker>()
             .setConstraints(
                 Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build(),
@@ -494,13 +487,77 @@ class RainAlertScheduler(private val context: Context) {
             .build()
         work.enqueueUniqueWork(UNIQUE_IMMEDIATE, ExistingWorkPolicy.REPLACE, request)
     }
+
+    /** Durable first acquisition for every independently configured saved-place widget. */
+    fun enqueueWidgetInitialRefresh() {
+        val store = RainAlarmWidgetStore(context)
+        val pendingCount = store.pendingInitialWidgetIds().size
+        if (pendingCount == 0 || !needsBackgroundWork()) return
+        val request = OneTimeWorkRequestBuilder<RainApproachingWorker>()
+            .setInputData(workDataOf(KEY_WIDGET_INITIAL to true))
+            .setConstraints(
+                Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build(),
+            )
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
+            .build()
+        work.enqueueUniqueWork(
+            UNIQUE_WIDGET_INITIAL,
+            // The demand itself is durable in WidgetStore. Replacing a stale/backed-off runner
+            // cannot lose a target and avoids an old retry chain starving a newly added widget.
+            ExistingWorkPolicy.REPLACE,
+            request,
+        )
+        WidgetRefreshTrace.workEnqueued(pendingCount)
+    }
+
+    fun enableLightning() {
+        createNotificationChannel(context)
+        LightningAlertPreferences(context).setEnabled(true)
+        reconcile(enqueueImmediate = true)
+    }
+
+    fun disableLightning() {
+        LightningAlertPreferences(context).setEnabled(false)
+        reconcile(enqueueImmediate = false)
+    }
+
+    fun reconcile(enqueueImmediate: Boolean, keepExistingCadence: Boolean = false) {
+        if (!needsBackgroundWork()) {
+            work.cancelUniqueWork(UNIQUE_PERIODIC)
+            work.cancelUniqueWork(UNIQUE_IMMEDIATE)
+            work.cancelUniqueWork(UNIQUE_WIDGET_INITIAL)
+            return
+        }
+        val periodic = PeriodicWorkRequestBuilder<RainApproachingWorker>(15, TimeUnit.MINUTES)
+            .setConstraints(
+                Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build(),
+            )
+            .build()
+        work.enqueueUniquePeriodicWork(
+            UNIQUE_PERIODIC,
+            if (keepExistingCadence) ExistingPeriodicWorkPolicy.KEEP else ExistingPeriodicWorkPolicy.UPDATE,
+            periodic,
+        )
+        if (enqueueImmediate) enqueueImmediate()
+    }
+
+    private fun needsBackgroundWork(): Boolean = preferences.snapshot().enabled ||
+        LightningAlertPreferences(context).snapshot().enabled ||
+        RainAlarmWidgetStore(context).configurations().isNotEmpty()
 }
 
 class RainApproachingWorker(
     appContext: Context,
     parameters: WorkerParameters,
 ) : CoroutineWorker(appContext, parameters) {
-    override suspend fun doWork(): Result = workerMutex.withLock { doWorkSerially() }
+    override suspend fun doWork(): Result = workerMutex.withLock {
+        val initialOnly = inputData.getBoolean(KEY_WIDGET_INITIAL, false)
+        val store = RainAlarmWidgetStore(applicationContext)
+        WidgetRefreshTrace.workerStarted(store.pendingInitialWidgetIds().size, runAttemptCount)
+        val result = WeatherMonitoringCoordinator(applicationContext).run(initialOnly)
+        WidgetRefreshTrace.workerFinished(result.toString(), store.pendingInitialWidgetIds().size)
+        result
+    }
 
     private suspend fun doWorkSerially(): Result {
         val alertPreferences = RainAlertPreferences(applicationContext)

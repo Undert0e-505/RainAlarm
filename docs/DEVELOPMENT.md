@@ -1,6 +1,6 @@
 # Development and build
 
-Rain Alarm 0.4.1 has version code 19, supports Android 8.0 and later (minimum SDK 26), and compiles and targets SDK 37. The project uses the checked-in Gradle wrapper and can be opened in Android Studio or built from PowerShell.
+Rain Alarm 0.9.0 has version code 20, supports Android 8.0 and later (minimum SDK 26), and compiles and targets SDK 37. The project uses the checked-in Gradle wrapper and can be opened in Android Studio or built from PowerShell.
 
 ## Prerequisites
 
@@ -94,8 +94,8 @@ The public repository is [Undert0e-505/RainAlarm](https://github.com/Undert0e-50
 A maintainer with a clean tree, the established private signing key, a configured GitHub remote and authenticated GitHub CLI can preview or explicitly run signed publication:
 
 ```powershell
-.\scripts\build-release.ps1 -Mode Release -Publish -Remote origin -NotesFile .\docs\releases\v0.4.1.md -WhatIf
-.\scripts\build-release.ps1 -Mode Release -Publish -Remote origin -NotesFile .\docs\releases\v0.4.1.md
+.\scripts\build-release.ps1 -Mode Release -Publish -Remote origin -NotesFile .\docs\releases\v0.9.0.md -WhatIf
+.\scripts\build-release.ps1 -Mode Release -Publish -Remote origin -NotesFile .\docs\releases\v0.9.0.md
 ```
 
 `-WhatIf` previews the operation without building or publishing; release signer variables are still checked. Actual publication verifies the Git root, clean working tree, remote, GitHub authentication and local/remote tag or release collisions. It then creates an annotated `v<version>` tag, pushes the branch and tag without force, and creates a GitHub Release with the signed APK. If no notes file is supplied, GitHub generates notes.
@@ -116,6 +116,64 @@ Device or emulator checks should match the risk. UI, permission and GLES changes
 - saved-place and current-place notifications; and
 - foreground/background transitions.
 
+Travel requests genuine high-accuracy fixes at a 200 ms interval/minimum interval, with zero
+batching delay and zero minimum distance; framework GPS fallback also requests 200 ms. This is an
+input request, not a platform or UI cadence guarantee: some physical phones currently present
+movement at roughly one update per second. A separate presentation-only tracker makes a bounded
+best-effort projection for at most 1.2 seconds from trusted speed/bearing or recent accurate fixes,
+then freezes rather than extrapolating stale, stationary or uncertain motion. Its targets must
+never enter place, forecast, radar, alert or persistence state. Debug builds—or a release build
+with the `RainAlarmTravelCadence` log tag explicitly enabled—emit coordinate-free records for raw
+delivery, policy acceptance, real anchors, visual targets, Compose consumption and map
+application/frame timing. Deterministic tests should cover fast and one-second provider streams and
+prove that presentation targets do not trigger radar requests, but they do not establish a
+physical-device frame rate; never log precise coordinates.
+Debug builds also emit coordinate-free `RainTravelState` records for Travel follow transitions and
+their reason. Programmatic camera/lifecycle/transient-fix events must retain intent; only an explicit
+exit, fine-permission loss or a pointer-owned MapLibre gesture may leave Travel. Timeline manual
+control is independent. Travel clock tests use an injected `Clock` and zone to prove the AUTO label
+and fixed timeline anchor match exact device wall time between frames, across minute/midnight/DST
+boundaries and session replacement.
+
+Lightning-alert changes also need deterministic fixture coverage for geodesic radius inclusion,
+advertised-frame catch-up, unavailable gaps, episode arming and combined delivery. Widget changes
+must exercise at least compact, intermediate and expanded launcher bounds; independent saved-place
+snapshots; no-saved-place and deleted-source handling; opacity extremes; manual and automatic
+appearance; same-day/overnight quiet hours; notification-to-Radar hand-off; app-visible autonomous
+polling; and process/launcher recreation. WorkManager execution time must be described as inexact rather than
+validated against an exact 15-minute clock.
+
+Responsive widget checks include equivalent compact status information at 2×1 and 3×1, plus a
+4×1 graph rendered at its actual host pixel bounds/density after resize. The graph has no axes or
+labels and maps its first/last samples to the full usable width. Cache tests must separate bounded
+snapshot retention from field freshness and advance a test clock beyond rain coverage to prove an
+old countdown cannot remain current.
+
+Widget acquisition cadence and presentation cadence are separate. `WidgetPresentationTicker`
+coalesces all dynamic widgets onto one local wall-clock minute chain, using an in-process callback
+for prompt interactive-screen repaint and a non-wakeup inexact alarm for process restoration. A
+tick only rereads the latest persisted snapshot and invalidates Glance; it must not call the
+monitoring coordinator, request location/network data, deliver alerts or mutate episode state.
+Clock tests cover minute/hour/midnight/DST/time-zone jumps and preserve the acquisition timestamp.
+Runtime inspection should confirm `RainWidgetMinute` repaint records without a corresponding
+weather-worker/network record.
+
+Radar and satellite replacement loads use request-generation ownership. Transfer progress is
+shown only while bytes are being acquired; once all frames have transferred, the bottom status
+changes to the named **Preparing** phase while decoding, motion preparation and atomic session
+publication complete. Only the active generation may publish progress or terminal state. A late
+failure or cancellation from a superseded generation is ignored, and a current semantically usable
+session remains rendered until its fully prepared replacement is ready. Debug builds expose
+coordinate-free `RainOverlayLoad` records with provider/layer, footprint hash, generation, trigger,
+phase, counts, elapsed time, terminal result and stale-publication decision.
+
+Builds emit coordinate-free `RainWidgetRefresh` records for configuration save, subscription
+registration, target-key hash/type, enqueue, worker result, state write and Glance invalidation.
+Initial-refresh tests must cover a first-and-only saved-place widget, app-visible acquisition,
+legacy Follow migration, distinct and identical target coalescing, transient retry, deletion before
+queued work and process recreation. Widget work must not be suppressed merely because an Activity
+is visible.
+
 Forecast and alert behavior depends on live third-party data. Automated tests cannot guarantee future service availability, so tests should distinguish deterministic policy from external availability and use controlled fixtures where practical.
 
 Never stage generated build output, downloaded provider data, signing material or `.emulator-data/` evidence. Run `git diff --check` and inspect the exact staged file list before committing. Commit, push, tag and publish only with explicit authorization for that task.
@@ -125,7 +183,11 @@ Never stage generated build output, downloaded provider data, signing material o
 - `app/src/main/java/com/rainalarm/app/data` contains provider adapters, repositories, preferences and cache handling.
 - `app/src/main/java/com/rainalarm/app/domain` contains precipitation, projection and decision logic.
 - `app/src/main/java/com/rainalarm/app/ui` contains Compose screens, navigation, MapLibre and GLES integration.
-- `app/src/main/java/com/rainalarm/app/alerts` contains optional scheduling and alert decisions.
+- `app/src/main/java/com/rainalarm/app/alerts` contains shared rain/lightning acquisition,
+  scheduling, target evidence, per-subscription delivery and temporary Radar hand-off.
+- `app/src/main/java/com/rainalarm/app/widget` contains the Glance 1.2 widget, per-instance
+  configuration/state, responsive presentation policy and bounded bitmap rendering for its
+  Now-derived Compass and graph.
 - `app/src/test` contains pure JVM tests.
 - `docs/` contains product, provider, privacy, localization, signing and release documentation.
 - `scripts/` contains build, signing and publication helpers.

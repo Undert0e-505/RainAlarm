@@ -297,10 +297,11 @@ References:
   A coarse network fix is only an explicitly provisional last resort for
   ordinary Current, never Follow navigation truth, and it does not race a good
   GPS fix merely because it is newer.
-- Ordinary foreground Current requests target a 5-second interval (2-second
-  minimum). Visible Follow requests precise fixes on a 200 ms raster, with
-  zero batching and a briefly awaited accurate first fix; Android and the GNSS
-  hardware may deliver updates more slowly. Follow requires the Fine /
+- Ordinary foreground Current uses a battery-conscious request profile. Visible
+  Follow asks Android for frequent precise fixes with zero batching and a
+  briefly awaited accurate first fix; Android, the phone and the GNSS hardware
+  control the delivered cadence and may update at roughly one-second intervals.
+  Follow requires the Fine /
   Precise permission choice, is opt-in, is not persisted, and stops when Radar
   leaves composition, Current is deselected or the app backgrounds. The screen
   is kept on only for that same visible-Follow interval. Follow adds no
@@ -313,9 +314,11 @@ References:
   much coarser callback; a 15-second weak-signal grace prevents availability
   flicker, while a stale last fix can be replaced so recovery remains possible.
   No precise coordinates are written to logs.
-- Every accepted navigation fix moves the Radar marker and, while Follow is
-  active, smoothly supersedes the prior north-up camera transition without
-  changing zoom. Weather and reverse geocoding use a separate analysis anchor:
+- Every accepted navigation fix updates the Radar marker and, while Follow is
+  active, supersedes the prior north-up camera transition without changing
+  zoom. A bounded presentation-only tracker may smooth between trustworthy
+  fixes, but it is best effort and never becomes location truth. Weather and
+  reverse geocoding use a separate analysis anchor:
   the first fix and a provider-region change are immediate; in Follow the
   anchor otherwise advances at 1 km, or after two minutes plus at least 250 m.
   This prevents one-second network or geocoder requests. Outside Follow the
@@ -409,6 +412,16 @@ References:
   areas**, not individual lightning locations or verified cloud-to-ground
   strikes. Its advertised start, latest time and 5-minute cadence are parsed
   from GetCapabilities.
+- Background Lightning activity checks use that same observed product through a separate bounded
+  target-centred WMS request. `LightningDetectionPolicy.defaultRadiusKilometres` is 15 km; the
+  request adds a 2 km sampling margin and renders a validated 160×160 transparent PNG. Detection
+  examines alpha evidence only inside the true geodesic circle, while full-circle availability is
+  checked against the advertised curved satellite footprint before a no-detection result is
+  allowed. A square request with clear corners is never accepted as proof that the circle is clear.
+- Each monitoring transaction examines every newly advertised five-minute identity after the last
+  contiguous successful checkpoint, bounded to 12 frames. Identities are deduplicated. A gap stays
+  retryable, unavailable data never advances through that gap, and positive evidence in another
+  frame is retained. The background path stores compact identities/evidence and no source image.
 - **Clouds** is one persistent control with two exact WMS products. Daylight
   prefers MTG Cloud Type RGB (`mtg_fd:rgb_cloudtype`); night prefers MTG Fog /
   Low Clouds RGB (`mtg_fd:rgb_fog`). A fresh selected-place Open-Meteo `is_day`
@@ -766,18 +779,34 @@ field is rejected, the direction and future timeline are unavailable.
 
 ## Alerts
 
-On a fresh install the optional alert is enabled after notification permission
-is granted; declining permission leaves it off until the user retries in
-Settings. It follows the active selected saved or virtual live place.
-WorkManager checks approximately
-every 15 minutes (the Android periodic minimum); execution is inexact and may
-be deferred by Doze. Regional checks prefer the same fresh, location-selected
-area profile as Now, falling back to projected selected-point raster sampling.
-Open checks use the
-confidence-gated motion estimate and treat unavailable analysis as unknown.
-Android 13 and newer also require the
-user-granted notification runtime permission. No background-location
-permission, exact alarm, foreground service, or test notification is used.
+Rain Notification is enabled on a fresh install after notification permission is granted;
+Lightning activity notification appears directly below it and defaults off. The app subscription
+follows the active selected saved or virtual live place. Each widget is an independent monitoring
+subscription for either one fixed saved place or the resolved app selection, with its own quiet
+hours. All subscriptions resolving to the same frozen coordinate/provider share one acquisition.
+
+One network-constrained WorkManager job runs at Android's inexact approximately 15-minute periodic
+minimum. Regional rain checks prefer the same selected-place area profile as Now, falling back to
+projected point raster sampling. OPERA and RainViewer use the same normalized, confidence-gated
+0–60 minute motion analysis as the app and retain unknown/partial coverage rather than padding it
+as dry. The app's selected-place alert keeps its established immediate approaching-rain behaviour;
+widget subscriptions arm only after a complete dry window, then notify/disarm on a later eligible
+approaching episode. Wet-now consumes a widget arm without a new approaching notification.
+
+Lightning acquisition joins the same frozen-target transaction only when its default-off alert is
+enabled or a configured widget layout needs Lightning state. New five-minute observations reduce
+to detected, no-detection, no-new-frames or unavailable. A successful no-detection result arms;
+first later detection notifies and disarms; continued detection does not repeat. Rain and Lightning
+events beginning in the same transaction use one notification. Target evidence/checkpoints are
+separate from per-subscription delivery state so widget quiet hours consume rather than defer an
+event, without preventing another eligible subscription from notifying.
+
+Each widget stores one self-contained saved-place target and remains eligible for acquisition while
+the app is visible, closed or process-recreated. Matching app/widget requests may share repository
+work, but a widget never depends on foreground publication and never requests device location.
+Android 13 and newer require the user-granted notification runtime permission. No background
+location permission, exact alarm, foreground service or test notification is used. App-only
+Current-location monitoring proceeds only from a sufficiently fresh foreground-acquired fix.
 
 Android references:
 

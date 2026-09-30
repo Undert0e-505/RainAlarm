@@ -69,6 +69,20 @@ class RadarProviderTest {
         assertTrue(loader.shouldLoadRegionalVelocity(RadarLoadMode.SCREEN_TWO_TIER, frame(1_000, false), latestObservation))
     }
 
+    @Test fun lightweightWidgetDirectionUsesProviderVelocityAndKeepsUnknownNull() {
+        assertEquals(90.0, requireNotNull(com.rainalarm.app.domain.bearingForVector(2.0, 0.0)), 0.0)
+        assertEquals(180.0, requireNotNull(com.rainalarm.app.domain.bearingForVector(0.0, 2.0)), 0.0)
+        assertNull(com.rainalarm.app.domain.bearingForVector(0.0, 0.0))
+        val coordinator = File(
+            "src/main/java/com/rainalarm/app/alerts/WeatherMonitoringCoordinator.kt",
+        ).takeIf(File::isFile) ?: File(
+            "app/src/main/java/com/rainalarm/app/alerts/WeatherMonitoringCoordinator.kt",
+        )
+        val source = coordinator.readText()
+        assertTrue(source.contains("MeteoGroupRadarSessionLoader().travelBearingDegrees(place)"))
+        assertTrue(source.contains("sourceBearingDegrees = normalizeBearing(bearing + 180.0)"))
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun manifestRejectsTraversal() {
         RegionalManifestParser.parse(

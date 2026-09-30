@@ -2,6 +2,7 @@ package com.rainalarm.app
 
 import android.app.Application
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.drawable.ColorDrawable
 import android.os.Build
@@ -13,6 +14,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -138,6 +140,11 @@ import com.rainalarm.app.data.LocationFixDecision
 import com.rainalarm.app.data.LocationFixQuality
 import com.rainalarm.app.data.LocationRequestMode
 import com.rainalarm.app.data.LocationRequestProfiles
+import com.rainalarm.app.data.LocationCadenceDiagnostics
+import com.rainalarm.app.data.TravelModeDiagnostics
+import com.rainalarm.app.data.TravelDisplayTarget
+import com.rainalarm.app.data.TravelVisualMotionPolicy
+import com.rainalarm.app.data.TravelVisualMotionTracker
 import com.rainalarm.app.data.NavigationFixAdjudicationPolicy
 import com.rainalarm.app.data.NavigationLocationFix
 import com.rainalarm.app.data.RegionalRadarAreas
@@ -169,6 +176,8 @@ import com.rainalarm.app.data.forecastSelectionKey
 import com.rainalarm.app.domain.RadarCameraMemory
 import com.rainalarm.app.domain.EntryTransitionPolicy
 import com.rainalarm.app.domain.EntryTransitionState
+import com.rainalarm.app.domain.RadarTravelModePolicy
+import com.rainalarm.app.domain.RadarTravelTransitionReason
 import com.rainalarm.app.ui.LiveRadarScreen
 import com.rainalarm.app.ui.RadarChartTimeRequest
 import com.rainalarm.app.ui.RadarChartTimeLink
@@ -192,8 +201,20 @@ import com.rainalarm.app.ui.RainAlarmWindowAppearancePolicy
 import com.rainalarm.app.alerts.AlertSnapshot
 import com.rainalarm.app.alerts.RainAlertPreferences
 import com.rainalarm.app.alerts.RainAlertScheduler
+import com.rainalarm.app.alerts.LightningAlertPreferences
+import com.rainalarm.app.alerts.MonitoringStateStore
+import com.rainalarm.app.alerts.WeatherMonitoringCoordinator
+import com.rainalarm.app.alerts.AppVisibilityState
+import com.rainalarm.app.alerts.RadarAlertDeepLink
+import com.rainalarm.app.alerts.RadarLightningControlPolicy
+import com.rainalarm.app.alerts.RadarLightningControlState
+import com.rainalarm.app.alerts.TemporaryLightningLease
+import com.rainalarm.app.alerts.TemporaryLightningLeaseStore
 import com.rainalarm.app.alerts.AlertStartupPolicy
 import com.rainalarm.app.alerts.AlertStartupAction
+import com.rainalarm.app.widget.WidgetAppearanceStore
+import com.rainalarm.app.widget.WidgetUpdatePublisher
+import com.rainalarm.app.widget.RainAlarmWidgetStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -208,6 +229,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withTimeout
@@ -266,13 +288,15 @@ object RadarProviderSwitchPolicy {
 }
 
 class MainActivity : AppCompatActivity() {
+    private val appViewModel: RainAlarmViewModel by viewModels()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Configure MapLibre's supported on-disk cache before any style or tile source opens it.
         SatelliteAmbientCache.configure(applicationContext)
         enableEdgeToEdge()
+        appViewModel.handleAlertIntent(intent)
         setContent {
-            val appViewModel: RainAlarmViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
             val manualApp by appViewModel.appAppearance.collectAsStateWithLifecycle()
             val manualMap by appViewModel.mapAppearance.collectAsStateWithLifecycle()
             val manualCompass by appViewModel.compassAppearance.collectAsStateWithLifecycle()
@@ -347,8 +371,26 @@ class MainActivity : AppCompatActivity() {
                     isAppearanceLightNavigationBars = !dark
                 }
             }
-            RainAlarmTheme(dark) { RainAlarmApp(appViewModel, resolved) }
+            RainAlarmTheme(dark) {
+                RainAlarmApp(
+                    appViewModel,
+                    resolved,
+                    initialDestination = if (intent.getBooleanExtra(EXTRA_OPEN_PLACES, false)) {
+                        Destination.PLACES
+                    } else Destination.NOW,
+                )
+            }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        appViewModel.handleAlertIntent(intent, restartLease = true)
+    }
+
+    companion object {
+        const val EXTRA_OPEN_PLACES = "com.rainalarm.app.extra.OPEN_PLACES"
     }
 }
 
@@ -431,6 +473,17 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     private val locationClient = PlatformLocationClient(application)
     private val alertScheduler = RainAlertScheduler(application)
     private val alertPreferences = RainAlertPreferences(application)
+    private val lightningAlertPreferences = LightningAlertPreferences(application)
+    private val monitoringCoordinator = WeatherMonitoringCoordinator(application)
+    private val temporaryLightningLeaseStore = TemporaryLightningLeaseStore(application)
+    private val _radarTransientTarget = MutableStateFlow<SavedPlace?>(null)
+    val radarTransientTarget: StateFlow<SavedPlace?> = _radarTransientTarget.asStateFlow()
+    private val _temporaryLightningLease = MutableStateFlow<TemporaryLightningLease?>(null)
+    val temporaryLightningLease: StateFlow<TemporaryLightningLease?> =
+        _temporaryLightningLease.asStateFlow()
+    private val _radarNavigationGeneration = MutableStateFlow(0L)
+    val radarNavigationGeneration: StateFlow<Long> = _radarNavigationGeneration.asStateFlow()
+    private var handledRadarAlertSignature: String? = null
     private val startupPermissions = StartupPermissionPreferences(application)
     private val languageChoices = LanguageChoicePreferences(application)
     private val featureTourPreferences = FeatureTourPreferences(application)
@@ -447,6 +500,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     private val pendingRadarProvider = MutableStateFlow<RadarProviderKind?>(null)
     private var providerPersistenceJob: Job? = null
     private var forecastLoadJob: Job? = null
+    private var foregroundMonitoringRefreshJob: Job? = null
     private var forecastLoadGeneration = 0L
     val placesState = places.collection.stateIn(
         viewModelScope,
@@ -470,6 +524,9 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     private var lastAnalysisAnchorFix: NavigationLocationFix? = null
     private val _liveFixElapsedRealtimeNanos = MutableStateFlow(0L)
     val liveFixElapsedRealtimeNanos: StateFlow<Long> = _liveFixElapsedRealtimeNanos.asStateFlow()
+    private val travelVisualMotionTracker = TravelVisualMotionTracker()
+    private val _travelDisplayTarget = MutableStateFlow<TravelDisplayTarget?>(null)
+    val travelDisplayTarget: StateFlow<TravelDisplayTarget?> = _travelDisplayTarget.asStateFlow()
     private var recenterAfterNextFix = false
     private val _foreground = MutableStateFlow(false)
     val foreground: StateFlow<Boolean> = _foreground.asStateFlow()
@@ -492,6 +549,11 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope,
         SharingStarted.Eagerly,
         alertPreferences.snapshot(),
+    )
+    val lightningAlertState = lightningAlertPreferences.snapshots.stateIn(
+        viewModelScope,
+        SharingStarted.Eagerly,
+        lightningAlertPreferences.snapshot(),
     )
     private val persistedRadarProvider = radarSettings.provider.stateIn(
         viewModelScope,
@@ -563,6 +625,16 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     val settingsMessage: StateFlow<String?> = _settingsMessage.asStateFlow()
 
     init {
+        _temporaryLightningLease.value = temporaryLightningLeaseStore.current()
+        viewModelScope.launch {
+            while (true) {
+                delay(1_000)
+                val current = temporaryLightningLeaseStore.current()
+                if (_temporaryLightningLease.value != current) {
+                    _temporaryLightningLease.value = current
+                }
+            }
+        }
         viewModelScope.launch {
             val freshInstall = places.ensureMigrated()
             _languageChoiceCompleted.value = languageChoices.initialize(freshInstall)
@@ -582,6 +654,8 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
                 AlertStartupAction.PERMISSION_NEEDED -> alertPreferences.markPermissionNeeded()
                 AlertStartupAction.NONE -> Unit
             }
+            // Widget and Lightning work are independent of the legacy Rain first-run choice.
+            alertScheduler.reconcile(enqueueImmediate = false, keepExistingCadence = true)
             _startupReady.value = true
         }
         viewModelScope.launch {
@@ -602,7 +676,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
                 if (profile.mode == LocationRequestMode.OFF) {
                     recenterAfterNextFix = false
                     placeNameJob?.cancel()
-                    _followRequested.value = false
+                    recordTravelNoChange(RadarTravelTransitionReason.LIFECYCLE)
                     clearLiveLocation()
                     _locationState.value = if (currentSelected) {
                         LocationUiState.Unavailable(
@@ -614,7 +688,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
                 if (!locationClient.hasForegroundPermission()) {
                     recenterAfterNextFix = false
                     Log.w(CURRENT_LOCATION_TAG, "Current selected without foreground permission")
-                    _followRequested.value = false
+                    applyTravelTransition(RadarTravelTransitionReason.PERMISSION_LOST)
                     clearLiveLocation()
                     _locationState.value = LocationUiState.Unavailable(
                         uiString(R.string.location_permission_unavailable),
@@ -637,7 +711,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
                                 if (profile.mode == LocationRequestMode.FOLLOW &&
                                     ageMillis > NavigationFixAdjudicationPolicy.weakSignalGraceMillis
                                 ) {
-                                    _followRequested.value = false
+                                    recordTravelNoChange(RadarTravelTransitionReason.TRANSIENT_FIX)
                                     updateLocationProblem(
                                         uiString(R.string.radar_location_unavailable),
                                         retainRecentFix = false,
@@ -657,11 +731,11 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
                                 when (event) {
                                     is LocationEngineEvent.Fix -> acceptLiveFix(event.value)
                                     is LocationEngineEvent.ApproximatePermission -> {
-                                        _followRequested.value = false
+                                        applyTravelTransition(RadarTravelTransitionReason.PERMISSION_LOST)
                                         updateLocationProblem(event.message, retainRecentFix = true)
                                     }
                                     is LocationEngineEvent.DisabledSettings -> {
-                                        _followRequested.value = false
+                                        recordTravelNoChange(RadarTravelTransitionReason.TRANSIENT_FIX)
                                         updateLocationProblem(event.message, retainRecentFix = true)
                                     }
                                     is LocationEngineEvent.Unavailable ->
@@ -679,6 +753,22 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
                     updateLocationProblem(uiString(R.string.radar_location_unavailable), retainRecentFix = true)
                 }
             }
+        }
+        viewModelScope.launch {
+            combine(_foreground, _followRequested) { foreground, follow -> foreground && follow }
+                .distinctUntilChanged()
+                .collectLatest { active ->
+                    LocationCadenceDiagnostics.setTravelEnabled(active)
+                    if (!active) {
+                        _travelDisplayTarget.value = null
+                        return@collectLatest
+                    }
+                    while (currentCoroutineContext().isActive) {
+                        val nowElapsedNanos = SystemClock.elapsedRealtimeNanos()
+                        publishTravelDisplayTarget(nowElapsedNanos)
+                        delay(TravelVisualMotionPolicy.delayUntilNextTickMillis(nowElapsedNanos))
+                    }
+                }
         }
         viewModelScope.launch {
             var observedKey: String? = null
@@ -733,6 +823,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     /** Rebind the few retained/persisted presentation strings after AppCompat changes locale. */
     fun relocalizeUiAfterLocaleChange() {
         alertPreferences.relocalizeStatus(notificationPermissionGranted())
+        lightningAlertPreferences.relocalizeStatus(notificationPermissionGranted())
         _settingsMessage.value = null
         _providerMapNotice.value = null
         if (_state.value is ForecastUiState.Error) {
@@ -794,11 +885,12 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setForeground(value: Boolean) {
         _foreground.value = value
+        AppVisibilityState.update(value)
         ForegroundLocationSnapshot.setForeground(value)
         if (!value) {
-            _followRequested.value = false
+            recordTravelNoChange(RadarTravelTransitionReason.LIFECYCLE)
             placeNameJob?.cancel()
-            clearLiveLocation()
+            clearLiveLocation(preserveWorkerSnapshot = true)
         }
     }
 
@@ -914,6 +1006,19 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
             if (result is ForecastUiState.Ready) {
                 _state.value = result
                 displayedForecastKey = key
+                result.forecast.nowcastSeries?.let { series ->
+                    val temperature = _currentWeather.value?.takeIf {
+                        it.first == forecastSelectionKey(place)
+                    }?.second?.temperatureC
+                    viewModelScope.launch {
+                        monitoringCoordinator.publishForeground(
+                            place,
+                            request.provider,
+                            series,
+                            temperature,
+                        )
+                    }
+                }
                 if (request.refreshVersion > lastAlertedForecastRefreshVersion) {
                     lastAlertedForecastRefreshVersion = request.refreshVersion
                     alertScheduler.enqueueImmediate()
@@ -934,21 +1039,27 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
                     displayedForecastKey = null
                 }
                 _refreshStatus.value = NowRefreshStatus.Failed(message)
+                // WorkManager intentionally yields while the app is visible. A failed Now load
+                // must therefore still give lightning (and any recoverable rain source) a direct
+                // foreground evaluation path.
+                requestForegroundMonitoringRefresh(place, request.provider, delayMillis = 0L)
             }
         } finally {
             if (generation == forecastLoadGeneration) activeForecastKey = null
         }
     }
 
-    private fun clearLiveLocation() {
+    private fun clearLiveLocation(preserveWorkerSnapshot: Boolean = false) {
         _livePlace.value = null
         _liveMapPlace.value = null
         lastLiveFixTimeMillis = 0L
         lastAcceptedNavigationFix = null
         lastAnalysisAnchorFix = null
         _liveFixElapsedRealtimeNanos.value = 0L
+        travelVisualMotionTracker.clear()
+        _travelDisplayTarget.value = null
         _followCapability.value = FollowUiCapability(false)
-        ForegroundLocationSnapshot.clear()
+        if (!preserveWorkerSnapshot) ForegroundLocationSnapshot.clear()
     }
 
     private fun locationQualityMessage(quality: LocationFixQuality): String? = when (quality) {
@@ -971,7 +1082,6 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     })
 
     private fun updateLocationProblem(message: String, retainRecentFix: Boolean) {
-        travelActivationPending = false
         val recent = lastAcceptedNavigationFix?.takeIf {
             NavigationFixAdjudicationPolicy.withinWeakSignalGrace(
                 it,
@@ -997,13 +1107,26 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
             nowElapsedNanos = SystemClock.elapsedRealtimeNanos(),
         )) {
             is LocationFixDecision.Accept -> decision
-            is LocationFixDecision.HoldPrevious,
-            is LocationFixDecision.Reject,
-            -> return
+            is LocationFixDecision.HoldPrevious -> {
+                LocationCadenceDiagnostics.record(
+                    "accepted", fix.source, fix.elapsedRealtimeNanos, "held",
+                )
+                return
+            }
+            is LocationFixDecision.Reject -> {
+                LocationCadenceDiagnostics.record(
+                    "accepted", fix.source, fix.elapsedRealtimeNanos, "rejected",
+                )
+                return
+            }
         }
+        LocationCadenceDiagnostics.record(
+            "accepted", fix.source, fix.elapsedRealtimeNanos, "accepted",
+        )
         val quality = accepted.quality
         lastAcceptedNavigationFix = fix
         lastLiveFixTimeMillis = fix.wallTimeMillis
+        travelVisualMotionTracker.accept(fix, SystemClock.elapsedRealtimeNanos())
         val prior = _livePlace.value
         val marker = try {
             (prior ?: SavedPlace(
@@ -1013,6 +1136,9 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         } catch (_: Exception) { return }
         _liveMapPlace.value = marker
         _liveFixElapsedRealtimeNanos.value = fix.elapsedRealtimeNanos
+        LocationCadenceDiagnostics.record(
+            "anchor", fix.source, fix.elapsedRealtimeNanos, "real-fix",
+        )
         val canFollow = FollowCapabilityPolicy.canFollow(locationClient.hasPrecisePermission(), quality)
         _followCapability.value = FollowUiCapability(
             allowed = canFollow,
@@ -1020,10 +1146,12 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
                 locationClient.hasPrecisePermission(), quality,
             ),
         )
-        if (_followRequested.value && !canFollow) _followRequested.value = false
+        if (_followRequested.value && !canFollow) {
+            recordTravelNoChange(RadarTravelTransitionReason.TRANSIENT_FIX)
+        }
         if (travelActivationPending && canFollow) {
             travelActivationPending = false
-            _followRequested.value = true
+            applyTravelTransition(RadarTravelTransitionReason.USER_ENTER)
         }
         if (recenterAfterNextFix) {
             recenterAfterNextFix = false
@@ -1062,6 +1190,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         _locationState.value = LocationUiState.Active(place, quality, locationQualityMessage(quality))
         Log.i(CURRENT_LOCATION_TAG, "Fresh live fix active")
         alertScheduler.enqueueImmediate()
+        requestForegroundMonitoringRefresh(place, persistedRadarProvider.value)
         placeNameJob?.cancel()
         placeNameJob = viewModelScope.launch {
             val name = try {
@@ -1087,10 +1216,43 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    private fun publishTravelDisplayTarget(nowElapsedNanos: Long) {
+        val candidate = travelVisualMotionTracker.target(nowElapsedNanos) ?: return
+        LocationCadenceDiagnostics.record(
+            "travel-consume",
+            candidate.source,
+            nowElapsedNanos,
+            if (candidate.projected) "projected-${candidate.motionSource.name.lowercase()}"
+            else "measured-${candidate.motionSource.name.lowercase()}",
+        )
+        if (!TravelVisualMotionPolicy.shouldPublish(_travelDisplayTarget.value, candidate)) return
+        _travelDisplayTarget.value = candidate
+        LocationCadenceDiagnostics.record(
+            "display",
+            candidate.source,
+            candidate.displayElapsedRealtimeNanos,
+            if (candidate.projected) "projected-${candidate.motionSource.name.lowercase()}"
+            else "measured-${candidate.motionSource.name.lowercase()}",
+        )
+    }
+
+    private fun applyTravelTransition(reason: RadarTravelTransitionReason): Boolean {
+        val old = _followRequested.value
+        val next = RadarTravelModePolicy.next(old, reason)
+        _followRequested.value = next
+        TravelModeDiagnostics.record(old, next, reason)
+        return next
+    }
+
+    private fun recordTravelNoChange(reason: RadarTravelTransitionReason) {
+        val current = _followRequested.value
+        TravelModeDiagnostics.record(current, RadarTravelModePolicy.next(current, reason), reason)
+    }
+
     fun setFollowRequested(enabled: Boolean): Boolean {
         if (!enabled) {
             travelActivationPending = false
-            _followRequested.value = false
+            applyTravelTransition(RadarTravelTransitionReason.USER_EXIT)
             return true
         }
         val capability = _followCapability.value
@@ -1099,19 +1261,30 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
             updateLocationProblem(message, retainRecentFix = true)
             return false
         }
-        _followRequested.value = true
+        applyTravelTransition(RadarTravelTransitionReason.USER_ENTER)
         return true
+    }
+
+    fun exitTravelForMapGesture() {
+        travelActivationPending = false
+        applyTravelTransition(RadarTravelTransitionReason.USER_MAP_GESTURE)
     }
 
     /** One user intent: select live Current, obtain a precise fix, recenter and follow. */
     fun activateTravelMode(): Boolean {
-        if (!locationClient.hasForegroundPermission()) return false
+        if (!locationClient.hasForegroundPermission()) {
+            applyTravelTransition(RadarTravelTransitionReason.PERMISSION_LOST)
+            return false
+        }
+        // Travel always owns the live Current target. A widget/notification deep link may have
+        // installed a transient Radar target even when a fresh Current fix is already cached.
+        clearTransientRadarTarget()
+        applyTravelTransition(RadarTravelTransitionReason.USER_ENTER)
         travelActivationPending = true
         val currentReady = placesState.value.selectedId == CURRENT_LOCATION_ID &&
             _followCapability.value.allowed && _livePlace.value != null
         if (currentReady) {
             travelActivationPending = false
-            _followRequested.value = true
             _currentRecenterTick.value++
         } else {
             requestCurrentLocation(recenterMap = true)
@@ -1131,6 +1304,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun requestCurrentLocation(recenterMap: Boolean) {
+        clearTransientRadarTarget()
         val transition = CurrentLocationSelectionPolicy.request(
             placesState.value.selectedId, _currentLocationRequest.value,
             locationClient.hasForegroundPermission(),
@@ -1163,6 +1337,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun saveAndSelect(place: SavedPlace) {
+        clearTransientRadarTarget()
         pendingPlaceSelectionId = place.id.takeIf { it != placesState.value.selectedId }
         if (!place.isCurrentLocation) {
             currentSelectionJob?.cancel()
@@ -1171,15 +1346,17 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             places.upsert(place, select = true)
             if (!place.isCurrentLocation) {
-                _followRequested.value = false
+                applyTravelTransition(RadarTravelTransitionReason.USER_EXIT)
                 clearLiveLocation()
             }
             _locationState.value = LocationUiState.Idle
             alertScheduler.enqueueImmediate()
+            requestForegroundMonitoringRefresh(place, persistedRadarProvider.value)
         }
     }
 
     fun selectPlace(id: String) {
+        clearTransientRadarTarget()
         pendingPlaceSelectionId = id.takeIf { it != placesState.value.selectedId }
         if (id != CURRENT_LOCATION_ID) {
             travelActivationPending = false
@@ -1189,11 +1366,14 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             places.select(id)
             if (id != CURRENT_LOCATION_ID) {
-                _followRequested.value = false
+                applyTravelTransition(RadarTravelTransitionReason.USER_EXIT)
                 clearLiveLocation()
                 _locationState.value = LocationUiState.Idle
             }
             alertScheduler.enqueueImmediate()
+            placesState.value.places.firstOrNull { it.id == id }?.let { selected ->
+                requestForegroundMonitoringRefresh(selected, persistedRadarProvider.value)
+            }
         }
     }
 
@@ -1202,6 +1382,11 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
             val succeeded = try {
                 places.delete(id)
                 alertPreferences.clearDeletedSavedPlace(id)
+                val widgetIds = RainAlarmWidgetStore(getApplication()).markDeletedFixedTarget(id)
+                widgetIds.forEach {
+                    MonitoringStateStore(getApplication()).removeSubscription("widget:$it")
+                }
+                if (widgetIds.isNotEmpty()) WidgetUpdatePublisher.updateAll(getApplication())
                 true
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
@@ -1217,7 +1402,11 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun renamePlace(id: String, name: String) {
-        viewModelScope.launch { places.rename(id, name) }
+        viewModelScope.launch {
+            places.rename(id, name)
+            RainAlarmWidgetStore(getApplication()).renameTarget(id, name)
+            WidgetUpdatePublisher.updateAll(getApplication())
+        }
     }
 
     fun reorderPlaces(orderedIds: List<String>) {
@@ -1233,6 +1422,43 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun disableAlerts() = alertScheduler.disable()
+
+    fun enableLightningAlerts() {
+        alertScheduler.enableLightning()
+        val place = selectedPlace.value ?: return
+        val provider = persistedRadarProvider.value
+        val ready = _state.value as? ForecastUiState.Ready
+        val series = ready?.forecast?.nowcastSeries
+        val temperature = _currentWeather.value?.takeIf {
+            it.first == forecastSelectionKey(place)
+        }?.second?.temperatureC
+        viewModelScope.launch {
+            if (series != null && displayedForecastKey?.startsWith(forecastSelectionKey(place)) == true) {
+                monitoringCoordinator.publishForeground(place, provider, series, temperature)
+            } else {
+                monitoringCoordinator.refreshForeground(place, provider)
+            }
+        }
+    }
+
+    fun disableLightningAlerts() = alertScheduler.disableLightning()
+
+    private fun requestForegroundMonitoringRefresh(
+        place: SavedPlace,
+        provider: RadarProviderKind,
+        delayMillis: Long = 1_500L,
+    ) {
+        val requestedAt = System.currentTimeMillis()
+        foregroundMonitoringRefreshJob?.cancel()
+        foregroundMonitoringRefreshJob = viewModelScope.launch {
+            if (delayMillis > 0L) delay(delayMillis)
+            monitoringCoordinator.refreshForeground(
+                place,
+                provider,
+                skipIfPublishedAfterMillis = requestedAt,
+            )
+        }
+    }
 
     fun setRadarProvider(provider: RadarProviderKind) {
         val persisted = persistedRadarProvider.value
@@ -1263,6 +1489,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
                     // Returning to the already-persisted choice produces no provider-flow event;
                     // explicitly replace the load canceled by the first tap in the burst.
                     if (!changesPersisted) forecastRefreshVersion.value++
+                    alertScheduler.enqueueImmediate()
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -1279,7 +1506,10 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     fun setShowLikelySnow(enabled: Boolean) {
         viewModelScope.launch {
             runCatching { radarSettings.setShowLikelySnow(enabled) }
-                .onSuccess { _settingsMessage.value = null }
+                .onSuccess {
+                    _settingsMessage.value = null
+                    alertScheduler.enqueueImmediate()
+                }
                 .onFailure { _settingsMessage.value = uiString(R.string.settings_save_failed) }
         }
     }
@@ -1328,6 +1558,54 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch { radarSettings.setMapLayerEnabled(layer, enabled) }
     }
 
+    fun handleAlertIntent(intent: Intent?, restartLease: Boolean = false) {
+        val request = RadarAlertDeepLink.parse(intent) ?: return
+        val signature = buildString {
+            append(request.place.id)
+            append('|').append(request.place.latitude)
+            append('|').append(request.place.longitude)
+            append('|').append(request.temporaryLightning)
+        }
+        if (!restartLease && handledRadarAlertSignature == signature &&
+            _radarTransientTarget.value == request.place) return
+        handledRadarAlertSignature = signature
+        _radarTransientTarget.value = request.place
+        if (request.temporaryLightning) {
+            _temporaryLightningLease.value = temporaryLightningLeaseStore.begin(request.place)
+        } else {
+            _temporaryLightningLease.value = temporaryLightningLeaseStore.current()
+        }
+        _radarNavigationGeneration.value++
+    }
+
+    fun consumeTemporaryLightningNotice() {
+        temporaryLightningLeaseStore.consumeNotice()
+        _temporaryLightningLease.value = temporaryLightningLeaseStore.current()
+    }
+
+    fun onLightningControlTap(displayedPlace: SavedPlace?) {
+        val state = RadarLightningControlPolicy.state(
+            persistentEnabled = RadarMapLayer.LIGHTNING in enabledMapLayers.value,
+            lease = _temporaryLightningLease.value,
+            displayedPlace = displayedPlace,
+            nowEpochSeconds = java.time.Instant.now().epochSecond,
+        )
+        when (state) {
+            RadarLightningControlState.OFF -> setMapLayerEnabled(RadarMapLayer.LIGHTNING, true)
+            RadarLightningControlState.TEMPORARY -> {
+                temporaryLightningLeaseStore.cancel()
+                _temporaryLightningLease.value = null
+                setMapLayerEnabled(RadarMapLayer.LIGHTNING, true)
+            }
+            RadarLightningControlState.ON -> setMapLayerEnabled(RadarMapLayer.LIGHTNING, false)
+        }
+    }
+
+    private fun clearTransientRadarTarget() {
+        _radarTransientTarget.value = null
+        handledRadarAlertSignature = null
+    }
+
     fun setWindArrowScale(scale: Float) {
         viewModelScope.launch { radarSettings.setWindArrowScale(scale) }
     }
@@ -1360,6 +1638,7 @@ private val Destination.icon: ImageVector
 private fun RainAlarmApp(
     viewModel: RainAlarmViewModel = androidx.lifecycle.viewmodel.compose.viewModel(),
     resolvedAppearance: ResolvedAppearance,
+    initialDestination: Destination = Destination.NOW,
 ) {
     val context = LocalContext.current
     val appLocaleTags = LocalConfiguration.current.locales.toLanguageTags()
@@ -1452,7 +1731,7 @@ private fun RainAlarmApp(
             viewModel.setForeground(false)
         }
     }
-    var destination by rememberSaveable { mutableStateOf(Destination.NOW) }
+    var destination by rememberSaveable { mutableStateOf(initialDestination) }
     var featureTourStageName by rememberSaveable { mutableStateOf<String?>(null) }
     var featureTourStepIndex by rememberSaveable { mutableIntStateOf(0) }
     var featureTourScenario by remember { mutableStateOf<FeatureTourScenario?>(null) }
@@ -1585,6 +1864,9 @@ private fun RainAlarmApp(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val refreshStatus by viewModel.refreshStatus.collectAsStateWithLifecycle()
     val selectedPlace by viewModel.selectedPlace.collectAsStateWithLifecycle()
+    val radarTransientTarget by viewModel.radarTransientTarget.collectAsStateWithLifecycle()
+    val temporaryLightningLease by viewModel.temporaryLightningLease.collectAsStateWithLifecycle()
+    val radarNavigationGeneration by viewModel.radarNavigationGeneration.collectAsStateWithLifecycle()
     val liveMapPlace by viewModel.liveMapPlace.collectAsStateWithLifecycle()
     val liveFixElapsedRealtimeNanos by viewModel.liveFixElapsedRealtimeNanos.collectAsStateWithLifecycle()
     val appForeground by viewModel.foreground.collectAsStateWithLifecycle()
@@ -1600,6 +1882,7 @@ private fun RainAlarmApp(
     val currentRecenterTick by viewModel.currentRecenterTick.collectAsStateWithLifecycle()
     val radarCameraMemory = remember { RadarCameraMemory(currentRecenterTick) }
     val alertState by viewModel.alertState.collectAsStateWithLifecycle()
+    val lightningAlertState by viewModel.lightningAlertState.collectAsStateWithLifecycle()
     val radarProvider by viewModel.radarProvider.collectAsStateWithLifecycle()
     val activeRadarSelection by viewModel.activeRadarSelection.collectAsStateWithLifecycle()
     val providerMapNotice by viewModel.providerMapNotice.collectAsStateWithLifecycle()
@@ -1616,6 +1899,19 @@ private fun RainAlarmApp(
     val visibleWeatherMetrics by viewModel.visibleWeatherMetrics.collectAsStateWithLifecycle()
     val selectedWeather by viewModel.currentWeather.collectAsStateWithLifecycle()
     val pointRefreshCompletion by viewModel.pointRefreshCompletion.collectAsStateWithLifecycle()
+    val radarPlace = radarTransientTarget ?: selectedPlace
+    val lightningControlState = RadarLightningControlPolicy.state(
+        persistentEnabled = RadarMapLayer.LIGHTNING in enabledMapLayers,
+        lease = temporaryLightningLease,
+        displayedPlace = radarPlace,
+        nowEpochSeconds = java.time.Instant.now().epochSecond,
+    )
+    val effectiveRadarLayers = if (lightningControlState == RadarLightningControlState.TEMPORARY) {
+        enabledMapLayers + RadarMapLayer.LIGHTNING
+    } else enabledMapLayers
+    val temporaryLightningNoticePending =
+        lightningControlState == RadarLightningControlState.TEMPORARY &&
+            temporaryLightningLease?.noticePending == true
     val exampleLabel = androidx.compose.ui.res.stringResource(R.string.feature_tour_example)
     val exampleHeadline = androidx.compose.ui.res.stringResource(
         R.string.feature_tour_example_headline,
@@ -1651,6 +1947,9 @@ private fun RainAlarmApp(
         featureTourStageName = resumed.stage.name
         navigateTo(Destination.RADAR)
     }
+    LaunchedEffect(radarNavigationGeneration) {
+        if (radarNavigationGeneration > 0L) navigateTo(Destination.RADAR)
+    }
     LaunchedEffect(featureTourStageName) {
         if (featureTourStageName != null && featureTourScenario == null) {
             featureTourScenario = FeatureTourScenario.create(
@@ -1680,6 +1979,20 @@ private fun RainAlarmApp(
             viewModel.refreshPointWeather()
     }
     val systemDark = isSystemInDarkTheme()
+    LaunchedEffect(
+        resolvedAppearance.app,
+        resolvedAppearance.compass,
+        resolvedAppearance.graph,
+        systemDark,
+    ) {
+        if (WidgetAppearanceStore(context).update(
+                resolvedAppearance.app,
+                resolvedAppearance.compass,
+                resolvedAppearance.graph,
+                systemDark,
+            )
+        ) WidgetUpdatePublisher.updateAll(context)
+    }
     val settingsMessage by viewModel.settingsMessage.collectAsStateWithLifecycle()
     val activeLanguageName = activeLanguageTag?.let { AppLanguagePolicy.option(it).nativeName }
         ?: androidx.compose.ui.res.stringResource(R.string.language_device_default)
@@ -1917,8 +2230,13 @@ private fun RainAlarmApp(
                             },
                             onFeatureTourTarget = { featureTourTargets[it.target] = it },
                         )
-                        Destination.RADAR -> LiveRadarScreen(
-                            place = selectedPlace,
+                        Destination.RADAR -> {
+                            // Keep the best-effort visual-only Travel stream scoped to Radar so the
+                            // other pages and app shell do not recompose on marker animation.
+                            val travelDisplayTarget by viewModel.travelDisplayTarget
+                                .collectAsStateWithLifecycle()
+                            LiveRadarScreen(
+                            place = radarPlace,
                             liveMapPlace = liveMapPlace,
                             places = placesState,
                             playbackSpeed = radarPlaybackSpeed,
@@ -1931,7 +2249,9 @@ private fun RainAlarmApp(
                             followLive = followRequested,
                             followCapability = followCapability,
                             liveFixElapsedRealtimeNanos = liveFixElapsedRealtimeNanos,
+                            travelDisplayTarget = travelDisplayTarget,
                             onFollowLiveChange = viewModel::setFollowRequested,
+                            onTravelMapGesture = viewModel::exitTravelForMapGesture,
                             activateTravelMode = viewModel::activateTravelMode,
                             currentRecenterTick = currentRecenterTick,
                             useCurrentLocation = viewModel::useCurrentLocation,
@@ -1939,14 +2259,23 @@ private fun RainAlarmApp(
                             recenterToSelectedPlace = viewModel::recenterToSelectedPlace,
                             cameraMemory = radarCameraMemory,
                             selectPlace = viewModel::selectPlace,
-                            enabledMapLayers = enabledMapLayers,
+                            enabledMapLayers = effectiveRadarLayers,
                             windArrowScale = windArrowScale,
                             setMapLayerEnabled = viewModel::setMapLayerEnabled,
-                            currentWeather = currentWeather,
+                            lightningControlState = lightningControlState,
+                            onLightningControlTap = { viewModel.onLightningControlTap(radarPlace) },
+                            temporaryLightningNoticePending = temporaryLightningNoticePending,
+                            onTemporaryLightningNoticeConsumed =
+                                viewModel::consumeTemporaryLightningNotice,
+                            currentWeather = currentWeather?.takeIf {
+                                radarTransientTarget == null ||
+                                    radarPlace?.let(::forecastSelectionKey) ==
+                                    selectedPlace?.let(::forecastSelectionKey)
+                            },
                             refreshPointWeather = viewModel::refreshPointWeather,
                             refreshForecastForFollow = viewModel::refreshForecastForFollow,
                             pointRefreshCompletion = pointRefreshCompletion,
-                            selectedPlaceId = placesState.selectedId,
+                            selectedPlaceId = radarPlace?.id ?: placesState.selectedId,
                             chartTimeRequest = pendingChartTime,
                             onChartTimeConsumed = { token ->
                                 if (pendingChartTime?.token == token) pendingChartTime = null
@@ -1967,8 +2296,9 @@ private fun RainAlarmApp(
                             featureTourScenario = featureTourScenario?.takeIf {
                                 featureTourProgress?.stage == FeatureTourStage.RADAR
                             },
-                            onFeatureTourTarget = { featureTourTargets[it.target] = it },
-                        )
+                                onFeatureTourTarget = { featureTourTargets[it.target] = it },
+                            )
+                        }
                         Destination.PLACES -> PlacesScreen(
                             collection = placesState,
                             defaultStartupId = defaultStartupId,
@@ -2012,6 +2342,9 @@ private fun RainAlarmApp(
                             alertSnapshot = alertState,
                             enableAlerts = viewModel::enableAlerts,
                             disableAlerts = viewModel::disableAlerts,
+                            lightningAlertSnapshot = lightningAlertState,
+                            enableLightningAlerts = viewModel::enableLightningAlerts,
+                            disableLightningAlerts = viewModel::disableLightningAlerts,
                             visibleMetrics = visibleWeatherMetrics,
                             setMetricVisible = viewModel::setWeatherMetricVisible,
                             message = settingsMessage,

@@ -198,7 +198,7 @@ class PlaceAndGeocoderTest {
     }
 
     @Test
-    fun `live fix stays in memory only while foreground selected and fresh`() {
+    fun `foreground acquired live fix stays in memory briefly after leaving foreground`() {
         val fixTime = 1_000_000L
         val current = SavedPlace("Manchester", 53.48, -2.24, isCurrentLocation = true)
         ForegroundLocationSnapshot.setForeground(true)
@@ -210,6 +210,10 @@ class PlaceAndGeocoderTest {
             assertEquals(null, ForegroundLocationSnapshot.freshPlace(fixTime + 60_000))
             ForegroundLocationSnapshot.update(current, fixTime)
             ForegroundLocationSnapshot.setForeground(false)
+            assertEquals(current, ForegroundLocationSnapshot.freshPlace(fixTime + 60_000))
+            assertEquals(null, ForegroundLocationSnapshot.freshPlace(fixTime + 600_000))
+            ForegroundLocationSnapshot.clear()
+            ForegroundLocationSnapshot.update(current, fixTime)
             assertEquals(null, ForegroundLocationSnapshot.freshPlace(fixTime + 60_000))
         } finally {
             ForegroundLocationSnapshot.setForeground(false)

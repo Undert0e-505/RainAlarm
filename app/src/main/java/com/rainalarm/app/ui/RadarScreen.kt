@@ -50,6 +50,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Air
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CloudQueue
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -62,7 +63,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -107,6 +110,7 @@ import com.rainalarm.app.R
 import com.rainalarm.app.FollowUiCapability
 import com.rainalarm.app.PointRefreshCompletion
 import com.rainalarm.app.ProviderMapNoticeEvent
+import com.rainalarm.app.alerts.RadarLightningControlState
 import com.rainalarm.app.data.RadarSession
 import com.rainalarm.app.data.FeatureTourScenario
 import com.rainalarm.app.data.RadarProviderCoordinator
@@ -137,6 +141,9 @@ import com.rainalarm.app.data.FollowRefreshStream
 import com.rainalarm.app.data.FollowRefreshTicket
 import com.rainalarm.app.data.ProviderCadencePolicy
 import com.rainalarm.app.data.ProviderPublicationClock
+import com.rainalarm.app.data.TravelModeDiagnostics
+import com.rainalarm.app.data.LocationCadenceDiagnostics
+import com.rainalarm.app.data.TravelDisplayTarget
 import com.rainalarm.app.data.RadarProviderKind
 import com.rainalarm.app.data.RadarProviderSelection
 import com.rainalarm.app.data.forecastSelectionKey
@@ -152,6 +159,9 @@ import com.rainalarm.app.domain.RadarTimelineBracket
 import com.rainalarm.app.domain.RadarTimelineTicks
 import com.rainalarm.app.domain.FeatureTourRadarField
 import com.rainalarm.app.domain.RadarTimelineLabelLayout
+import com.rainalarm.app.domain.RadarTravelTimelinePolicy
+import com.rainalarm.app.domain.RadarTravelClockPolicy
+import com.rainalarm.app.domain.RadarTravelTransitionReason
 import com.rainalarm.app.domain.EntryTransitionPhase
 import com.rainalarm.app.domain.EntryTransitionPolicy
 import com.rainalarm.app.domain.EntryTransitionState
@@ -239,11 +249,11 @@ sealed interface RadarPageSwipeEvent {
 internal object SatellitePreparationLabelPolicy {
     /** Active preparation belongs exclusively to the bottom-right progress stack. */
     fun activeLabel(layer: RadarMapLayer, status: SatellitePreparationStatus): String? = when (status) {
-        is SatellitePreparationStatus.Preparing -> WeatherDataStatusPolicy.loading(
-            layer.weatherDataKind(), status.ready, status.total,
-        )
+        is SatellitePreparationStatus.Preparing -> if (status.total > 0 && status.ready >= status.total) {
+            WeatherDataStatusPolicy.preparing(layer.weatherDataKind())
+        } else WeatherDataStatusPolicy.loading(layer.weatherDataKind(), status.ready, status.total)
         SatellitePreparationStatus.Rendering ->
-            WeatherDataStatusPolicy.loading(layer.weatherDataKind())
+            WeatherDataStatusPolicy.preparing(layer.weatherDataKind())
         SatellitePreparationStatus.Ready, is SatellitePreparationStatus.Failed -> null
     }
 
@@ -269,10 +279,12 @@ internal object RadarPreparationStackPolicy {
         preparation: Map<RadarMapLayer, SatellitePreparationStatus>,
         location: RadarRefreshOverlay? = null,
         information: RadarRefreshOverlay? = null,
+        rendering: RadarRefreshOverlay? = null,
     ): List<RadarRefreshOverlay> {
         val operational = buildList {
             location?.let(::add)
             radar?.let(::add)
+            rendering?.let(::add)
             if (RadarMapLayer.WIND in enabledLayers) {
                 val label = when (statuses[RadarMapLayer.WIND]) {
                     AncillaryStatus.Loading, AncillaryStatus.Off, null ->
@@ -303,11 +315,12 @@ internal object RadarPreparationStackPolicy {
         ancillary: AncillaryStatus?,
         preparation: SatellitePreparationStatus?,
     ): String? = when {
-        ancillary == AncillaryStatus.Loading || ancillary == AncillaryStatus.Off ->
-            WeatherDataStatusPolicy.loading(layer.weatherDataKind())
         preparation is SatellitePreparationStatus.Preparing ||
             preparation == SatellitePreparationStatus.Rendering ->
             SatellitePreparationLabelPolicy.activeLabel(layer, preparation)
+        ancillary == AncillaryStatus.Loading || ancillary == AncillaryStatus.Off ->
+            WeatherDataStatusPolicy.loading(layer.weatherDataKind())
+        preparation is SatellitePreparationStatus.Failed && preparation.hasRenderableFallback -> null
         preparation is SatellitePreparationStatus.Failed ->
             WeatherDataStatusPolicy.unavailable(layer.weatherDataKind())
         ancillary is AncillaryStatus.Unavailable ->
@@ -338,6 +351,13 @@ internal object RadarPreparationStackPolicy {
 
     fun minimumSafeMapHeightDp(entryCount: Int): Int =
         minimumTopClearanceDp + bottomInsetDp + estimatedHeightDp(entryCount)
+}
+
+internal object RadarManualRefreshPolicy {
+    fun shouldRecoverRenderer(
+        rendererStatus: RadarRendererStatus,
+        mapStyleError: String?,
+    ): Boolean = rendererStatus is RadarRendererStatus.Error || !mapStyleError.isNullOrBlank()
 }
 
 internal object RadarLayerGatePolicy {
@@ -418,6 +438,8 @@ private fun RadarLayerSegments(
     enabledMapLayers: Set<RadarMapLayer>,
     darkMap: Boolean,
     setMapLayerEnabled: (RadarMapLayer, Boolean) -> Unit,
+    lightningControlState: RadarLightningControlState,
+    onLightningControlTap: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val outerShape = RoundedCornerShape(8.dp)
@@ -431,12 +453,15 @@ private fun RadarLayerSegments(
     ) {
         Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
             RadarMapLayer.overlays.forEach { layer ->
-                val active = layer in enabledMapLayers
+                val active = if (layer == RadarMapLayer.LIGHTNING) {
+                    lightningControlState != RadarLightningControlState.OFF
+                } else layer in enabledMapLayers
                 val layerName = localizedLayerName(layer)
                 val layerDescription = stringResource(R.string.radar_layer_description, layerName)
-                val layerState = stringResource(
-                    if (active) R.string.common_enabled else R.string.common_disabled,
-                )
+                val layerState = if (layer == RadarMapLayer.LIGHTNING &&
+                    lightningControlState == RadarLightningControlState.TEMPORARY
+                ) stringResource(R.string.radar_lightning_temporary_state)
+                else stringResource(if (active) R.string.common_enabled else R.string.common_disabled)
                 val icon = when (layer) {
                     RadarMapLayer.WIND -> Icons.Default.Air
                     RadarMapLayer.LIGHTNING -> Icons.Default.Bolt
@@ -449,7 +474,10 @@ private fun RadarLayerSegments(
                         .toggleable(
                             value = active,
                             role = Role.Switch,
-                            onValueChange = { setMapLayerEnabled(layer, it) },
+                            onValueChange = {
+                                if (layer == RadarMapLayer.LIGHTNING) onLightningControlTap()
+                                else setMapLayerEnabled(layer, it)
+                            },
                         )
                         .semantics {
                             contentDescription = layerDescription
@@ -460,6 +488,18 @@ private fun RadarLayerSegments(
                     Icon(icon, contentDescription = null,
                         tint = if (active) Accent else inactiveTint,
                         modifier = Modifier.size(24.dp))
+                    if (layer == RadarMapLayer.LIGHTNING &&
+                        lightningControlState == RadarLightningControlState.TEMPORARY
+                    ) {
+                        Icon(
+                            Icons.Default.Schedule,
+                            contentDescription = null,
+                            tint = inactiveTint,
+                            modifier = Modifier.align(Alignment.BottomEnd)
+                                .padding(end = 6.dp, bottom = 5.dp)
+                                .size(11.dp),
+                        )
+                    }
                 }
             }
         }
@@ -521,7 +561,9 @@ fun LiveRadarScreen(
     followLive: Boolean,
     followCapability: FollowUiCapability,
     liveFixElapsedRealtimeNanos: Long,
+    travelDisplayTarget: TravelDisplayTarget?,
     onFollowLiveChange: (Boolean) -> Boolean,
+    onTravelMapGesture: () -> Unit,
     activateTravelMode: () -> Boolean,
     currentRecenterTick: Int,
     useCurrentLocation: () -> Unit,
@@ -532,6 +574,10 @@ fun LiveRadarScreen(
     enabledMapLayers: Set<RadarMapLayer>,
     windArrowScale: Float,
     setMapLayerEnabled: (RadarMapLayer, Boolean) -> Unit,
+    lightningControlState: RadarLightningControlState = RadarLightningControlState.OFF,
+    onLightningControlTap: () -> Unit = {},
+    temporaryLightningNoticePending: Boolean = false,
+    onTemporaryLightningNoticeConsumed: () -> Unit = {},
     currentWeather: CurrentWeather?,
     refreshPointWeather: () -> Long,
     refreshForecastForFollow: () -> Unit,
@@ -623,10 +669,28 @@ fun LiveRadarScreen(
     val loader = remember { RadarProviderCoordinator(RadarSettingsRepository(context)) }
     val windEnabled = RadarMapLayer.WIND in enabledMapLayers
     var session by remember { mutableStateOf<RadarSession?>(null) }
+    val replaceOwnedRadarSession: (RadarSession?, String) -> Unit = { replacement, reason ->
+        val previous = session
+        if (previous !== replacement) {
+            session = replacement
+            previous?.release("screen-$reason")
+        }
+    }
+    val latestOwnedRadarSession by rememberUpdatedState(session)
+    DisposableEffect(Unit) {
+        onDispose {
+            latestOwnedRadarSession?.release("screen-dispose")
+        }
+    }
     var error by remember { mutableStateOf<String?>(null) }
     var refreshing by remember { mutableStateOf(false) }
     var progress by remember { mutableStateOf(0 to 0) }
+    var radarPreparing by remember { mutableStateOf(false) }
+    val radarRequestGate = remember { OverlayRequestGeneration() }
+    val lightningRequestGate = remember { OverlayRequestGeneration() }
+    val cloudsRequestGate = remember { OverlayRequestGeneration() }
     var reload by remember { mutableIntStateOf(0) }
+    var rendererRecoveryGeneration by remember { mutableIntStateOf(0) }
     var lightningRefresh by remember { mutableIntStateOf(0) }
     var cloudsRefresh by remember { mutableIntStateOf(0) }
     var completedRadarReload by remember { mutableIntStateOf(0) }
@@ -668,6 +732,7 @@ fun LiveRadarScreen(
     var locationOperationGeneration by remember { mutableIntStateOf(0) }
     var permissionOperationGeneration by remember { mutableStateOf<Int?>(null) }
     var travelNoticeActivationToken by remember { mutableIntStateOf(0) }
+    var travelTimelineActivationToken by remember { mutableIntStateOf(0) }
     var travelNoticeVisible by remember { mutableStateOf(false) }
     LaunchedEffect(travelNoticeActivationToken) {
         val token = travelNoticeActivationToken
@@ -679,18 +744,14 @@ fun LiveRadarScreen(
     LaunchedEffect(followLive) {
         if (!followLive) travelNoticeVisible = false
     }
-    LaunchedEffect(selectedPlaceId, liveMapPlace) {
-        if (followLive && !RadarLiveMapPolicy.canFollow(selectedPlaceId, liveMapPlace))
-            onFollowLiveChange(false)
+    LaunchedEffect(screenActive) {
+        if (screenActive && followLive) travelTimelineActivationToken++
     }
     val radarView = LocalView.current
     val keepScreenOn = appForeground && selectedPlaceId == CURRENT_LOCATION_ID && followLive
     DisposableEffect(radarView, keepScreenOn) {
         radarView.keepScreenOn = keepScreenOn
         onDispose { if (keepScreenOn) radarView.keepScreenOn = false }
-    }
-    DisposableEffect(Unit) {
-        onDispose { onFollowLiveChange(false) }
     }
     val permissionDeniedMessage = stringResource(R.string.places_permission_denied)
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -732,30 +793,27 @@ fun LiveRadarScreen(
         }
     }
     val requestTravelMode: () -> Unit = {
-        if (followLive) {
-            onFollowLiveChange(false)
+        travelNoticeActivationToken++
+        travelTimelineActivationToken++
+        travelNoticeVisible = true
+        locationMessage = null
+        // Travel is navigation-style following: an existing approximate grant is enough
+        // for ordinary Current, but must still take the platform's precise-upgrade path.
+        val preciseGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (preciseGranted) {
+            if (!activateTravelMode()) locationMessage = followCapability.message
         } else {
-            travelNoticeActivationToken++
-            travelNoticeVisible = true
-            locationMessage = null
-            // Travel is navigation-style following: an existing approximate grant is enough
-            // for ordinary Current, but must still take the platform's precise-upgrade path.
-            val preciseGranted = ContextCompat.checkSelfPermission(
-                context,
+            locationOperationGeneration++
+            pendingTravelActivation = true
+            locationRequestPending = true
+            permissionOperationGeneration = locationOperationGeneration
+            permissionLauncher.launch(arrayOf(
                 Manifest.permission.ACCESS_FINE_LOCATION,
-            ) == PackageManager.PERMISSION_GRANTED
-            if (preciseGranted) {
-                if (!activateTravelMode()) locationMessage = followCapability.message
-            } else {
-                locationOperationGeneration++
-                pendingTravelActivation = true
-                locationRequestPending = true
-                permissionOperationGeneration = locationOperationGeneration
-                permissionLauncher.launch(arrayOf(
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.ACCESS_COARSE_LOCATION,
-                ))
-            }
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+            ))
         }
     }
 
@@ -768,10 +826,29 @@ fun LiveRadarScreen(
     // Coordinates re-evaluate retained-footprint compatibility, but are deliberately not part of
     // the acquisition identity. Saved <-> Current and rapid Follow fixes inside that footprint
     // therefore reuse the installed frames without network work.
-    val radarSelectionCoordinates = place?.let { it.latitude.toBits() to it.longitude.toBits() }
-    LaunchedEffect(screenActive, requestedRadarIdentity, radarSelectionCoordinates, reload) {
+    val radarAcquisitionLocationKey = RadarLiveSessionPolicy.acquisitionLocationKey(place)
+    LaunchedEffect(screenActive, requestedRadarIdentity, radarAcquisitionLocationKey, reload) {
+        val requestGeneration = radarRequestGate.begin()
+        val requestStartedAt = OverlayAcquisitionDiagnostics.nowMillis()
+        val requestTrigger = when {
+            reload != installedRadarRefresh -> "refresh"
+            installedRadarIdentity != null && requestedRadarIdentity != installedRadarIdentity -> "provider"
+            else -> "selection"
+        }
+        val requestTargetHash = OverlayAcquisitionDiagnostics.targetHash(
+            place?.id, place?.latitude?.toBits(), place?.longitude?.toBits(),
+            requestedRadarIdentity?.requestedProvider,
+        )
         if (!screenActive) return@LaunchedEffect
         val requestReload = reload
+        if (session?.isReleased == true) {
+            Log.w(
+                "RainRadarScreen",
+                "Retained radar session was already released; reacquiring immediately",
+            )
+            replaceOwnedRadarSession(null, "released-retained")
+            installedRadarAnchor = null
+        }
         val keepVisible = when {
             place != null -> session?.let {
                 RadarLiveSessionPolicy.canReuse(
@@ -783,7 +860,7 @@ fun LiveRadarScreen(
             else -> selectedPlaceId == CURRENT_LOCATION_ID && session?.isReleased == false
         }
         if (!keepVisible) {
-            session = null
+            replaceOwnedRadarSession(null, "incompatible")
             installedRadarAnchor = null
         } else if (place != null) {
             // Adopt an equivalent Saved <-> Current transition without replacing the immutable
@@ -793,6 +870,7 @@ fun LiveRadarScreen(
         }
         if (place == null) {
             refreshing = false
+            radarPreparing = false
             Log.i("RainRadarScreen", "No resolved place; radar load deferred")
             completedRadarReload = requestReload
             return@LaunchedEffect
@@ -806,42 +884,101 @@ fun LiveRadarScreen(
                 hasReusableSession = keepVisible,
             )) {
             refreshing = false
+            radarPreparing = false
             Log.d("RainRadarScreen", "Reusing compatible fresh radar session")
             return@LaunchedEffect
         }
         refreshing = keepVisible
         error = null
         progress = 0 to 0
+        radarPreparing = false
+        OverlayAcquisitionDiagnostics.trace(
+            "radar", requestedRadarIdentity?.requestedProvider?.name ?: "unknown",
+            requestTargetHash, requestGeneration, requestTrigger,
+            OverlayAcquisitionPhase.REQUEST, requestStartedAt,
+            cacheFallback = keepVisible,
+        )
         Log.i("RainRadarScreen", "Starting ${if (place.isCurrentLocation) "current" else "saved"} radar load")
         var candidate: RadarSession? = null
         try {
-            val loaded = loader.load(place, onProgress = { completed, total -> progress = completed to total }).also {
+            val loaded = loader.load(place, onProgress = { completed, total ->
+                if (!radarRequestGate.accepts(requestGeneration)) {
+                    OverlayAcquisitionDiagnostics.trace(
+                        "radar", requestedRadarIdentity?.requestedProvider?.name ?: "unknown",
+                        requestTargetHash, requestGeneration, requestTrigger,
+                        OverlayAcquisitionPhase.TRANSFER, requestStartedAt, completed, total,
+                        terminalResult = "stale_progress", cacheFallback = keepVisible,
+                        accepted = false,
+                    )
+                    return@load
+                }
+                progress = completed to total
+                radarPreparing = total > 0 && completed >= total
+                OverlayAcquisitionDiagnostics.trace(
+                    "radar", requestedRadarIdentity?.requestedProvider?.name ?: "unknown",
+                    requestTargetHash, requestGeneration, requestTrigger,
+                    if (radarPreparing) OverlayAcquisitionPhase.PREPARING
+                    else OverlayAcquisitionPhase.TRANSFER,
+                    requestStartedAt, completed, total, cacheFallback = keepVisible,
+                )
+            }).also {
                 Log.i("RainRadarScreen", "Radar session ready provider=${it.providerSelection.active} frames=${it.timelineFrames.size}")
             }
             candidate = loaded
             currentCoroutineContext().ensureActive()
-            if (requestReload != reload) {
+            if (!radarRequestGate.accepts(requestGeneration) || requestReload != reload) {
+                OverlayAcquisitionDiagnostics.trace(
+                    "radar", loaded.providerSelection.active.name, requestTargetHash,
+                    requestGeneration, requestTrigger, OverlayAcquisitionPhase.READY,
+                    requestStartedAt, terminalResult = "stale_success",
+                    cacheFallback = keepVisible, accepted = false,
+                )
                 loaded.release()
                 candidate = null
                 return@LaunchedEffect
             }
             onProviderSelection(place, loaded.providerSelection)
-            session = loaded
+            replaceOwnedRadarSession(loaded, "replacement")
             installedRadarIdentity = requestedRadarIdentity
             installedRadarRefresh = requestReload
             installedRadarAnchor = place
             candidate = null
+            OverlayAcquisitionDiagnostics.trace(
+                "radar", loaded.providerSelection.active.name, requestTargetHash,
+                requestGeneration, requestTrigger, OverlayAcquisitionPhase.READY,
+                requestStartedAt, terminalResult = "ready", cacheFallback = keepVisible,
+            )
         } catch (cancelled: CancellationException) {
             candidate?.release()
+            OverlayAcquisitionDiagnostics.trace(
+                "radar", requestedRadarIdentity?.requestedProvider?.name ?: "unknown",
+                requestTargetHash, requestGeneration, requestTrigger,
+                OverlayAcquisitionPhase.CANCELLED, requestStartedAt,
+                terminalResult = "replaced", cacheFallback = keepVisible,
+                accepted = radarRequestGate.accepts(requestGeneration),
+            )
             throw cancelled
         } catch (failure: Exception) {
             candidate?.release()
             Log.e("RainRadarScreen", "Radar session load failed", failure)
-            error = failure.message ?: "Radar session could not be loaded"
-            if (!keepVisible) session = null
+            val accepted = radarRequestGate.accepts(requestGeneration)
+            if (accepted) {
+                error = failure.message ?: "Radar session could not be loaded"
+                if (!keepVisible) replaceOwnedRadarSession(null, "load-failed")
+            }
+            OverlayAcquisitionDiagnostics.trace(
+                "radar", requestedRadarIdentity?.requestedProvider?.name ?: "unknown",
+                requestTargetHash, requestGeneration, requestTrigger,
+                OverlayAcquisitionPhase.FAILED, requestStartedAt,
+                terminalResult = failure.javaClass.simpleName, cacheFallback = keepVisible,
+                accepted = accepted,
+            )
         } finally {
-            completedRadarReload = requestReload
-            refreshing = false
+            if (radarRequestGate.accepts(requestGeneration)) {
+                completedRadarReload = requestReload
+                refreshing = false
+                radarPreparing = false
+            }
         }
     }
     LaunchedEffect(selectedPlaceId, place, liveMapPlace, locationState, screenActive) {
@@ -879,6 +1016,8 @@ fun LiveRadarScreen(
     val regionLongitude = place?.longitude?.times(10)?.toInt()
     val lightningEnabled = RadarMapLayer.LIGHTNING in enabledMapLayers
     LaunchedEffect(lightningEnabled, place?.id, regionLatitude, regionLongitude, lightningRefresh) {
+        val requestGeneration = lightningRequestGate.begin()
+        val requestStartedAt = OverlayAcquisitionDiagnostics.nowMillis()
         val requestRefresh = lightningRefresh
         if (!lightningEnabled) {
             lightningStatus = AncillaryStatus.Off
@@ -896,6 +1035,10 @@ fun LiveRadarScreen(
             return@LaunchedEffect
         }
         val resolvedPlace = requireNotNull(selected)
+        val targetHash = OverlayAcquisitionDiagnostics.targetHash(
+            resolvedPlace.id, resolvedPlace.latitude.toBits(), resolvedPlace.longitude.toBits(),
+            RadarMapLayer.LIGHTNING,
+        )
         val retained = (lightningStatus as? AncillaryStatus.Satellite)?.takeIf {
             CloudsSwapPolicy.canRetainDuringReplacement(
                 it.metadata, lightningVerifiedPlaceKey, resolvedPlace,
@@ -905,19 +1048,63 @@ fun LiveRadarScreen(
         previousLightningRefresh = lightningRefresh
         lightningReplacementPhase = WeatherReplacementPhase.LOADING
         if (retained == null) lightningStatus = AncillaryStatus.Loading
+        OverlayAcquisitionDiagnostics.trace(
+            "lightning", "EUMETSAT", targetHash, requestGeneration,
+            if (force) "refresh" else "selection", OverlayAcquisitionPhase.REQUEST,
+            requestStartedAt, cacheFallback = retained != null,
+        )
         try {
-            lightningStatus = AncillaryStatus.Satellite(EumetViewRepository.metadata(
+            val loaded = AncillaryStatus.Satellite(EumetViewRepository.metadata(
                 RadarMapLayer.LIGHTNING, resolvedPlace, force,
-            )).also {
-                lightningVerifiedPlaceKey = CloudsSwapPolicy.placeKey(resolvedPlace)
+            ))
+            currentCoroutineContext().ensureActive()
+            if (!lightningRequestGate.accepts(requestGeneration)) {
+                OverlayAcquisitionDiagnostics.trace(
+                    "lightning", "EUMETSAT", targetHash, requestGeneration,
+                    if (force) "refresh" else "selection", OverlayAcquisitionPhase.READY,
+                    requestStartedAt, terminalResult = "stale_success",
+                    cacheFallback = retained != null, accepted = false,
+                )
+                return@LaunchedEffect
             }
+            lightningStatus = loaded
+            lightningVerifiedPlaceKey = CloudsSwapPolicy.placeKey(resolvedPlace)
             lightningReplacementPhase = WeatherReplacementPhase.IDLE
-        } catch (cancelled: CancellationException) { throw cancelled }
+            OverlayAcquisitionDiagnostics.trace(
+                "lightning", "EUMETSAT", targetHash, requestGeneration,
+                if (force) "refresh" else "selection", OverlayAcquisitionPhase.READY,
+                requestStartedAt, terminalResult = "catalog_ready",
+                cacheFallback = retained != null,
+            )
+        } catch (cancelled: CancellationException) {
+            OverlayAcquisitionDiagnostics.trace(
+                "lightning", "EUMETSAT", targetHash, requestGeneration,
+                if (force) "refresh" else "selection", OverlayAcquisitionPhase.CANCELLED,
+                requestStartedAt, terminalResult = "replaced", cacheFallback = retained != null,
+                accepted = lightningRequestGate.accepts(requestGeneration),
+            )
+            throw cancelled
+        }
         catch (failure: Exception) {
             Log.w("RainRadarLayers", "LIGHTNING layer unavailable", failure)
-            lightningStatus = retained ?: AncillaryStatus.Unavailable("Lightning unavailable")
-            lightningReplacementPhase = WeatherReplacementPhase.UNAVAILABLE
-        } finally { completedLightningRefresh = requestRefresh }
+            val accepted = lightningRequestGate.accepts(requestGeneration)
+            if (accepted) {
+                lightningStatus = retained ?: AncillaryStatus.Unavailable("Lightning unavailable")
+                lightningReplacementPhase = if (retained == null) {
+                    WeatherReplacementPhase.UNAVAILABLE
+                } else WeatherReplacementPhase.IDLE
+            }
+            OverlayAcquisitionDiagnostics.trace(
+                "lightning", "EUMETSAT", targetHash, requestGeneration,
+                if (force) "refresh" else "selection", OverlayAcquisitionPhase.FAILED,
+                requestStartedAt, terminalResult = failure.javaClass.simpleName,
+                cacheFallback = retained != null, accepted = accepted,
+            )
+        } finally {
+            if (lightningRequestGate.accepts(requestGeneration)) {
+                completedLightningRefresh = requestRefresh
+            }
+        }
     }
     val cloudsEnabled = RadarMapLayer.FOG in enabledMapLayers
     val preferredCloudProduct = place?.let {
@@ -927,6 +1114,8 @@ fun LiveRadarScreen(
         cloudsEnabled, place?.id, regionLatitude, regionLongitude, cloudsRefresh,
         preferredCloudProduct,
     ) {
+        val requestGeneration = cloudsRequestGate.begin()
+        val requestStartedAt = OverlayAcquisitionDiagnostics.nowMillis()
         val requestRefresh = cloudsRefresh
         if (!cloudsEnabled) {
             cloudsStatus = AncillaryStatus.Off
@@ -944,6 +1133,10 @@ fun LiveRadarScreen(
             return@LaunchedEffect
         }
         val resolvedPlace = requireNotNull(selected)
+        val targetHash = OverlayAcquisitionDiagnostics.targetHash(
+            resolvedPlace.id, resolvedPlace.latitude.toBits(), resolvedPlace.longitude.toBits(),
+            preferredCloudProduct,
+        )
         val retained = (cloudsStatus as? AncillaryStatus.Satellite)?.takeIf {
             CloudsSwapPolicy.canRetainDuringReplacement(
                 it.metadata, cloudsVerifiedPlaceKey, resolvedPlace,
@@ -953,22 +1146,65 @@ fun LiveRadarScreen(
         previousCloudsRefresh = cloudsRefresh
         cloudsReplacementPhase = WeatherReplacementPhase.LOADING
         if (retained == null) cloudsStatus = AncillaryStatus.Loading
+        OverlayAcquisitionDiagnostics.trace(
+            "clouds", "EUMETSAT", targetHash, requestGeneration,
+            if (force) "refresh" else "selection", OverlayAcquisitionPhase.REQUEST,
+            requestStartedAt, cacheFallback = retained != null,
+        )
         try {
             val products = EumetViewRepository.cloudProducts(
                 requireNotNull(preferredCloudProduct), resolvedPlace, force,
             )
             val primary = products.firstOrNull { it.product == preferredCloudProduct }
                 ?: products.first()
-            cloudsStatus = AncillaryStatus.Satellite(primary, products).also {
-                cloudsVerifiedPlaceKey = CloudsSwapPolicy.placeKey(resolvedPlace)
+            currentCoroutineContext().ensureActive()
+            if (!cloudsRequestGate.accepts(requestGeneration)) {
+                OverlayAcquisitionDiagnostics.trace(
+                    "clouds", "EUMETSAT", targetHash, requestGeneration,
+                    if (force) "refresh" else "selection", OverlayAcquisitionPhase.READY,
+                    requestStartedAt, terminalResult = "stale_success",
+                    cacheFallback = retained != null, accepted = false,
+                )
+                return@LaunchedEffect
             }
+            cloudsStatus = AncillaryStatus.Satellite(primary, products)
+            cloudsVerifiedPlaceKey = CloudsSwapPolicy.placeKey(resolvedPlace)
             cloudsReplacementPhase = WeatherReplacementPhase.IDLE
-        } catch (cancelled: CancellationException) { throw cancelled }
+            OverlayAcquisitionDiagnostics.trace(
+                "clouds", "EUMETSAT", targetHash, requestGeneration,
+                if (force) "refresh" else "selection", OverlayAcquisitionPhase.READY,
+                requestStartedAt, terminalResult = "catalog_ready",
+                cacheFallback = retained != null,
+            )
+        } catch (cancelled: CancellationException) {
+            OverlayAcquisitionDiagnostics.trace(
+                "clouds", "EUMETSAT", targetHash, requestGeneration,
+                if (force) "refresh" else "selection", OverlayAcquisitionPhase.CANCELLED,
+                requestStartedAt, terminalResult = "replaced", cacheFallback = retained != null,
+                accepted = cloudsRequestGate.accepts(requestGeneration),
+            )
+            throw cancelled
+        }
         catch (failure: Exception) {
             Log.w("RainRadarLayers", "Clouds layer unavailable", failure)
-            cloudsStatus = retained ?: AncillaryStatus.Unavailable("Clouds unavailable")
-            cloudsReplacementPhase = WeatherReplacementPhase.UNAVAILABLE
-        } finally { completedCloudsRefresh = requestRefresh }
+            val accepted = cloudsRequestGate.accepts(requestGeneration)
+            if (accepted) {
+                cloudsStatus = retained ?: AncillaryStatus.Unavailable("Clouds unavailable")
+                cloudsReplacementPhase = if (retained == null) {
+                    WeatherReplacementPhase.UNAVAILABLE
+                } else WeatherReplacementPhase.IDLE
+            }
+            OverlayAcquisitionDiagnostics.trace(
+                "clouds", "EUMETSAT", targetHash, requestGeneration,
+                if (force) "refresh" else "selection", OverlayAcquisitionPhase.FAILED,
+                requestStartedAt, terminalResult = failure.javaClass.simpleName,
+                cacheFallback = retained != null, accepted = accepted,
+            )
+        } finally {
+            if (cloudsRequestGate.accepts(requestGeneration)) {
+                completedCloudsRefresh = requestRefresh
+            }
+        }
     }
     val viewportKey = windViewport?.requestKey()
     val windTimelineWindow = WindTimelinePolicy.requestWindow(
@@ -1309,6 +1545,23 @@ fun LiveRadarScreen(
     val currentSelected = selectedPlaceId == CURRENT_LOCATION_ID
     val displayedMapPlace = place ?: session?.place?.takeIf { currentSelected }
         ?: featureTourScenario?.fallbackPlace
+    val livePresentationPlace = if (followLive && liveMapPlace != null && travelDisplayTarget != null) {
+        liveMapPlace.copy(
+            latitude = travelDisplayTarget.latitude,
+            longitude = travelDisplayTarget.longitude,
+        )
+    } else liveMapPlace
+    LaunchedEffect(followLive, travelDisplayTarget) {
+        val target = travelDisplayTarget ?: return@LaunchedEffect
+        if (!followLive) return@LaunchedEffect
+        LocationCadenceDiagnostics.record(
+            "ui",
+            target.source,
+            target.displayElapsedRealtimeNanos,
+            if (target.projected) "projected-${target.motionSource.name.lowercase()}"
+            else "measured-${target.motionSource.name.lowercase()}",
+        )
+    }
     val sessionReusable = session != null && displayedMapPlace != null && when {
         place != null -> RadarLiveSessionPolicy.canReuse(
             session!!, place, installedRadarAnchor ?: session!!.place,
@@ -1319,6 +1572,24 @@ fun LiveRadarScreen(
         hasResolvedPlace = place != null,
         hasRetainedCurrentCoordinates = place == null && currentSelected && displayedMapPlace != null,
     )
+    LaunchedEffect(
+        showInteractiveMap,
+        currentSelected,
+        place?.id,
+        displayedMapPlace?.id,
+        followLive,
+        travelNoticeVisible,
+        entryTransition.generation,
+        entryTransition.phase,
+    ) {
+        Log.i(
+            "RainRadarRender",
+            "event=radar_screen_state interactive=$showInteractiveMap current=$currentSelected " +
+                "resolved=${place != null} retained=${place == null && displayedMapPlace != null} " +
+                "follow=$followLive notice=$travelNoticeVisible entry=${entryTransition.generation}:" +
+                entryTransition.phase.name,
+        )
+    }
     val locationCapabilityMessage = when (locationState) {
         is LocationUiState.Active -> locationState.message
         is LocationUiState.Unavailable -> locationState.message
@@ -1331,10 +1602,14 @@ fun LiveRadarScreen(
         capabilityMessage = locationCapabilityMessage,
         requestMessage = locationMessage,
     )
-    val travelActivationStatus = if (travelNoticeVisible) {
-        val label = stringResource(R.string.radar_travel_mode)
-        RadarRefreshOverlay(label, label)
-    } else null
+    LaunchedEffect(temporaryLightningNoticePending) {
+        if (!temporaryLightningNoticePending) return@LaunchedEffect
+        delay(2_000)
+        onTemporaryLightningNoticeConsumed()
+    }
+    // Pass a stable State holder so expiry only invalidates the bottom-right notice rail. A
+    // transient notice must not restart the native MapLibre/TextureView composition.
+    val temporaryLightningNoticeState = rememberUpdatedState(temporaryLightningNoticePending)
     val startManualWindRefresh: () -> Unit = {
         val before = windAcquisition
         val after = WindGridAcquisitionReducer.reduce(
@@ -1369,6 +1644,7 @@ fun LiveRadarScreen(
             pendingPointRefresh = null
             error = null
             progress = 0 to 0
+            radarPreparing = false
             refreshing = session != null
             reload++
             val retryLayers = ManualWeatherRefreshPolicy.enabledLayers(enabledMapLayers)
@@ -1480,14 +1756,20 @@ fun LiveRadarScreen(
             showInteractiveMap -> RadarPlayer(
                 session = session?.takeIf { sessionReusable },
                 mapPlace = requireNotNull(displayedMapPlace),
-                markerPlace = RadarLiveMapPolicy.marker(displayedMapPlace, liveMapPlace),
+                markerPlace = RadarLiveMapPolicy.marker(displayedMapPlace, livePresentationPlace),
                 hasFreshLiveFix = RadarLiveMapPolicy.canFollow(selectedPlaceId, liveMapPlace),
                 followLive = followLive,
+                travelTimelineActivationToken = travelTimelineActivationToken,
                 followCapability = followCapability,
-                liveFixElapsedRealtimeNanos = liveFixElapsedRealtimeNanos,
+                liveFixElapsedRealtimeNanos = travelDisplayTarget
+                    ?.takeIf { followLive }
+                    ?.displayElapsedRealtimeNanos
+                    ?: liveFixElapsedRealtimeNanos,
+                liveTargetProjected = followLive && travelDisplayTarget?.projected == true,
                 onFollowLiveChange = { enabled ->
                     if (enabled) requestTravelMode() else onFollowLiveChange(false)
                 },
+                onTravelMapGesture = onTravelMapGesture,
                 selectedPlaceId = selectedPlaceId,
                 chartTimeRequest = chartTimeRequest,
                 onChartTimeConsumed = onChartTimeConsumed,
@@ -1540,22 +1822,30 @@ fun LiveRadarScreen(
                 ancillaryStatuses = renderAncillary,
                 weatherStatuses = weatherAncillary,
                 locationStatus = locationOperationalStatus,
-                travelActivationStatus = travelActivationStatus,
+                travelNoticeActivationToken = travelNoticeActivationToken,
+                temporaryLightningNoticePending = temporaryLightningNoticeState,
+                lightningControlState = lightningControlState,
+                onLightningControlTap = onLightningControlTap,
                 currentWeather = currentWeather,
                 onWindViewportChanged = { windViewport = it },
                 onRefresh = performManualRefresh,
+                onRendererRecovery = { rendererRecoveryGeneration++ },
                 onLayerError = { layer, message ->
                     when (layer) {
                         RadarMapLayer.LIGHTNING -> {
-                            lightningReplacementPhase = WeatherReplacementPhase.UNAVAILABLE
                             if (lightningStatus !is AncillaryStatus.Satellite) {
+                                lightningReplacementPhase = WeatherReplacementPhase.UNAVAILABLE
                                 lightningStatus = AncillaryStatus.Unavailable(message)
+                            } else {
+                                lightningReplacementPhase = WeatherReplacementPhase.IDLE
                             }
                         }
                         RadarMapLayer.FOG -> {
-                            cloudsReplacementPhase = WeatherReplacementPhase.UNAVAILABLE
                             if (cloudsStatus !is AncillaryStatus.Satellite) {
+                                cloudsReplacementPhase = WeatherReplacementPhase.UNAVAILABLE
                                 cloudsStatus = AncillaryStatus.Unavailable(message)
+                            } else {
+                                cloudsReplacementPhase = WeatherReplacementPhase.IDLE
                             }
                         }
                         else -> Unit
@@ -1563,7 +1853,9 @@ fun LiveRadarScreen(
                 },
                 refreshing = refreshing,
                 refreshProgress = progress,
+                refreshPreparing = radarPreparing,
                 refreshError = error,
+                rendererRecoveryGeneration = rendererRecoveryGeneration,
                 externalNotice = providerMapNotice,
                 entryTransition = entryTransition,
                 entryFocusEnabled = entryFocusEnabled,
@@ -1584,6 +1876,7 @@ fun LiveRadarScreen(
             else -> RadarLoadingShell(
                 mapStyle = mapStyle,
                 progress = progress,
+                preparing = radarPreparing,
                 locationState = locationState,
                 currentSelected = currentSelected,
                 onCurrentLocation = { requestCurrentLocation(true) },
@@ -1592,7 +1885,17 @@ fun LiveRadarScreen(
                 locationStatus = locationOperationalStatus,
                 radarLoading = place != null && error == null,
                 travelMode = followLive,
-                travelActivationStatus = travelActivationStatus,
+                travelActivationStatus = when {
+                    temporaryLightningNoticePending -> {
+                        val label = stringResource(R.string.radar_lightning_temporary_notice)
+                        RadarRefreshOverlay(label, label)
+                    }
+                    travelNoticeVisible -> {
+                        val label = stringResource(R.string.radar_travel_mode)
+                        RadarRefreshOverlay(label, label)
+                    }
+                    else -> null
+                },
                 onTravelMode = requestTravelMode,
                 onMapBoundsChanged = { radarMapBounds = it },
             )
@@ -1691,6 +1994,7 @@ fun LiveRadarScreen(
 private fun ColumnScope.RadarLoadingShell(
     mapStyle: RadarMapStyle,
     progress: Pair<Int, Int>,
+    preparing: Boolean,
     locationState: LocationUiState,
     currentSelected: Boolean,
     onCurrentLocation: () -> Unit,
@@ -1704,7 +2008,9 @@ private fun ColumnScope.RadarLoadingShell(
     onMapBoundsChanged: (Rect) -> Unit,
 ) {
     val shape = RoundedCornerShape(22.dp)
-    val status = RadarRefreshOverlayPolicy.initialLoading(progress.first, progress.second)
+    val status = RadarRefreshOverlayPolicy.initialLoading(
+        progress.first, progress.second, preparing,
+    )
     val darkMap = mapStyle.darkControls
     val useLocationDescription = stringResource(R.string.radar_use_location)
     val locationLoadingDescription = localizedWeatherStatus(
@@ -1773,7 +2079,7 @@ private fun ColumnScope.RadarLoadingShell(
             RadarOperationalStatusStack(
                 operationalEntries,
                 mapWidthDp,
-                Modifier.align(Alignment.BottomEnd).padding(
+                modifier = Modifier.align(Alignment.BottomEnd).padding(
                     end = RadarPreparationStackPolicy.endInsetDp.dp,
                     bottom = RadarPreparationStackPolicy.bottomInsetDp.dp,
                 ),
@@ -1838,10 +2144,38 @@ private fun RadarMapNoticeRail(
 
 @Composable
 private fun RadarOperationalStatusStack(
-    entries: List<RadarRefreshOverlay>,
+    operationalEntries: List<RadarRefreshOverlay>,
     mapWidthDp: Int,
+    travelNoticeActivationToken: Int = 0,
+    temporaryLightningNoticePending: State<Boolean>? = null,
+    automaticCurrentTimeUnavailable: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
+    var travelNoticeVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(travelNoticeActivationToken) {
+        if (travelNoticeActivationToken <= 0) return@LaunchedEffect
+        travelNoticeVisible = true
+        delay(TravelActivationNoticePolicy.DURATION_MILLIS)
+        travelNoticeVisible = false
+    }
+    val information = when {
+        temporaryLightningNoticePending?.value == true -> {
+            val label = stringResource(R.string.radar_lightning_temporary_notice)
+            RadarRefreshOverlay(label, label)
+        }
+        travelNoticeVisible -> {
+            val label = stringResource(R.string.radar_travel_mode)
+            RadarRefreshOverlay(label, label)
+        }
+        automaticCurrentTimeUnavailable -> {
+            val label = stringResource(R.string.radar_current_time_unavailable)
+            RadarRefreshOverlay(label, label)
+        }
+        else -> null
+    }
+    val entries = if (information == null ||
+        operationalEntries.size >= RadarPreparationStackPolicy.maximumEntries
+    ) operationalEntries else operationalEntries + information
     if (entries.isEmpty()) return
     Column(
         modifier = modifier.widthIn(max = RadarPreparationStackPolicy.maxWidthDp(mapWidthDp).dp),
@@ -1871,6 +2205,93 @@ private fun RadarOperationalStatusStack(
     }
 }
 
+private data class RadarNativeMapInputs(
+    val session: RadarSession?,
+    val bracket: RadarTimelineBracket?,
+    val mapPlace: SavedPlace,
+    val markerPlace: SavedPlace,
+    val followLive: Boolean,
+    val liveFixElapsedRealtimeNanos: Long,
+    val liveTargetProjected: Boolean,
+    val onManualCameraGesture: () -> Unit,
+    val onLongPress: (GeoPoint) -> Unit,
+    val recenterSignal: Int,
+    val cameraMemory: RadarCameraMemory,
+    val isPlaying: Boolean,
+    val radarPresentationVisible: Boolean,
+    val onRendererStatus: (RadarRendererStatus) -> Unit,
+    val mapStyle: RadarMapStyle,
+    val coverageMaskDarkness: Float,
+    val windGrid: WindGrid?,
+    val windArrowScale: Float,
+    val windRenderToken: WindGridRenderToken?,
+    val onWindRenderObservation: (WindGridRenderToken, Int) -> Unit,
+    val onWindRendererReset: () -> Unit,
+    val satelliteCatalogs: List<EumetLayerMetadata>,
+    val enabledSatelliteLayers: Set<RadarMapLayer>,
+    val satelliteDisplayEpochSeconds: Long,
+    val satelliteTimelineStartEpochSeconds: Long,
+    val satelliteTimelineEndEpochSeconds: Long,
+    val satelliteWeather: CurrentWeather?,
+    val onSatellitePreparation: (RadarMapLayer, SatellitePreparationStatus?) -> Unit,
+    val onLayerError: (RadarMapLayer, String) -> Unit,
+    val onMapStyleError: (String?) -> Unit,
+    val rendererRecoveryGeneration: Int,
+    val onMapPreparing: (Boolean) -> Unit,
+    val onWindViewportChanged: (WindViewport) -> Unit,
+    val onRadarTierChanged: (RadarResolutionTier) -> Unit,
+    val entryTransition: EntryTransitionState,
+    val entryFocusEnabled: Boolean,
+    val entryFocusDurationMillis: Int,
+    val onEntryAnimationStart: (Int, Boolean) -> Unit,
+    val markerScale: Float,
+)
+
+@Composable
+private fun RadarNativeMap(inputs: RadarNativeMapInputs) {
+    RadarImageMap(
+        inputs.session,
+        inputs.bracket,
+        inputs.mapPlace,
+        markerPlace = inputs.markerPlace,
+        followLive = inputs.followLive,
+        liveFixElapsedRealtimeNanos = inputs.liveFixElapsedRealtimeNanos,
+        liveTargetProjected = inputs.liveTargetProjected,
+        onManualCameraGesture = inputs.onManualCameraGesture,
+        onLongPress = inputs.onLongPress,
+        recenterSignal = inputs.recenterSignal,
+        cameraMemory = inputs.cameraMemory,
+        isPlaying = inputs.isPlaying,
+        radarPresentationVisible = inputs.radarPresentationVisible,
+        onRendererStatus = inputs.onRendererStatus,
+        mapStyle = inputs.mapStyle,
+        coverageMaskDarkness = inputs.coverageMaskDarkness,
+        windGrid = inputs.windGrid,
+        windArrowScale = inputs.windArrowScale,
+        windRenderToken = inputs.windRenderToken,
+        onWindRenderObservation = inputs.onWindRenderObservation,
+        onWindRendererReset = inputs.onWindRendererReset,
+        satelliteCatalogs = inputs.satelliteCatalogs,
+        enabledSatelliteLayers = inputs.enabledSatelliteLayers,
+        satelliteDisplayEpochSeconds = inputs.satelliteDisplayEpochSeconds,
+        satelliteTimelineStartEpochSeconds = inputs.satelliteTimelineStartEpochSeconds,
+        satelliteTimelineEndEpochSeconds = inputs.satelliteTimelineEndEpochSeconds,
+        satelliteWeather = inputs.satelliteWeather,
+        onSatellitePreparation = inputs.onSatellitePreparation,
+        onLayerError = inputs.onLayerError,
+        onMapStyleError = inputs.onMapStyleError,
+        rendererRecoveryGeneration = inputs.rendererRecoveryGeneration,
+        onMapPreparing = inputs.onMapPreparing,
+        onWindViewportChanged = inputs.onWindViewportChanged,
+        onRadarTierChanged = inputs.onRadarTierChanged,
+        entryTransition = inputs.entryTransition,
+        entryFocusEnabled = inputs.entryFocusEnabled,
+        entryFocusDurationMillis = inputs.entryFocusDurationMillis,
+        onEntryAnimationStart = inputs.onEntryAnimationStart,
+        markerScale = inputs.markerScale,
+    )
+}
+
 @Composable
 private fun ColumnScope.RadarPlayer(
     session: RadarSession?,
@@ -1878,9 +2299,12 @@ private fun ColumnScope.RadarPlayer(
     markerPlace: SavedPlace,
     hasFreshLiveFix: Boolean,
     followLive: Boolean,
+    travelTimelineActivationToken: Int,
     followCapability: FollowUiCapability,
     liveFixElapsedRealtimeNanos: Long,
+    liveTargetProjected: Boolean,
     onFollowLiveChange: (Boolean) -> Unit,
+    onTravelMapGesture: () -> Unit,
     selectedPlaceId: String,
     chartTimeRequest: RadarChartTimeRequest?,
     onChartTimeConsumed: (Int) -> Unit,
@@ -1898,17 +2322,23 @@ private fun ColumnScope.RadarPlayer(
     onWindRenderObservation: (WindGridRenderToken, Int) -> Unit,
     onWindRendererReset: () -> Unit,
     setMapLayerEnabled: (RadarMapLayer, Boolean) -> Unit,
+    lightningControlState: RadarLightningControlState,
+    onLightningControlTap: () -> Unit,
     ancillaryStatuses: Map<RadarMapLayer, AncillaryStatus>,
     weatherStatuses: Map<RadarMapLayer, AncillaryStatus>,
     locationStatus: RadarRefreshOverlay?,
-    travelActivationStatus: RadarRefreshOverlay?,
+    travelNoticeActivationToken: Int,
+    temporaryLightningNoticePending: State<Boolean>,
     currentWeather: CurrentWeather?,
     onWindViewportChanged: (WindViewport) -> Unit,
     onRefresh: () -> Unit,
+    onRendererRecovery: () -> Unit,
     onLayerError: (RadarMapLayer, String) -> Unit,
     refreshing: Boolean,
     refreshProgress: Pair<Int, Int>,
+    refreshPreparing: Boolean,
     refreshError: String?,
+    rendererRecoveryGeneration: Int,
     externalNotice: RadarMapNotice?,
     entryTransition: EntryTransitionState,
     entryFocusEnabled: Boolean,
@@ -1919,10 +2349,24 @@ private fun ColumnScope.RadarPlayer(
     featureTourScenario: FeatureTourScenario? = null,
     onFeatureTourTarget: (FeatureTourTargetBounds) -> Unit = {},
 ) {
+    val playerCompositionIdentity = remember { Any() }
+    DisposableEffect(playerCompositionIdentity) {
+        Log.i(
+            "RainRadarRender",
+            "event=radar_player_compose identity=${System.identityHashCode(playerCompositionIdentity)}",
+        )
+        onDispose {
+            Log.i(
+                "RainRadarRender",
+                "event=radar_player_dispose identity=${System.identityHashCode(playerCompositionIdentity)}",
+            )
+        }
+    }
     val context = LocalContext.current
     val darkMap = mapStyle.darkControls
     val secondaryColor = Secondary
     val timelineDescription = stringResource(R.string.radar_timeline)
+    val travelAutoAccessibility = stringResource(R.string.radar_travel_auto_accessibility)
     val sessionTimes = remember(session) { session?.timelineFrames?.map { it.time }.orEmpty() }
     val sessionForecastFlags = remember(session) {
         session?.timelineFrames?.map { it.forecast }.orEmpty()
@@ -1991,6 +2435,8 @@ private fun ColumnScope.RadarPlayer(
         session?.providerSelection?.requested,
     )
     var playing by remember(playbackRefreshIdentity) { mutableStateOf(false) }
+    var travelTimeAutomatic by remember { mutableStateOf(false) }
+    var travelWallClockEpochSeconds by remember { mutableStateOf(Instant.now().epochSecond) }
     var tourCursor by remember(featureTourScenario) { mutableFloatStateOf(0f) }
     var tourPlaying by remember(featureTourScenario) { mutableStateOf(false) }
     var chartTimeMessage by remember(session) { mutableStateOf<String?>(null) }
@@ -1999,6 +2445,7 @@ private fun ColumnScope.RadarPlayer(
         val request = chartTimeRequest ?: return@LaunchedEffect
         when (val decision = chartDecision) {
             is RadarChartTimeDecision.Apply -> {
+                travelTimeAutomatic = false
                 cursor = decision.cursorSeconds
                 playing = false
                 chartTimeMessage = null
@@ -2008,6 +2455,21 @@ private fun ColumnScope.RadarPlayer(
                 onChartTimeConsumed(request.token)
             }
             else -> Unit
+        }
+    }
+    LaunchedEffect(followLive, travelTimelineActivationToken) {
+        if (followLive) {
+            travelTimeAutomatic = true
+            playing = false
+            travelWallClockEpochSeconds = Instant.now().epochSecond
+        } else {
+            travelTimeAutomatic = false
+        }
+    }
+    LaunchedEffect(travelTimeAutomatic) {
+        while (travelTimeAutomatic) {
+            travelWallClockEpochSeconds = Instant.now().epochSecond
+            delay(1_000L)
         }
     }
     var rendererStatus by remember(session) { mutableStateOf<RadarRendererStatus>(RadarRendererStatus.Loading) }
@@ -2028,10 +2490,21 @@ private fun ColumnScope.RadarPlayer(
         if (chartTimeMessage == captured) chartTimeMessage = null
     }
     var mapStyleError by remember { mutableStateOf<String?>(null) }
+    var mapPreparing by remember(mapStyle, rendererRecoveryGeneration) { mutableStateOf(true) }
     var satellitePreparation by remember {
         mutableStateOf<Map<RadarMapLayer, SatellitePreparationStatus>>(emptyMap())
     }
-    val activeCursor = if (featureTourScenario != null) tourCursor else cursor
+    val travelTimelineFrame = if (travelTimeAutomatic && hasRealRadarSession) {
+        RadarTravelTimelinePolicy.frame(
+            nowEpochSeconds = travelWallClockEpochSeconds,
+            dataStartEpochSeconds = sessionTimes.first(),
+            latestObservationEpochSeconds = sessionTimes[realLatestObservationIndex],
+            dataEndEpochSeconds = sessionTimes.first() + realEndOffset.toLong(),
+            forecastAvailable = realForecastAvailable,
+        )
+    } else null
+    val activeCursor = if (featureTourScenario != null) tourCursor
+        else travelTimelineFrame?.dataCursorSeconds ?: cursor
     val displayPlaying = if (featureTourScenario != null) tourPlaying else playing
     val safeCursor = activeCursor.takeIf { it.isFinite() }?.coerceIn(0f, endOffset)
         ?: if (featureTourScenario != null) 0f else initialCursor
@@ -2040,7 +2513,8 @@ private fun ColumnScope.RadarPlayer(
     } else {
         RadarTimeline.bracket(times, times.first() + safeCursor.toDouble())
     }
-    val realSafeCursor = cursor.takeIf { it.isFinite() }?.coerceIn(0f, realEndOffset) ?: initialCursor
+    val realCursor = travelTimelineFrame?.dataCursorSeconds ?: cursor
+    val realSafeCursor = realCursor.takeIf { it.isFinite() }?.coerceIn(0f, realEndOffset) ?: initialCursor
     val realBracket = if (!hasRealRadarSession) null else if (sessionProviderForecast) {
         RadarTimeline.bracket(
             sessionTimes,
@@ -2067,24 +2541,46 @@ private fun ColumnScope.RadarPlayer(
             if (featureTourScenario != null) tourCursor = advanced else cursor = advanced
         }
     }
+    val travelClock = if (travelTimeAutomatic) RadarTravelClockPolicy.snapshotAt(
+        epochSeconds = travelWallClockEpochSeconds,
+        zoneId = ZoneId.systemDefault(),
+        use24Hour = DateFormat.is24HourFormat(context),
+        locale = androidx.compose.ui.platform.LocalConfiguration.current.locales[0],
+    ) else null
     val label = if (featureTourScenario != null) {
         val time = Instant.ofEpochSecond((times.first() + safeCursor.toLong()))
             .atZone(ZoneId.systemDefault())
             .format(DateTimeFormatter.ofPattern(if (DateFormat.is24HourFormat(context)) "HH:mm" else "h:mm a"))
         "${featureTourScenario.forecast.sourceLabel} · $time"
+    } else if (travelClock != null) {
+        stringResource(
+            if (travelTimelineFrame?.wallClockCovered == true) R.string.radar_forecast_time
+            else R.string.radar_forecast_unavailable_time,
+            travelClock.localMinuteText,
+        )
     } else bracket?.let {
         timelineLabel(times, it, safeCursor, latestOffset, forecastAvailable)
     } ?: stringResource(R.string.radar_loading)
     val refreshOverlay = if (!hasRadarSession && refreshError.isNullOrBlank()) {
-        RadarRefreshOverlayPolicy.initialLoading(refreshProgress.first, refreshProgress.second)
+        RadarRefreshOverlayPolicy.initialLoading(
+            refreshProgress.first, refreshProgress.second, refreshPreparing,
+        )
     } else RadarRefreshOverlayPolicy.status(
         hasSession = hasRadarSession, refreshing = refreshing,
         completed = refreshProgress.first, total = refreshProgress.second, error = refreshError,
+        preparing = refreshPreparing,
     )
+    val mapRenderOverlay = if (mapPreparing) {
+        val preparing = WeatherDataStatusPolicy.preparing(WeatherDataKind.RADAR)
+        RadarRefreshOverlay(preparing, preparing)
+    } else null
     val preparationEntries = RadarPreparationStackPolicy.entries(
         refreshOverlay, enabledMapLayers, weatherStatuses, satellitePreparation, locationStatus,
-        travelActivationStatus,
+        information = null,
+        rendering = mapRenderOverlay,
     )
+    val automaticCurrentTimeUnavailable = travelTimeAutomatic &&
+        travelTimelineFrame?.wallClockCovered == false
     val mapNotice = RadarMapNoticePolicy.select(
         (rendererStatus as? RadarRendererStatus.Error)?.let {
             RadarMapNotice(
@@ -2104,63 +2600,77 @@ private fun ColumnScope.RadarPlayer(
         },
         chartTimeMessage?.let { RadarMapNotice(RadarMapNoticeKind.CHART_TIME, it) },
     )
-    Card(
-        colors = CardDefaults.cardColors(containerColor = Surface),
-        shape = RoundedCornerShape(22.dp),
+    val refreshMapAndData = {
+        if (RadarManualRefreshPolicy.shouldRecoverRenderer(rendererStatus, mapStyleError)) {
+            onRendererRecovery()
+        }
+        onRefresh()
+    }
+    val currentNativeMapInputs = rememberUpdatedState(RadarNativeMapInputs(
+        session = session,
+        bracket = realBracket,
+        mapPlace = mapPlace,
+        markerPlace = markerPlace,
+        followLive = RadarLiveMapPolicy.shouldCenterOnFix(
+            selectedPlaceId, if (hasFreshLiveFix) markerPlace else null, followLive,
+        ),
+        liveFixElapsedRealtimeNanos = liveFixElapsedRealtimeNanos,
+        liveTargetProjected = liveTargetProjected,
+        onManualCameraGesture = { if (followLive) onTravelMapGesture() },
+        onLongPress = onLongPress,
+        recenterSignal = currentRecenterTick,
+        cameraMemory = cameraMemory,
+        isPlaying = playing,
+        radarPresentationVisible = featureTourScenario == null,
+        onRendererStatus = { rendererStatus = it },
+        mapStyle = mapStyle,
+        coverageMaskDarkness = coverageMaskDarkness,
+        windGrid = (ancillaryStatuses[RadarMapLayer.WIND] as? AncillaryStatus.Wind)?.grid,
+        windArrowScale = windArrowScale,
+        windRenderToken = windRenderToken,
+        onWindRenderObservation = onWindRenderObservation,
+        onWindRendererReset = onWindRendererReset,
+        satelliteCatalogs = listOfNotNull(
+            ancillaryStatuses[RadarMapLayer.FOG] as? AncillaryStatus.Satellite,
+            ancillaryStatuses[RadarMapLayer.LIGHTNING] as? AncillaryStatus.Satellite,
+        ).flatMap(AncillaryStatus.Satellite::catalog),
+        enabledSatelliteLayers = enabledMapLayers.filterTo(mutableSetOf()) {
+            it == RadarMapLayer.FOG || it == RadarMapLayer.LIGHTNING
+        },
+        satelliteDisplayEpochSeconds =
+            (timelineStartEpochSeconds + safeCursor.toDouble()).toLong(),
+        satelliteTimelineStartEpochSeconds = timelineStartEpochSeconds,
+        satelliteTimelineEndEpochSeconds = timelineStartEpochSeconds + endOffset.toLong(),
+        satelliteWeather = currentWeather,
+        onSatellitePreparation = { layer, status ->
+            satellitePreparation = satellitePreparation.toMutableMap().apply {
+                if (status == null) remove(layer) else put(layer, status)
+            }
+        },
+        onLayerError = onLayerError,
+        onMapStyleError = { mapStyleError = it },
+        rendererRecoveryGeneration = rendererRecoveryGeneration,
+        onMapPreparing = { mapPreparing = it },
+        onWindViewportChanged = onWindViewportChanged,
+        onRadarTierChanged = { displayedRadarTier = it },
+        entryTransition = entryTransition,
+        entryFocusEnabled = entryFocusEnabled,
+        entryFocusDurationMillis = entryFocusDurationMillis,
+        onEntryAnimationStart = onEntryAnimationStart,
+        markerScale = markerScale,
+    ))
+    Box(
         modifier = Modifier.fillMaxWidth().weight(1f)
-            .onGloballyPositioned { onMapBoundsChanged(it.boundsInRoot()) },
+            .onGloballyPositioned { onMapBoundsChanged(it.boundsInRoot()) }
+            .clip(RoundedCornerShape(22.dp))
+            .background(Surface),
     ) {
-        BoxWithConstraints(Modifier.fillMaxSize()) {
+            // Keep the stateful native renderer outside the overlay's BoxWithConstraints
+            // subcomposition. Travel inserts and removes short-lived overlay/status content; a
+            // new constraint-content lambda must not be allowed to discard a healthy MapView.
+            key("radar-native-map") { RadarNativeMap(currentNativeMapInputs.value) }
+            BoxWithConstraints(Modifier.fillMaxSize()) {
             val mapWidthDp = maxWidth.value.toInt()
-            RadarImageMap(
-                session,
-                realBracket,
-                mapPlace,
-                markerPlace = markerPlace,
-                followLive = RadarLiveMapPolicy.shouldCenterOnFix(
-                    selectedPlaceId, if (hasFreshLiveFix) markerPlace else null, followLive),
-                liveFixElapsedRealtimeNanos = liveFixElapsedRealtimeNanos,
-                onManualCameraGesture = { if (followLive) onFollowLiveChange(false) },
-                onLongPress = onLongPress,
-                recenterSignal = currentRecenterTick,
-                cameraMemory = cameraMemory,
-                isPlaying = playing,
-                radarPresentationVisible = featureTourScenario == null,
-                onRendererStatus = { rendererStatus = it },
-                mapStyle = mapStyle,
-                coverageMaskDarkness = coverageMaskDarkness,
-                windGrid = (ancillaryStatuses[RadarMapLayer.WIND] as? AncillaryStatus.Wind)?.grid,
-                windArrowScale = windArrowScale,
-                windRenderToken = windRenderToken,
-                onWindRenderObservation = onWindRenderObservation,
-                onWindRendererReset = onWindRendererReset,
-                satelliteCatalogs = listOfNotNull(
-                    ancillaryStatuses[RadarMapLayer.FOG] as? AncillaryStatus.Satellite,
-                    ancillaryStatuses[RadarMapLayer.LIGHTNING] as? AncillaryStatus.Satellite,
-                ).flatMap(AncillaryStatus.Satellite::catalog),
-                enabledSatelliteLayers = enabledMapLayers.filterTo(mutableSetOf()) {
-                    it == RadarMapLayer.FOG || it == RadarMapLayer.LIGHTNING
-                },
-                satelliteDisplayEpochSeconds =
-                    (timelineStartEpochSeconds + safeCursor.toDouble()).toLong(),
-                satelliteTimelineStartEpochSeconds = timelineStartEpochSeconds,
-                satelliteTimelineEndEpochSeconds = timelineStartEpochSeconds + endOffset.toLong(),
-                satelliteWeather = currentWeather,
-                onSatellitePreparation = { layer, status ->
-                    satellitePreparation = satellitePreparation.toMutableMap().apply {
-                        if (status == null) remove(layer) else put(layer, status)
-                    }
-                },
-                onLayerError = onLayerError,
-                onMapStyleError = { mapStyleError = it },
-                onWindViewportChanged = onWindViewportChanged,
-                onRadarTierChanged = { displayedRadarTier = it },
-                entryTransition = entryTransition,
-                entryFocusEnabled = entryFocusEnabled,
-                entryFocusDurationMillis = entryFocusDurationMillis,
-                onEntryAnimationStart = onEntryAnimationStart,
-                markerScale = markerScale,
-            )
             featureTourScenario?.let { scenario ->
                 FeatureTourRadarOverlay(
                     scenario = scenario,
@@ -2191,7 +2701,7 @@ private fun ColumnScope.RadarPlayer(
                     .padding(horizontal = 4.dp),
             )
             Row(Modifier.align(Alignment.TopEnd).padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { onFollowLiveChange(!followLive) },
+                IconButton(onClick = { onFollowLiveChange(true) },
                     modifier = Modifier.size(RadarTopControlsPolicy.controlSizeDp.dp)
                         .featureTourTarget(
                             FeatureTourTarget.RADAR_TRAVEL,
@@ -2202,12 +2712,12 @@ private fun ColumnScope.RadarPlayer(
                         )) {
                     Icon(Icons.Default.Navigation,
                         contentDescription = stringResource(
-                            if (followLive) R.string.radar_follow_stop else R.string.radar_follow_start,
+                            R.string.radar_follow_start,
                         ),
                         tint = if (followLive) Accent.copy(alpha = 0.85f)
                             else if (darkMap) Color.White else Color.Black)
                 }
-                IconButton(onClick = onRefresh) {
+                IconButton(onClick = refreshMapAndData) {
                     Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.radar_refresh),
                         tint = if (darkMap) Color.White else Color.Black)
                 }
@@ -2219,7 +2729,12 @@ private fun ColumnScope.RadarPlayer(
                         tint = if (darkMap) Color.White else Color.Black)
                 }
             }
-            RadarLayerSegments(enabledMapLayers, darkMap, setMapLayerEnabled,
+            RadarLayerSegments(
+                enabledMapLayers,
+                darkMap,
+                setMapLayerEnabled,
+                lightningControlState,
+                onLightningControlTap,
                 Modifier.align(Alignment.TopEnd).padding(
                     top = RadarTopControlsPolicy.segmentTopDp.dp,
                     end = RadarTopControlsPolicy.controlsEndDp.dp,
@@ -2229,7 +2744,8 @@ private fun ColumnScope.RadarPlayer(
                     cornerRadiusDp = 12f,
                     paddingDp = 3f,
                     onBounds = onFeatureTourTarget,
-                ))
+                ),
+            )
             RadarLayerStatuses(
                 enabledMapLayers, currentWeather, mapWidthDp,
                 Modifier.align(Alignment.TopEnd).padding(
@@ -2238,12 +2754,15 @@ private fun ColumnScope.RadarPlayer(
             RadarOperationalStatusStack(
                 preparationEntries,
                 mapWidthDp,
+                travelNoticeActivationToken = travelNoticeActivationToken,
+                temporaryLightningNoticePending = temporaryLightningNoticePending,
+                automaticCurrentTimeUnavailable = automaticCurrentTimeUnavailable,
                 Modifier.align(Alignment.BottomEnd).padding(
                     end = RadarPreparationStackPolicy.endInsetDp.dp,
                     bottom = RadarPreparationStackPolicy.bottomInsetDp.dp,
                 ),
             )
-        }
+            }
     }
     Column(
         Modifier.fillMaxWidth().featureTourTarget(
@@ -2262,6 +2781,10 @@ private fun ColumnScope.RadarPlayer(
         IconButton(
             onClick = {
                 if (featureTourScenario == null) {
+                    TravelModeDiagnostics.record(
+                        followLive, followLive, RadarTravelTransitionReason.TIMELINE_MANUAL,
+                    )
+                    travelTimeAutomatic = false
                     if (!playing) chartTimeRequest?.let { onChartTimeConsumed(it.token) }
                     playing = !playing
                 } else {
@@ -2278,8 +2801,9 @@ private fun ColumnScope.RadarPlayer(
                 ),
             )
         }
+        val timelineSliderValue = travelTimelineFrame?.displayCursorSeconds ?: safeCursor
         Slider(
-            value = safeCursor,
+            value = timelineSliderValue,
             onValueChange = {
                 chartTimeRequest?.let { request -> onChartTimeConsumed(request.token) }
                 if (featureTourScenario != null) {
@@ -2287,8 +2811,19 @@ private fun ColumnScope.RadarPlayer(
                         ?.coerceIn(0f, endOffset) ?: safeCursor
                     tourPlaying = false
                 } else {
-                    cursor = it.takeIf { value -> value.isFinite() }
-                        ?.coerceIn(0f, endOffset) ?: safeCursor
+                    TravelModeDiagnostics.record(
+                        followLive, followLive, RadarTravelTransitionReason.TIMELINE_MANUAL,
+                    )
+                    val finite = it.takeIf { value -> value.isFinite() } ?: timelineSliderValue
+                    cursor = travelTimelineFrame?.let { frame ->
+                        RadarTravelTimelinePolicy.dataCursorForManualSelection(
+                            finite,
+                            frame,
+                            times.first(),
+                            times.first() + endOffset.toLong(),
+                        )
+                    } ?: finite.coerceIn(0f, endOffset)
+                    travelTimeAutomatic = false
                     playing = false
                 }
             },
@@ -2299,15 +2834,41 @@ private fun ColumnScope.RadarPlayer(
                 stateDescription = label
             },
         )
+        if (travelTimeAutomatic) {
+            Text(
+                text = stringResource(R.string.radar_travel_auto_badge),
+                color = Accent,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                modifier = Modifier
+                    .background(Accent.copy(alpha = 0.14f), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 6.dp, vertical = 3.dp)
+                    .semantics {
+                        contentDescription = travelAutoAccessibility
+                    },
+            )
+        }
     }
     if (hasRadarSession && endOffset > 0f) {
         val configuration = androidx.compose.ui.platform.LocalConfiguration.current
         val use24Hour = DateFormat.is24HourFormat(context)
         val locale = configuration.locales[0]
-        val ticks = remember(session, featureTourScenario, endOffset, use24Hour, locale) {
+        val tickStart = travelTimelineFrame?.displayStartEpochSeconds ?: times.first()
+        val tickEnd = travelTimelineFrame?.displayEndEpochSeconds ?:
+            (times.first() + endOffset.toLong())
+        val ticks = remember(
+            session,
+            featureTourScenario,
+            endOffset,
+            use24Hour,
+            locale,
+            tickStart,
+            tickEnd,
+        ) {
             RadarTimelineTicks.between(
-                times.first(),
-                times.first() + endOffset.toLong(),
+                tickStart,
+                tickEnd,
                 ZoneId.systemDefault(),
                 use24Hour,
                 locale,
@@ -2317,7 +2878,10 @@ private fun ColumnScope.RadarPlayer(
         RadarTimelineTickRow(
             ticks = ticks,
             color = secondaryColor,
-            modifier = Modifier.fillMaxWidth().height(21.dp).padding(start = 54.dp),
+            modifier = Modifier.fillMaxWidth().height(21.dp).padding(
+                start = 54.dp,
+                end = if (travelTimeAutomatic) 44.dp else 0.dp,
+            ),
         )
     } else Spacer(Modifier.fillMaxWidth().height(21.dp))
     }
