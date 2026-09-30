@@ -14,14 +14,16 @@ onboarding. The work below remains deliberately deferred until real-world use ju
 2. **Alert refinement**
    - Validate ETA ranges and per-place deduplication against real rain bands.
    - Consider configurable quiet hours after notification usability testing.
-3. **Home-screen glance — maybe**
-   - Consider an Android Glance widget only after demonstrated demand. It could show the latest
-     cached state for the active selected place, its last-check time and next-rain estimate, with a
-     manual refresh action.
-   - A widget would not keep the app continuously running, improve WorkManager guarantees, grant
-     background location, monitor every saved place or bypass force-stop/Doze. Rain Notification
-     already checks the active saved place approximately every 15 minutes while the app is closed;
-     Current location still requires a sufficiently fresh lawful foreground fix.
+   - Implement the separately specified, default-off
+     [Lightning activity alert and Radar hand-off](LIGHTNING_ALERT_REQUIREMENTS.md). This remains
+     planned work, not current app behaviour.
+3. **Home-screen widget — planned**
+   - Implement the concrete [Android widget requirements](WIDGET_REQUIREMENTS.md): independently
+     configured fixed/Follow locations, a Now-derived mini Compass disc, responsive 1×1 through
+     4×1 layouts, rain/lightning state, bounded polling and per-widget opacity.
+   - The widget remains planned, not current behaviour. It will not keep the app continuously
+     running, improve WorkManager guarantees, grant background location or bypass force-stop/Doze.
+     Current location will still require a sufficiently fresh lawful foreground fix.
 4. **Accessibility and polish**
    - Continue TalkBack traversal and content-description review.
    - Expand font-scale, contrast, reduced-motion, tablet, foldable and landscape QA.
