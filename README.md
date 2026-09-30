@@ -9,20 +9,11 @@ analytics.
 [Download the latest release](https://github.com/Undert0e-505/RainAlarm/releases/latest) ·
 [What’s new in v0.9.0](docs/releases/v0.9.0.md) · [User guide](docs/USER_GUIDE.md)
 
-## Widgets for the places that matter
+## See Radar in motion
 
-Each widget monitors one saved place independently of the place open in the app. A compact widget
-can show rain arrival, current rain, direction, intensity, nearby lightning or temperature when
-dry. Wider layouts add stop/window detail when known and a next-hour graph. Widgets refresh without
-opening Rain Alarm, subject to Android's inexact background scheduling and device battery policy.
-
-| Rain and lightning | Compact rain |
+| Radar · Dark | Radar · Light |
 | :---: | :---: |
-| [<img src="docs/screenshots/widget-rain-lightning-full.png" width="430" alt="Full-width Hiersac widget showing severe rain in two minutes, nearby lightning, rain direction, and the next-hour graph">](docs/screenshots/widget-rain-lightning-full.png) | [<img src="docs/screenshots/widget-rain-compact.png" width="150" alt="Compact rain widget showing a two-minute severe-rain countdown and direction marker">](docs/screenshots/widget-rain-compact.png) |
-| Arrival, severity, nearby lightning, direction and the next-hour shape in one row. | Countdown, intensity colour and direction in a 1×1 glance. |
-| Full dry outlook | Compact dry |
-| [<img src="docs/screenshots/widget-dry-full.png" width="430" alt="Full-width Uttlesford widget showing 17 degrees and a flat clear next-hour graph">](docs/screenshots/widget-dry-full.png) | [<img src="docs/screenshots/widget-dry-compact.png" width="150" alt="Compact dry widget showing a temperature-only reading of 19 degrees">](docs/screenshots/widget-dry-compact.png) |
-| Saved-place temperature with the available next-hour outlook. | A temperature-only glance with no ambiguous fallback mark. |
+| [<img src="docs/screenshots/radar-dark-baltinglass.gif" width="250" alt="Animated dark Radar screen for Baltinglass showing a complete observation-to-forecast rain timeline sweep">](docs/screenshots/radar-dark-baltinglass.gif) | [<img src="docs/screenshots/radar-light-baltinglass.gif" width="250" alt="Animated light Radar screen for Baltinglass showing a complete observation-to-forecast rain timeline sweep">](docs/screenshots/radar-light-baltinglass.gif) |
 
 ## Travel keeps Radar current
 
@@ -40,12 +31,6 @@ appear in widgets, combine with a newly eligible rain alert, and open the exact 
 Radar with Lightning temporarily visible. It is observed satellite activity—not a strike forecast
 or safety warning. See [Lightning alert behavior](docs/LIGHTNING_ALERT_REQUIREMENTS.md) and
 [data-source constraints](docs/DATA_SOURCES.md#optional-eumetsat-satellite-layers).
-
-## See Radar in motion
-
-| Radar · Dark | Radar · Light |
-| :---: | :---: |
-| [<img src="docs/screenshots/radar-dark-baltinglass.gif" width="250" alt="Animated dark Radar screen for Baltinglass showing a complete observation-to-forecast rain timeline sweep">](docs/screenshots/radar-dark-baltinglass.gif) | [<img src="docs/screenshots/radar-light-baltinglass.gif" width="250" alt="Animated light Radar screen for Baltinglass showing a complete observation-to-forecast rain timeline sweep">](docs/screenshots/radar-light-baltinglass.gif) |
 
 ## What else is included
 
@@ -78,6 +63,21 @@ permission and upgrade details.
 | [<img src="docs/screenshots/now-baltinglass.jpg" width="250" alt="Now screen for Baltinglass showing rain arrival, direction, weather readings, and the next 48 minutes">](docs/screenshots/now-baltinglass.jpg) | [<img src="docs/screenshots/places-baltinglass.jpg" width="250" alt="Places screen with Baltinglass selected, place search, map selection, and live current location">](docs/screenshots/places-baltinglass.jpg) |
 | Settings · providers and indicators | Settings · playback and appearance |
 | [<img src="docs/screenshots/settings-providers.jpg" width="250" alt="Settings for rain notifications, preferred radar provider, and Now weather indicators">](docs/screenshots/settings-providers.jpg) | [<img src="docs/screenshots/settings-appearance.jpg" width="250" alt="Settings for radar playback speed and app, map, compass, and graph appearance">](docs/screenshots/settings-appearance.jpg) |
+
+## Widgets for the places that matter
+
+Each widget monitors one saved place independently of the place open in the app. A compact widget
+can show rain arrival, current rain, direction, intensity, nearby lightning or temperature when
+dry. Wider layouts add stop/window detail when known and a next-hour graph. Widgets refresh without
+opening Rain Alarm, subject to Android's inexact background scheduling and device battery policy.
+
+| Rain and lightning | Compact rain |
+| :---: | :---: |
+| [<img src="docs/screenshots/widget-rain-lightning-full.png" width="430" alt="Full-width Hiersac widget showing severe rain in two minutes, nearby lightning, rain direction, and the next-hour graph">](docs/screenshots/widget-rain-lightning-full.png) | [<img src="docs/screenshots/widget-rain-compact.png" width="150" alt="Compact rain widget showing a two-minute severe-rain countdown and direction marker">](docs/screenshots/widget-rain-compact.png) |
+| Arrival, severity, nearby lightning, direction and the next-hour shape in one row. | Countdown, intensity colour and direction in a 1×1 glance. |
+| Full dry outlook | Compact dry |
+| [<img src="docs/screenshots/widget-dry-full.png" width="430" alt="Full-width Uttlesford widget showing 17 degrees and a flat clear next-hour graph">](docs/screenshots/widget-dry-full.png) | [<img src="docs/screenshots/widget-dry-compact.png" width="150" alt="Compact dry widget showing a temperature-only reading of 19 degrees">](docs/screenshots/widget-dry-compact.png) |
+| Saved-place temperature with the available next-hour outlook. | A temperature-only glance with no ambiguous fallback mark. |
 
 ## Documentation
 
