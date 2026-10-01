@@ -1,6 +1,6 @@
 # Road to 1.0
 
-Rain Alarm 0.9.0 is feature-complete for its intended scope: Now, multi-provider Radar, saved
+Rain Alarm 0.9.1 is feature-complete for its intended scope: Now, multi-provider Radar, saved
 places, independent home-screen widgets, foreground Travel, rain/Lightning alerts, appearance
 profiles, localization and contextual onboarding. Work toward 1.0 now prioritizes reliability and
 validation rather than additional features.
@@ -12,12 +12,13 @@ validation rather than additional features.
      reloads and poor-network recovery on representative Android devices.
    - Keep last-good weather visible through replacement work and preserve truthful loading,
      preparing and unavailable states.
-2. **Travel follow smoothness**
-   - Improve and validate real-device marker/camera cadence. Rain Alarm asks Android for frequent
-     foreground fixes, but some phones currently present movement at roughly one update per second
-     and the best-effort visual tracker does not consistently improve that on physical hardware.
-   - Preserve AUTO's exact wall-clock timeline, bounded weather anchors and the rule that only real
-     accepted fixes may affect weather, alerts, places or persistence.
+2. **Travel follow validation**
+   - Validate the 0.9.1 display-frame position/camera follower across different GNSS cadences,
+     prolonged journeys and devices with aggressive foreground throttling.
+   - Verify that finger pan/pinch always suspends follow, Travel/recenter resumes from the newest
+     cached fix, and AUTO/manual timeline ownership remains independent of camera ownership.
+   - Preserve bounded weather anchors and the rule that only real accepted fixes may affect
+     weather, alerts, places or persistence; display-only smoothing must remain presentation-only.
 3. **Widget and notification reliability**
    - Validate saved-place widget refresh, minute presentation updates, quiet hours and rain/
      Lightning episode deduplication across Samsung-, Pixel- and other OEM launchers.

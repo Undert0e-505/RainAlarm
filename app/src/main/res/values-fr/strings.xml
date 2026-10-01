@@ -18,6 +18,7 @@
     <string name="now_refresh">Actualiser la prévision radar</string><string name="now_next_hour">Prochaine heure</string><string name="now_now">Maintenant</string><string name="now_no_rain">Pas de pluie</string><string name="now_from">Depuis %1$s</string><string name="now_raining">Il pleut maintenant</string><string name="now_snow_likely">Neige probable</string><string name="now_rain_in">La pluie commence dans</string><string name="now_snow_in">Neige probable dans</string><string name="now_no_rain_yet">Pas encore de pluie détectée</string><string name="now_no_rain_hour">Pas de pluie prévue dans l’heure</string><string name="now_sunrise">Lever du soleil</string><string name="now_sunset">Coucher du soleil</string><string name="now_severe">Forte</string><string name="now_medium">Modérée</string><string name="now_light">Faible</string>
 <string name="notification_channel_name">Alertes pluie et foudre</string><string name="notification_channel_description">Alertes discrètes pour la pluie en approche et l’activité électrique observée à proximité</string><string name="notification_rain_title">Pluie en approche à %1$s</string><string name="notification_snow_title">Neige probable en approche à %1$s</string><string name="notification_eta">Dans %1$d min · vers %2$s</string><string name="notification_detail">%1$s · environ %2$d min ; intensité maximale %3$d%%</string>
     <plurals name="notification_eta_plural"><item quantity="one">Dans %1$d minute · vers %2$s</item><item quantity="many">Dans %1$d minutes · vers %2$s</item><item quantity="other">Dans %1$d minutes · vers %2$s</item></plurals>
+    <plurals name="notification_starts_eta_plural"><item quantity="one">Début à %1$s · dans %2$d minute</item><item quantity="many">Début à %1$s · dans %2$d minutes</item><item quantity="other">Début à %1$s · dans %2$d minutes</item></plurals><string name="notification_bounded_detail">%1$s · durée d’environ %2$d min · intensité maximale %3$d%%</string><string name="notification_duration_detail">%1$s · durée d’environ %2$d min</string><string name="notification_unbounded_detail">%1$s · au moins %2$d%%</string><string name="notification_rain_now_title">Pluie maintenant à %1$s</string><string name="notification_snow_now_title">Neige probable maintenant à %1$s</string><plurals name="notification_stops_remaining_plural"><item quantity="one">Fin prévue à %1$s · environ %2$d minute restante</item><item quantity="many">Fin prévue à %1$s · environ %2$d minutes restantes</item><item quantity="other">Fin prévue à %1$s · environ %2$d minutes restantes</item></plurals><string name="notification_intensity_at_least">Au moins %1$d%%</string><string name="notification_peak_detail">%1$s · intensité maximale %2$d%%</string>
     <string name="places_switch_description">Choisir un lieu; sélection actuelle : %1$s</string>
     <string name="common_expanded">Développé</string><string name="common_collapsed">Réduit</string><string name="common_active_label">Actif</string><string name="common_source_terms">Source / conditions</string>
     <string name="places_search_failed">Échec de la recherche du lieu</string><string name="places_permission_denied">L’autorisation de localisation n’a pas été accordée. Votre sélection enregistrée reste inchangée.</string><string name="places_search_sources">Villes : Open-Meteo · Lieux nommés : Photon/OSM + Wikipédia · Codes postaux britanniques : postcodes.io</string>
@@ -96,7 +97,7 @@
     <string name="notification_lightning_detail">Une activité électrique a été détectée dans un rayon de %1$d km.</string>
     <string name="notification_combined_title">Pluie en approche de %1$s · activité électrique à proximité</string>
     <string name="notification_combined_summary">%1$s · activité électrique détectée</string>
-    <string name="notification_combined_detail">%1$s. Une activité électrique a été détectée dans un rayon de %2$d km ; il ne s’agit pas d’une prévision d’impact.</string>
+    <string name="notification_combined_detail">%1$s · Une activité électrique a été détectée dans un rayon de %2$d km.</string>
     <string name="notification_rain_approaching">Pluie en approche</string>
     <string name="widget_description">Widget météo Rain Alarm</string>
     <string name="widget_tap_to_configure">Touchez pour configurer</string>
@@ -130,6 +131,10 @@
     <string name="widget_preview_description">Aperçu du widget avec un arrière-plan opaque à %1$d pour cent</string>
     <string name="widget_preview_place">Lieu d’exemple</string>
     <string name="widget_quiet_hours_heading">NOTIFICATIONS</string>
+    <string name="widget_notifications">Notifications du widget</string>
+    <string name="widget_notifications_help">Alerter pour chaque nouvel épisode de pluie à l’emplacement de ce widget.</string>
+    <string name="widget_include_lightning">Inclure la foudre</string>
+    <string name="widget_include_lightning_help">Alerter aussi lorsqu’une activité électrique est détectée dans un rayon de 15 km.</string>
     <string name="widget_quiet_hours">Ne pas déranger</string>
     <string name="widget_quiet_off">Ne pas déranger · Désactivé</string>
     <string name="widget_quiet_summary">Ne pas déranger · %1$s–%2$s</string>
@@ -146,4 +151,8 @@
     <string name="radar_travel_auto_badge">AUTO</string>
     <string name="radar_travel_auto_accessibility">Heure de voyage automatique</string>
     <string name="radar_current_time_unavailable">Heure radar actuelle indisponible</string>
+<string name="notification_rain_severity_title">Pluie %1$s en approche à %2$s</string>
+<string name="notification_snow_severity_title">Neige %1$s probablement en approche à %2$s</string>
+<string name="notification_rain_now_severity_title">Pluie %1$s maintenant à %2$s</string>
+<string name="notification_snow_now_severity_title">Neige %1$s probablement maintenant à %2$s</string>
 </resources>

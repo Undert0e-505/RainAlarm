@@ -1,10 +1,12 @@
 # Lightning activity alert requirements
 
-> **Status: implemented in Rain Alarm 0.9.0.** This remains the normative engineering description
+> **Status: implemented in Rain Alarm 0.9.1.** This remains the normative engineering description
 > of the app-level lightning activity alert and Radar deep-link behaviour. It is deliberately
 > separate from the [home-screen widget requirements](WIDGET_REQUIREMENTS.md): lightning alerts
-> work when no widget has been added. Device and live-provider validation continues on the road to
-> 1.0.
+> work when no widget has been added. Notification settings, component eligibility, wording and
+> cross-source suppression are authoritative in
+> [App and widget notification requirements](NOTIFICATION_REQUIREMENTS.md). Device and live-provider
+> validation continues on the road to 1.0.
 
 ## Objective
 
@@ -21,7 +23,7 @@ This is an observation feature, not a strike forecast or a safety warning.
 | --- | --- |
 | Settings | Add **Lightning activity notification** directly below **Rain notification** in Settings. |
 | Default | The Lightning switch is **off** on a fresh install and after upgrade when no explicit choice exists. |
-| Independence | The switch controls alert eligibility, independently of Radar and widget display choices. |
+| Independence | The switch controls only app-subscription eligibility, independently of Radar and every widget's controls/display. |
 | Detection distance | The default detection radius is **15 km** from the resolved target coordinate. |
 | Source | EUMETSAT `mtg_fd:li_afa`, evaluated as observed five-minute accumulated flash areas. |
 | Repetition | Notify once per lightning episode; a successfully observed no-detection interval must re-arm it. |
@@ -56,9 +58,8 @@ authoritative.
 
 ## Settings and permission behaviour
 
-- The Lightning switch is persisted separately from **Rain notification**. Either notification
-  type can be enabled without the other. It controls Lightning **alert eligibility**, not whether a
-  configured widget can request and display lightning state.
+- The app Lightning switch is persisted separately from **Rain notification**. Either app
+  subscription can be enabled without the other. It does not govern any widget subscription.
 - On first install and on upgrade from a version without this preference, Lightning is off.
 - Enabling it uses Android's existing notification runtime-permission flow. If permission is
   denied, the switch returns to off and Settings explains that notification permission is needed.
@@ -70,15 +71,15 @@ authoritative.
   permission is granted.
 - Enabling Lightning does not change the persistent Radar Lightning layer choice. Toggling the
   Radar layer does not change the alert switch.
-- Disabling Lightning prevents lightning notifications and cancels lightning-only **alert** work.
-  A configured widget mode/layout that requires lightning may still acquire and evaluate the same
-  observations for display, but that result cannot notify or be folded into a rain notification.
+- Disabling app Lightning prevents app Lightning notifications. A wider widget may still acquire
+  and display observations, and a widget with its own Include lightning choice may notify.
 - Disabling the switch does not clear widget display configuration, the persistent Radar Lightning
   layer choice or rain-alert state.
-- If the alert switch is off and no configured widget currently requires lightning, perform no
+- If the app switch is off and no configured widget display or per-widget notification requires lightning, perform no
   background Lightning acquisition or evaluation.
-- Display-only evaluation can update shared acquisition checkpoints and widget cache, but it must
-  not arm, disarm or otherwise advance the separate notification episode state.
+- Display-only evaluation can update shared evidence/checkpoints and widget cache, but it must not
+  consume a subscription event, create a delivered claim or otherwise make a later eligible
+  notification ineligible.
 - The setting and status text must be localized with the rest of Settings.
 
 ## Monitored targets and location resolution
@@ -113,8 +114,9 @@ to request no background-location permission, foreground location service, exact
 persistent location notification.
 
 The target key used for persistence must distinguish different resolved coordinates and radius
-configurations while allowing two widget instances that resolve to the same place/configuration to
-deduplicate work and notifications.
+configurations while allowing instances at the same place/configuration to deduplicate acquisition.
+Per-widget delivery remains independent; only the symmetric app/widget claim rule can suppress a
+different source class.
 
 ## Acquisition and detection
 
@@ -206,18 +208,21 @@ Persist notification delivery eligibility, last considered/consumed event and DN
 monitoring subscription. That delivery layer must not duplicate target evidence merely because two
 widgets resolve to the same place.
 
-State must survive process recreation and device restart. Updates to frame checkpoints, episode
-state and notification decisions must be atomic so overlapping foreground and WorkManager checks
-cannot both notify. App-alert work and multiple widgets resolving to the same target/configuration
-must share one evidence record and emit at most one notification per target/event, while preserving
-each subscription's delivery/consumed state. Removing one widget must not erase evidence still
-referenced by another widget or by the app alert target.
+State must survive process recreation and device restart. Updates to frame checkpoints, episode,
+subscription and delivered-claim state must be coordinated so overlapping foreground and
+WorkManager checks cannot create cross-source duplicates. Same-target widgets share evidence but
+retain independent delivery; one widget does not suppress a sibling. Removing one widget must not
+erase evidence still referenced by another widget or by the app alert target.
 
 ## Rain interaction and notification content
 
-When lightning is required by an enabled alert or widget display, it is evaluated for the same
+Exact content, component combination and symmetric first-successful app/widget suppression are
+defined in [App and widget notification requirements](NOTIFICATION_REQUIREMENTS.md); this section
+defines the Lightning observation facts that feed that decision.
+
+When lightning is required by an enabled app/widget subscription or widget display, it is evaluated for the same
 frozen target as rain in one coordinated polling transaction. Their arming state remains
-independent. Display-only lightning evaluation while its notification switch is off never enters
+independent. Display-only lightning evaluation while the relevant notification control is off never enters
 the notification decision path.
 
 - If rain and alert-enabled lightning both newly qualify in the same transaction, issue one
@@ -226,10 +231,10 @@ the notification decision path.
 - If Lightning was already notified and a separately eligible rain episode later approaches, Rain can
   notify without repeating Lightning as a new event. The current nearby-lightning fact may be shown
   as secondary context, but must not sound twice.
-- The app's selected-place Rain notification keeps its established immediate approaching-rain and
-  cooldown/deduplication behaviour. Only widget monitoring subscriptions require an earlier
-  successful complete-clear 0–60 minute evaluation before their next rain episode can notify. See
-  [Widget alerts](WIDGET_REQUIREMENTS.md#alerts-and-notification-state).
+- The app's selected-place Rain subscription keeps immediate approaching/rain-now eligibility;
+  widget subscriptions require an earlier successful complete-clear 0–60 minute evaluation.
+  Episode correlation, consumption and symmetric first-successful app/widget suppression are
+  defined by [App and widget notification requirements](NOTIFICATION_REQUIREMENTS.md).
 - Likely-snow wording continues to come only from a provider that supports that classification.
 
 For an alert-eligible widget subscription, notification delivery also honours its
@@ -238,8 +243,7 @@ stop Lightning observation acquisition, widget display or target-level episode p
 qualifying Lightning event is first processed while that subscription is quiet, consume it for that
 subscription without delivery; do not queue it or issue a catch-up notification when quiet hours
 end. Continued activity remains part of the same consumed episode until a later successful
-no-detection evaluation re-arms it. The global default-off Lightning notification switch remains a
-prerequisite for any Lightning notification regardless of DND.
+  no-detection evaluation re-arms it. App and widget Lightning controls remain independent.
 
 Example notification forms:
 
@@ -247,8 +251,9 @@ Example notification forms:
 - **Rain approaching Baltinglass · lightning activity detected nearby**
 
 Content must include the monitored place name and remain concise in collapsed notification form.
-The expanded form can state the 15 km distance. Notification IDs/PendingIntents must be unique per
-target/event so a later alert cannot cause an older card to open the wrong place.
+The shared Lightning detail states the 15 km distance without extra qualification. Notification
+IDs/PendingIntents must be unique per target/subscription/event so a later alert cannot cause an
+older card to open the wrong place.
 
 ## Notification tap and temporary Radar state
 

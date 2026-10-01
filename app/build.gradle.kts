@@ -12,8 +12,8 @@ android {
         applicationId = "com.rainalarm.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 20
-        versionName = "0.9.0"
+        versionCode = 21
+        versionName = "0.9.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -132,6 +132,7 @@ tasks.register<JavaExec>("directDebugUnitTest") {
         "com.rainalarm.app.ui.RadarLiveSessionPolicyTest",
         "com.rainalarm.app.ui.RadarLiveMapPolicyTest",
         "com.rainalarm.app.ui.RadarLiveMapWiringTest",
+        "com.rainalarm.app.ui.RadarTravelCameraFollowerTest",
         "com.rainalarm.app.ui.RadarRefreshOverlayPolicyTest",
         "com.rainalarm.app.ui.WeatherDataStatusPolicyTest",
         "com.rainalarm.app.ui.RadarMapRevealGateTest",
@@ -155,6 +156,7 @@ tasks.register<JavaExec>("directDebugUnitTest") {
         "com.rainalarm.app.BacklogFeatureWiringTest",
         "com.rainalarm.app.alerts.LightningDetectionPolicyTest",
         "com.rainalarm.app.alerts.MonitoringPoliciesTest",
+        "com.rainalarm.app.alerts.NotificationRequirementsTest",
         "com.rainalarm.app.alerts.RadarLightningControlPolicyTest",
         "com.rainalarm.app.widget.WidgetPoliciesTest",
         "com.rainalarm.app.widget.WidgetInitialRefreshPolicyTest",

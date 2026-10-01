@@ -54,10 +54,11 @@ internal object RadarPlaybackRefreshPolicy {
 
 /** Keeps successive Follow camera movements smooth without building an animation queue. */
 internal object RadarFollowCameraPolicy {
-    const val defaultDurationMillis = 200
-    // Match Travel's visual presentation cadence. Every target supersedes the previous ease;
-    // measured coordinates and bounded visual-only projections use the same camera path.
-    const val minimumDurationMillis = 200
+    // Keep native camera motion running slightly beyond Travel's 200 ms presentation tick. A new
+    // target then retargets the in-flight ease from its current visual position instead of leaving
+    // a pause between sparse platform fixes.
+    const val defaultDurationMillis = 300
+    const val minimumDurationMillis = 300
     const val maximumDurationMillis = 1_200
 
     fun durationMillis(previousElapsedNanos: Long, currentElapsedNanos: Long): Int {

@@ -33,16 +33,12 @@ internal object WidgetPresentationTickPolicy {
         (nextMinuteBoundary(clock).toEpochMilli() - clock.millis()).coerceAtLeast(1L)
 
     fun requiresTick(
-        config: RainAlarmWidgetConfig,
+        @Suppress("UNUSED_PARAMETER") config: RainAlarmWidgetConfig,
         snapshot: WidgetWeatherSnapshot?,
-        widthDp: Int,
+        @Suppress("UNUSED_PARAMETER") widthDp: Int,
         nowEpochSeconds: Long,
     ): Boolean {
         val series = snapshot?.rainSeries(nowEpochSeconds) ?: return false
-        val displaysRain = WidgetResponsivePolicy.sizeClass(widthDp) != WidgetSizeClass.COMPACT ||
-            config.primaryContent == WidgetPrimaryContent.SMART ||
-            config.primaryContent == WidgetPrimaryContent.RAIN
-        if (!displaysRain) return false
         // Approaching/current precipitation changes countdown, intensity and stop state. A clear
         // complete series also needs one final repaint when its truthful prediction horizon ends.
         return WeatherPresentationPolicy.from(series, snapshot.temperatureC).kind !=

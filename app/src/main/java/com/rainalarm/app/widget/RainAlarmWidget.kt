@@ -239,7 +239,7 @@ private fun CompactWidget(
     val bitmap = WidgetBitmapRenderer.compass(context, face, palette, 150)
     Image(
         ImageProvider(bitmap),
-        contentDescription = widgetDescription(context, snapshot),
+        contentDescription = widgetDescription(context, snapshot, includeLightning = false),
         modifier = GlanceModifier.fillMaxSize(),
         contentScale = ContentScale.Fit,
     )
@@ -294,7 +294,7 @@ private fun TextBearingWidget(
                     WidgetGraphLayoutPolicy.pixels(compassDiameterDp, density),
                 ),
             ),
-            contentDescription = widgetDescription(context, snapshot),
+            contentDescription = widgetDescription(context, snapshot, includeLightning = true),
             modifier = GlanceModifier.size(compassDiameterDp.dp),
             contentScale = ContentScale.Fit,
         )
@@ -336,7 +336,7 @@ private fun ExpandedWidget(
                     WidgetGraphLayoutPolicy.pixels(compassDiameterDp, density),
                 ),
             ),
-            contentDescription = widgetDescription(context, snapshot),
+            contentDescription = widgetDescription(context, snapshot, includeLightning = true),
             modifier = GlanceModifier.size(compassDiameterDp.dp),
             contentScale = ContentScale.Fit,
         )
@@ -465,7 +465,11 @@ private fun widgetClickIntent(
     )
 }
 
-private fun widgetDescription(context: Context, snapshot: WidgetWeatherSnapshot): String {
+private fun widgetDescription(
+    context: Context,
+    snapshot: WidgetWeatherSnapshot,
+    includeLightning: Boolean,
+): String {
     val series = snapshot.rainSeries()
     val presentation = WidgetRainPresentationPolicy.from(snapshot, series)
     val rain = when (presentation.kind) {
@@ -486,7 +490,7 @@ private fun widgetDescription(context: Context, snapshot: WidgetWeatherSnapshot)
         val base = snapshot.seriesStartEpochSeconds ?: snapshot.updatedEpochSeconds
         facts += context.getString(R.string.widget_stops_at, formatClock(context, base + minute * 60L))
     }
-    when (snapshot.lightning) {
+    if (includeLightning) when (snapshot.lightning) {
         WidgetLightningState.DETECTED -> facts += context.getString(R.string.widget_lightning_nearby)
         WidgetLightningState.NO_DETECTION -> facts += context.getString(R.string.widget_no_recent_lightning)
         WidgetLightningState.UNAVAILABLE -> facts += context.getString(R.string.notification_status_lightning_unavailable)

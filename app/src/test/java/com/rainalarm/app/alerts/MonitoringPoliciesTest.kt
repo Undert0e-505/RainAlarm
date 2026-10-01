@@ -105,7 +105,7 @@ class MonitoringPoliciesTest {
         assertEquals(CombinedAlertPolicy.Kind.COMBINED, CombinedAlertPolicy.kind(true, true))
     }
 
-    @Test fun `rain episode arms only from clear and wet now consumes eligibility`() {
+    @Test fun `rain evidence arms only from clear and delivery eligibility survives until consumed`() {
         val clear = RainEpisodePolicy.reduce(RainEpisodeState(), RadarAlertEvaluation.Clear)
         assertTrue(clear.state.armed)
         val approaching = RainEpisodePolicy.reduce(
@@ -113,9 +113,10 @@ class MonitoringPoliciesTest {
             RadarAlertEvaluation.Approaching(5, 10, 123L),
         )
         assertEquals(123L, approaching.newEventIdentity)
-        assertFalse(approaching.state.armed)
-        val wet = RainEpisodePolicy.reduce(clear.state, RadarAlertEvaluation.WetNow)
-        assertFalse(wet.state.armed)
+        assertTrue(approaching.state.armed)
+        val wet = RainEpisodePolicy.reduce(clear.state, RadarAlertEvaluation.WetNow(123L))
+        assertTrue(wet.state.armed)
+        assertEquals(123L, wet.newEventIdentity)
         assertEquals(wet.state, RainEpisodePolicy.reduce(wet.state, RadarAlertEvaluation.Unknown).state)
     }
 }

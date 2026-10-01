@@ -141,9 +141,22 @@
     <string name="notification_channel_description">Low-noise alerts for approaching rain and nearby observed lightning activity</string>
     <string name="notification_rain_title">Rain approaching %1$s</string>
     <string name="notification_snow_title">Snow likely approaching %1$s</string>
+    <string name="notification_rain_severity_title">%1$s rain approaching %2$s</string>
+    <string name="notification_snow_severity_title">%1$s snow likely approaching %2$s</string>
     <string name="notification_eta">In %1$d min · around %2$s</string>
     <plurals name="notification_eta_plural"><item quantity="one">In %1$d minute · around %2$s</item><item quantity="other">In %1$d minutes · around %2$s</item></plurals>
     <string name="notification_detail">%1$s · about %2$d min; peak intensity %3$d%%</string>
+    <plurals name="notification_starts_eta_plural"><item quantity="one">Starts at %1$s · in %2$d minute</item><item quantity="other">Starts at %1$s · in %2$d minutes</item></plurals>
+    <string name="notification_bounded_detail">%1$s · lasting about %2$d min · peak intensity %3$d%%</string>
+    <string name="notification_duration_detail">%1$s · lasting about %2$d min</string>
+    <string name="notification_unbounded_detail">%1$s · at least %2$d%%</string>
+    <string name="notification_rain_now_title">Rain now at %1$s</string>
+    <string name="notification_snow_now_title">Likely snow now at %1$s</string>
+    <string name="notification_rain_now_severity_title">%1$s rain now at %2$s</string>
+    <string name="notification_snow_now_severity_title">%1$s snow likely now at %2$s</string>
+    <plurals name="notification_stops_remaining_plural"><item quantity="one">Expected to stop at %1$s · about %2$d minute remaining</item><item quantity="other">Expected to stop at %1$s · about %2$d minutes remaining</item></plurals>
+    <string name="notification_intensity_at_least">At least %1$d%%</string>
+    <string name="notification_peak_detail">%1$s · peak intensity %2$d%%</string>
     <string name="places_switch_description">Choose place; selected %1$s</string>
     <string name="common_expanded">Expanded</string>
     <string name="common_collapsed">Collapsed</string>
@@ -247,6 +260,10 @@
     <string name="widget_preview_description">Widget preview at %1$d percent background opacity</string>
     <string name="widget_preview_place">Example place</string>
     <string name="widget_quiet_hours_heading">NOTIFICATIONS</string>
+    <string name="widget_notifications">Widget notifications</string>
+    <string name="widget_notifications_help">Notify for new rain episodes at this widget’s place.</string>
+    <string name="widget_include_lightning">Include lightning</string>
+    <string name="widget_include_lightning_help">Also notify when lightning activity is detected within 15 km.</string>
     <string name="widget_quiet_hours">Do not disturb</string>
     <string name="widget_quiet_off">Do not disturb · Off</string>
     <string name="widget_quiet_summary">Do not disturb · %1$s–%2$s</string>

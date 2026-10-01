@@ -1,6 +1,6 @@
 # Rain Alarm user guide
 
-Rain Alarm answers a place-specific question: when will rain reach me? **Now** summarises the next hour, while **Radar** lets you inspect the available observations, forecasts or local motion estimates. This guide describes version 0.9.0 (version code 20).
+Rain Alarm answers a place-specific question: when will rain reach me? **Now** summarises the next hour, while **Radar** lets you inspect the available observations, forecasts or local motion estimates. This guide describes version 0.9.1 (version code 21).
 
 ## First launch and installation
 
@@ -86,7 +86,7 @@ Coverage masks distinguish known radar reach from unknown space. All five MeteoG
 
 The map blends neighbouring observation and provider-forecast frames continuously using symmetric velocity warping and hardware-linear sampling. The colour transfer is a translucent white/cyan/blue-to-deep-blue presentation designed for the map; it does not synthesize higher-resolution rain.
 
-The continuous slider scrubs without snapping. Clock-aligned `:00`, `:15`, `:30` and `:45` ticks use the same anchor for mark and label; narrow layouts omit colliding alternate labels instead of shifting labels away from their ticks. Playback loops at 0.5×, 1×, 2× or 4× and starts paused. A same-place refresh preserves whether playback was running. Direct scrubbing or opening a time selected on Now deliberately pauses it.
+The continuous slider scrubs without snapping. Clock-aligned `:00`, `:15`, `:30` and `:45` ticks use the same anchor for mark and label; narrow layouts omit colliding alternate labels instead of shifting labels away from their ticks. Playback loops at 0.5×, 1×, 2× or 4× and starts paused. A same-place refresh preserves whether playback was running. Tapping the Now graph opens Radar at that selected time and holds the intent through loading or provider promotion until compatible coverage is ready. Direct scrubbing or opening a time selected on Now deliberately pauses playback; Travel is the explicit way to take current-time ownership back.
 
 The regional GLES renderer uploads radar and velocity data lazily, keeping at most three frame pairs resident, and has a visible static fallback if the renderer fails.
 
@@ -101,10 +101,12 @@ are controlled by Android, the phone and its GNSS hardware, and can look roughly
 second on some devices. A tightly bounded presentation-only tracker may smooth movement between
 trustworthy fixes, but it is best effort and freezes when motion becomes stale or uncertain.
 
-A genuine finger pan or zoom pauses Travel. Entry focus, recentering, accepted fixes, map-style or
-provider refreshes, navigation and other programmatic camera movement do not. A transient missing,
-stale or weak fix leaves the user's Travel intent active and shows the existing locating state so it
-can resume automatically. Pressing the arrow again recentres to the latest accepted accurate fix.
+A genuine finger pan or pinch suspends camera follow immediately while Travel time automation,
+location acquisition and weather updates continue. Entry focus, recentering, accepted fixes,
+map-style or provider refreshes, navigation and other programmatic camera movement do not count as
+user gestures. A transient missing, stale or weak fix leaves the user's Travel intent active and
+shows the existing locating state so it can resume automatically. Pressing Travel or recenter again
+uses the latest accepted cached fix and resumes follow; it never jumps back to an older position.
 Approximate or weak fixes never masquerade as navigation-quality data. Every accepted fix may move
 the marker and camera, but weather analysis and reverse geocoding move only at a bounded anchor: at
 least 1 km, or after two minutes with at least 250 m, plus an immediate first fix and regional-boundary
@@ -115,15 +117,18 @@ saved places, notifications or alert radius. Those continue to use accepted Andr
 only.
 
 Every Travel entry starts paused in **AUTO** time: **Forecast · HH:mm** exactly matches the device
-clock in its current local time zone, the fixed on-screen thumb represents that same instant, tick
-labels roll left once per second, and Radar renders the provider forecast/estimate valid for it.
+clock in its current local time zone, the thumb represents that same instant, and an inline
+**AUTO** label travels with its filled timeline position. The underlying timeline and tick anchors
+stay fixed; only the selected current-time instant advances, and colliding ordinary marks are
+suppressed rather than shifted. Radar renders the provider forecast/estimate valid for that instant.
 Provider frames may bracket or interpolate that exact time internally; their timestamps never
 replace the displayed clock time. A provider publication replaces the session without drift or a
-jump back to the latest observation. Scrubbing or pressing Play takes manual timeline control and
-removes **AUTO**, but does not turn off location-follow Travel; pressing Travel again recentres and
-restores AUTO. If a provider cannot currently cover wall-clock now, Radar clamps only to its nearest
-honest usable data and reports that current Radar time is unavailable rather than labelling a stale
-observation as current.
+jump back to the latest observation. Scrubbing takes manual timeline control. Pressing Play first
+hands off from the exact AUTO instant and then advances normally, so playback does not jump to an
+older retained cursor. Neither action turns off location-follow Travel; pressing Travel again
+recentres and restores AUTO. If a provider cannot currently cover wall-clock now, Radar clamps only
+to its nearest honest usable data and reports that current Radar time is unavailable rather than
+labelling a stale observation as current.
 
 Travel is not persisted. It keeps the screen on only while Radar is visible, Current is selected, Travel is active and the activity is foreground. It adds no background-location request, foreground service, wake lock or ongoing location notification. Pending or failed fixes remain on Radar in the compact shared status queue.
 
@@ -233,11 +238,19 @@ the first later approaching episode sends one notification and disarms it, and a
 result consumes that widget eligibility without sending a new approaching alert. Partial, stale or
 unavailable data is never treated as dry and cannot arm or re-arm a widget alert.
 
-The message contains the place and arrival estimate. Duration and peak are included only when a
-complete episode ends within known coverage. WorkManager checks approximately every 15 minutes;
-Android may defer it under Doze, battery restrictions or force-stop. Saved-place alerts do not need
-location permission. A Current-location background check is skipped unless Rain Alarm already has a
-sufficiently fresh lawful foreground fix.
+The title contains the place and the expected **Light**, **Medium** or **Severe** rain (or likely
+snow) classification. It uses the strongest normalized Now-graph sample inside that one continuous
+event; a separate later event after a dry gap cannot inflate the title. The body keeps the localized
+arrival estimate. Duration and peak are included only when a complete episode ends within known
+coverage. WorkManager checks approximately every 15 minutes; Android may defer it under Doze,
+battery restrictions or force-stop. Saved-place alerts do not need location permission. A
+Current-location background check is skipped unless Rain Alarm already has a sufficiently fresh
+lawful foreground fix.
+
+App and widget subscriptions share one event model. A successful app rain or Lightning delivery
+suppresses the matching component from widgets at the same normalized coordinate, and a successful
+widget delivery suppresses that component from the app. Sibling widgets remain independent, and a
+rain claim never suppresses a later eligible Lightning component or vice versa.
 
 ### Lightning activity notifications
 
@@ -265,9 +278,15 @@ inexactly at approximately 15-minute intervals.
 Every widget has its own configuration:
 
 - choose one saved place;
-- choose the compact primary content: Smart, Rain, Lightning or Temperature;
-- adjust only the card background opacity from transparent to opaque; and
+- adjust only the card background opacity from transparent to opaque;
+- leave **Widget notifications** on by default or disable notifications for that widget;
+- optionally enable **Include lightning** (off by default); and
 - optionally set per-widget Do Not Disturb start/end times.
+
+These controls belong only to that widget. They do not change the app's Rain notification or
+Lightning activity notification switches, another widget, or whether wider widgets may display
+fresh Lightning context. Widgets are always rain-first; old primary-content choices are retained
+only for migration and are no longer configuration options.
 
 After configuration, the widget saves its target and queues its own initial update before the
 configuration screen closes. It shows **Updating** until that target produces usable data, and a

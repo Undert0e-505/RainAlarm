@@ -131,6 +131,7 @@ internal class RadarGlOverlayView(
     private var markerNdc: FloatArray? = null
     private var markerPlace: SavedPlace? = null
     private var markerScale = 1f
+    private var markerVisible = true
     private var disposed = false
     private var renderer: Renderer? = null
     private val renderQueued = AtomicBoolean(false)
@@ -208,12 +209,24 @@ internal class RadarGlOverlayView(
         if (changed) requestRender()
     }
 
+    override fun setMarkerVisible(visible: Boolean) {
+        val selected = synchronized(stateLock) {
+            if (markerVisible == visible) return
+            markerVisible = visible
+            if (!visible) markerNdc = null
+            markerPlace
+        }
+        if (visible && selected != null) updateMarkerProjection(selected) else requestRender()
+    }
+
     private fun updateMarkerProjection(mapPlace: SavedPlace) {
         if (width <= 0 || height <= 0) return
         val ready = map ?: return
         val point = ready.projection.toScreenLocation(LatLng(mapPlace.latitude, mapPlace.longitude))
         synchronized(stateLock) {
-            markerNdc = floatArrayOf(point.x / width * 2f - 1f, 1f - point.y / height * 2f)
+            markerNdc = if (markerVisible) {
+                floatArrayOf(point.x / width * 2f - 1f, 1f - point.y / height * 2f)
+            } else null
         }
         requestRender()
     }
@@ -235,7 +248,7 @@ internal class RadarGlOverlayView(
             updated[index * 4 + 2] = vertex.u
             updated[index * 4 + 3] = vertex.v
         }
-        val selected = synchronized(stateLock) { markerPlace }
+        val selected = synchronized(stateLock) { markerPlace.takeIf { markerVisible } }
         val marker = selected?.let {
             val point = ready.projection.toScreenLocation(LatLng(it.latitude, it.longitude))
             floatArrayOf(point.x / width * 2f - 1f, 1f - point.y / height * 2f)

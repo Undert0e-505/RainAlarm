@@ -31,8 +31,8 @@ class RadarLiveMapPolicyTest {
     }
 
     @Test fun followCameraDurationTracksFixIntervalWithinSmoothBounds() {
-        assertEquals(200, RadarFollowCameraPolicy.durationMillis(0, 1_000_000_000))
-        assertEquals(200, RadarFollowCameraPolicy.durationMillis(1_000_000_000, 1_200_000_000))
+        assertEquals(300, RadarFollowCameraPolicy.durationMillis(0, 1_000_000_000))
+        assertEquals(300, RadarFollowCameraPolicy.durationMillis(1_000_000_000, 1_200_000_000))
         assertEquals(1_000, RadarFollowCameraPolicy.durationMillis(1_000_000_000, 2_000_000_000))
         assertEquals(1_200, RadarFollowCameraPolicy.durationMillis(1_000_000_000, 4_000_000_000))
     }

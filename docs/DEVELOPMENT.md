@@ -1,6 +1,6 @@
 # Development and build
 
-Rain Alarm 0.9.0 has version code 20, supports Android 8.0 and later (minimum SDK 26), and compiles and targets SDK 37. The project uses the checked-in Gradle wrapper and can be opened in Android Studio or built from PowerShell.
+Rain Alarm 0.9.1 has version code 21, supports Android 8.0 and later (minimum SDK 26), and compiles and targets SDK 37. The project uses the checked-in Gradle wrapper and can be opened in Android Studio or built from PowerShell.
 
 ## Prerequisites
 
@@ -94,8 +94,8 @@ The public repository is [Undert0e-505/RainAlarm](https://github.com/Undert0e-50
 A maintainer with a clean tree, the established private signing key, a configured GitHub remote and authenticated GitHub CLI can preview or explicitly run signed publication:
 
 ```powershell
-.\scripts\build-release.ps1 -Mode Release -Publish -Remote origin -NotesFile .\docs\releases\v0.9.0.md -WhatIf
-.\scripts\build-release.ps1 -Mode Release -Publish -Remote origin -NotesFile .\docs\releases\v0.9.0.md
+.\scripts\build-release.ps1 -Mode Release -Publish -Remote origin -NotesFile .\docs\releases\v0.9.1.md -WhatIf
+.\scripts\build-release.ps1 -Mode Release -Publish -Remote origin -NotesFile .\docs\releases\v0.9.1.md
 ```
 
 `-WhatIf` previews the operation without building or publishing; release signer variables are still checked. Actual publication verifies the Git root, clean working tree, remote, GitHub authentication and local/remote tag or release collisions. It then creates an annotated `v<version>` tag, pushes the branch and tag without force, and creates a GitHub Release with the signed APK. If no notes file is supplied, GitHub generates notes.

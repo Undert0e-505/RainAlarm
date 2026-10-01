@@ -25,6 +25,19 @@ object RadarPlaybackClock {
     }
 }
 
+/** Seamless handoff from Travel's authoritative AUTO instant into manual playback. */
+object RadarPlaybackHandoffPolicy {
+    fun startingCursorSeconds(
+        currentCursorSeconds: Float,
+        autoFrame: RadarTravelAutoFrame?,
+        endOffsetSeconds: Float,
+    ): Float {
+        val end = endOffsetSeconds.takeIf { it.isFinite() }?.coerceAtLeast(0f) ?: 0f
+        val candidate = autoFrame?.timeline?.dataCursorSeconds ?: currentCursorSeconds
+        return candidate.takeIf { it.isFinite() }?.coerceIn(0f, end) ?: 0f
+    }
+}
+
 /** Enter paused at the actual clock when a cached forecast covers it, otherwise show latest observation. */
 object RadarEntryClock {
     fun initialCursor(
@@ -42,6 +55,8 @@ object RadarEntryClock {
 }
 
 data class RadarTravelTimelineFrame(
+    /** The one wall-clock instant represented by AUTO, whether or not radar covers it. */
+    val selectedEpochSeconds: Long,
     val dataCursorSeconds: Float,
     val displayStartEpochSeconds: Long,
     val displayEndEpochSeconds: Long,
@@ -49,10 +64,8 @@ data class RadarTravelTimelineFrame(
     val wallClockCovered: Boolean,
 )
 
-/** Pure mapping for Travel's rolling wall-clock timeline and fixed on-screen marker. */
+/** Pure mapping from Travel's wall clock to the radar session's invariant timeline. */
 object RadarTravelTimelinePolicy {
-    const val MARKER_FRACTION = 0.64f
-
     fun frame(
         nowEpochSeconds: Long,
         dataStartEpochSeconds: Long,
@@ -65,13 +78,15 @@ object RadarTravelTimelinePolicy {
         val covered = nowEpochSeconds in dataStartEpochSeconds..usableEnd
         val selected = nowEpochSeconds.coerceIn(dataStartEpochSeconds, usableEnd)
         val duration = (dataEndEpochSeconds - dataStartEpochSeconds).coerceAtLeast(1L)
-        val before = (duration * MARKER_FRACTION).toLong()
-        val displayStart = nowEpochSeconds - before
+        // AUTO is an overlay on the same domain used by normal playback. Never roll or re-space
+        // the base timeline merely because Travel is active.
+        val displayCursor = (nowEpochSeconds - dataStartEpochSeconds).coerceIn(0L, duration)
         return RadarTravelTimelineFrame(
+            selectedEpochSeconds = nowEpochSeconds,
             dataCursorSeconds = (selected - dataStartEpochSeconds).toFloat(),
-            displayStartEpochSeconds = displayStart,
-            displayEndEpochSeconds = displayStart + duration,
-            displayCursorSeconds = duration * MARKER_FRACTION,
+            displayStartEpochSeconds = dataStartEpochSeconds,
+            displayEndEpochSeconds = dataEndEpochSeconds,
+            displayCursorSeconds = displayCursor.toFloat(),
             wallClockCovered = covered,
         )
     }
@@ -85,6 +100,81 @@ object RadarTravelTimelinePolicy {
         val epoch = frame.displayStartEpochSeconds + displayCursorSeconds.toLong()
         return (epoch.coerceIn(dataStartEpochSeconds, dataEndEpochSeconds) - dataStartEpochSeconds)
             .toFloat()
+    }
+}
+
+/**
+ * One immutable AUTO publication. Every time-bearing Radar consumer must read this object instead
+ * of independently reconstructing "now" from provider cadence, a slider value, or a formatted
+ * clock string.
+ */
+data class RadarTravelAutoFrame(
+    val selectedEpochSeconds: Long,
+    val localMinuteText: String,
+    val timeline: RadarTravelTimelineFrame,
+) {
+    init {
+        require(selectedEpochSeconds == timeline.selectedEpochSeconds)
+    }
+
+    val wallClockCovered: Boolean get() = timeline.wallClockCovered
+    val overlayEpochSeconds: Long? get() = selectedEpochSeconds.takeIf { wallClockCovered }
+    val satelliteEpochSeconds: Long get() = selectedEpochSeconds
+    val displayFraction: Float get() = timeline.displayCursorSeconds /
+        (timeline.displayEndEpochSeconds - timeline.displayStartEpochSeconds)
+            .coerceAtLeast(1L).toFloat()
+}
+
+object RadarTravelAutoPolicy {
+    fun frame(
+        selectedEpochSeconds: Long,
+        dataStartEpochSeconds: Long,
+        latestObservationEpochSeconds: Long,
+        dataEndEpochSeconds: Long,
+        forecastAvailable: Boolean,
+        zoneId: ZoneId,
+        use24Hour: Boolean = true,
+        locale: Locale = Locale.getDefault(),
+    ): RadarTravelAutoFrame {
+        val timeline = RadarTravelTimelinePolicy.frame(
+            selectedEpochSeconds,
+            dataStartEpochSeconds,
+            latestObservationEpochSeconds,
+            dataEndEpochSeconds,
+            forecastAvailable,
+        )
+        val clock = RadarTravelClockPolicy.snapshotAt(
+            selectedEpochSeconds,
+            zoneId,
+            use24Hour,
+            locale,
+        )
+        return RadarTravelAutoFrame(
+            selectedEpochSeconds = selectedEpochSeconds,
+            localMinuteText = clock.localMinuteText,
+            timeline = timeline,
+        )
+    }
+
+    /** Keeps the rolling AUTO clock visible while no usable radar timeline is installed. */
+    fun unavailableFrame(
+        selectedEpochSeconds: Long,
+        displayDurationSeconds: Long,
+        zoneId: ZoneId,
+        use24Hour: Boolean = true,
+        locale: Locale = Locale.getDefault(),
+    ): RadarTravelAutoFrame {
+        val duration = displayDurationSeconds.coerceAtLeast(1L)
+        return frame(
+            selectedEpochSeconds = selectedEpochSeconds,
+            dataStartEpochSeconds = selectedEpochSeconds - duration,
+            latestObservationEpochSeconds = selectedEpochSeconds - 1L,
+            dataEndEpochSeconds = selectedEpochSeconds,
+            forecastAvailable = false,
+            zoneId = zoneId,
+            use24Hour = use24Hour,
+            locale = locale,
+        )
     }
 }
 
@@ -118,17 +208,31 @@ object RadarTravelModePolicy {
 /** Guards MapLibre's gesture reason with proof that this MapView owns an active pointer stream. */
 class RadarMapGestureOwnership {
     private var pointerActive = false
+    private var cameraGestureClaimed = false
 
-    fun pointerStarted(ownedByMap: Boolean = true) {
+    /** Returns true when the map must immediately pause automated camera writes. */
+    fun pointerStarted(ownedByMap: Boolean = true): Boolean {
         pointerActive = ownedByMap
+        cameraGestureClaimed = false
+        return pointerActive
     }
 
-    fun pointerFinished() {
+    /**
+     * Returns true only for an owned tap/cancel that never became a camera gesture. A claimed
+     * pan/pinch retains the resulting manual camera until the established Travel action resumes.
+     */
+    fun pointerFinished(): Boolean {
+        val resumeAutomaticCamera = pointerActive && !cameraGestureClaimed
         pointerActive = false
+        cameraGestureClaimed = false
+        return resumeAutomaticCamera
     }
 
-    fun acceptsCameraStart(isMapGestureReason: Boolean): Boolean =
-        isMapGestureReason && pointerActive
+    fun acceptsCameraStart(isMapGestureReason: Boolean): Boolean {
+        val accepted = isMapGestureReason && pointerActive
+        if (accepted) cameraGestureClaimed = true
+        return accepted
+    }
 }
 
 /** Compose controls overlay this band; their pass-through pointer must never count as a map pan. */
@@ -324,7 +428,12 @@ object RadarPageSwipePolicy {
     }
 }
 
-data class RadarTimeTick(val epochSeconds: Long, val fraction: Float, val label: String)
+data class RadarTimeTick(
+    val epochSeconds: Long,
+    val fraction: Float,
+    val label: String,
+    val selected: Boolean = false,
+)
 
 object RadarTimelineTicks {
     const val SPACING_SECONDS = 15 * 60L
@@ -350,11 +459,108 @@ object RadarTimelineTicks {
                 )
             }.toList()
     }
+
+    /** Adds AUTO's exact instant without modifying or replacing the ordinary tick grid. */
+    fun withSelected(
+        ticks: List<RadarTimeTick>,
+        startEpochSeconds: Long,
+        endEpochSeconds: Long,
+        selectedEpochSeconds: Long,
+        selectedLabel: String,
+    ): List<RadarTimeTick> {
+        if (endEpochSeconds <= startEpochSeconds) return ticks
+        val fraction = ((selectedEpochSeconds - startEpochSeconds).toDouble() /
+            (endEpochSeconds - startEpochSeconds)).toFloat().coerceIn(0f, 1f)
+        // Do not guess collision from epoch distance. Text widths, density and locale determine
+        // whether the added AUTO display can coexist; the measured layout owns that choice. Keep
+        // an exact ordinary tick as a separate item so normal/AUTO base geometry remains identical.
+        return (ticks + RadarTimeTick(
+            selectedEpochSeconds,
+            fraction,
+            selectedLabel,
+            selected = true,
+        )).sortedBy(RadarTimeTick::epochSeconds)
+    }
+}
+
+/** Slider and tick labels use the same measured track and the same thumb-centre inset. */
+object RadarTimelineTrackGeometry {
+    // Material 3 1.4 uses a 4dp-wide horizontal handle. Slider lays its value domain between the
+    // handle centres, so the tick anchors use the same 2dp inset rather than an independently
+    // guessed row padding.
+    const val THUMB_WIDTH_DP = 4f
+    const val INNER_INSET_DP = THUMB_WIDTH_DP / 2f
+
+    fun anchorPx(fraction: Float, widthPx: Int, innerInsetPx: Float): Float {
+        if (widthPx <= 0) return 0f
+        val safeInset = innerInsetPx.coerceIn(0f, widthPx / 2f)
+        return safeInset + (widthPx - safeInset * 2f) * fraction.coerceIn(0f, 1f)
+    }
+
+
+    fun measuredTrackWidthPx(
+        containerWidthPx: Int,
+        playColumnWidthPx: Int,
+        gapWidthPx: Int,
+    ): Int = (containerWidthPx - playColumnWidthPx - gapWidthPx).coerceAtLeast(0)
+}
+
+data class RadarTimelineInlineAutoLabelPlacement(
+    val leftPx: Float,
+    val topPx: Float,
+    val thumbAnchorPx: Float,
+    /** Conservative bounds including side-bearing/antialiasing overhang beyond advance width. */
+    val safeVisualLeftPx: Float,
+    val safeVisualRightPx: Float,
+)
+
+/** Places AUTO wholly inside the filled track and immediately before the current-time thumb. */
+object RadarTimelineInlineAutoLabelPolicy {
+    fun place(
+        fraction: Float,
+        widthPx: Int,
+        heightPx: Int,
+        labelWidthPx: Int,
+        labelHeightPx: Int,
+        trackInsetPx: Float,
+        thumbWidthPx: Float,
+        gapPx: Float,
+        glyphSafetyInsetPx: Float,
+    ): RadarTimelineInlineAutoLabelPlacement? {
+        if (widthPx <= 0 || heightPx <= 0 || labelWidthPx <= 0 || labelHeightPx <= 0) return null
+        val safeTrackInset = trackInsetPx.coerceIn(0f, widthPx / 2f)
+        val thumbAnchor = RadarTimelineTrackGeometry.anchorPx(
+            fraction = fraction,
+            widthPx = widthPx,
+            innerInsetPx = safeTrackInset,
+        )
+        val safety = glyphSafetyInsetPx.coerceAtLeast(0f)
+        val safeVisualRight = thumbAnchor - thumbWidthPx.coerceAtLeast(0f) / 2f -
+            gapPx.coerceAtLeast(0f)
+        // Advance width is not a guarantee about the final antialiased pixel. Keep the measured
+        // Text box an additional safety inset left of the visual boundary and render overflow.
+        val labelRight = safeVisualRight - safety
+        val labelLeft = labelRight - labelWidthPx
+        val safeVisualLeft = labelLeft - safety
+        // Omit instead of escaping into the Play/gap area or the unfilled side.
+        if (safeVisualLeft < safeTrackInset || safeVisualRight > thumbAnchor) return null
+        return RadarTimelineInlineAutoLabelPlacement(
+            leftPx = labelLeft,
+            topPx = ((heightPx - labelHeightPx) / 2f).coerceAtLeast(0f),
+            thumbAnchorPx = thumbAnchor,
+            safeVisualLeftPx = safeVisualLeft,
+            safeVisualRightPx = safeVisualRight,
+        )
+    }
 }
 
 data class RadarTimelineLabelPlacement(
+    /** Exact Slider-domain anchor used by the marker line. */
     val anchorPx: Float,
-    val visible: Boolean,
+    /** Label centre, clamped only to keep the text inside the measured container. */
+    val labelCenterPx: Float,
+    val labelVisible: Boolean,
+    val markerVisible: Boolean,
 )
 
 /** Measured label placement: labels never leave or drift away from their own tick anchor. */
@@ -365,44 +571,66 @@ object RadarTimelineLabelLayout {
         widthPx: Int,
         innerInsetPx: Float,
         gapPx: Float,
+        selected: List<Boolean> = List(fractions.size) { false },
     ): List<RadarTimelineLabelPlacement> {
-        require(fractions.size == labelWidthsPx.size)
+        require(fractions.size == labelWidthsPx.size && selected.size == fractions.size)
         if (widthPx <= 0 || fractions.isEmpty()) return emptyList()
-        val usable = (widthPx - innerInsetPx * 2f).coerceAtLeast(0f)
-        val raw = fractions.map { innerInsetPx + usable * it.coerceIn(0f, 1f) }
-        val anchors = raw.mapIndexed { index, value ->
+        val anchors = fractions.map {
+            RadarTimelineTrackGeometry.anchorPx(it, widthPx, innerInsetPx)
+        }
+        val labelCenters = anchors.mapIndexed { index, value ->
             val half = (labelWidthsPx[index].coerceAtLeast(0) / 2f)
                 .coerceAtMost(widthPx / 2f)
             value.coerceIn(half, widthPx - half)
         }
         val visible = BooleanArray(fractions.size)
-        var previousRight = Float.NEGATIVE_INFINITY
-        anchors.indices.forEach { index ->
-            val half = labelWidthsPx[index] / 2f
-            val left = anchors[index] - half
-            if (left >= previousRight + gapPx) {
-                visible[index] = true
-                previousRight = anchors[index] + half
-            }
+        val intervals = anchors.indices.map { index ->
+            val half = labelWidthsPx[index].coerceAtLeast(0) / 2f
+            (labelCenters[index] - half) to (labelCenters[index] + half)
         }
-        // Prefer a real final quarter-hour label over the preceding colliding label.
+        val selectedIndex = selected.indexOfFirst { it }
+        val reserved = mutableListOf<Pair<Float, Float>>()
+        if (selectedIndex >= 0) {
+            visible[selectedIndex] = true
+            reserved += intervals[selectedIndex]
+        }
+        fun collides(candidate: Pair<Float, Float>): Boolean = reserved.any { occupied ->
+            candidate.first < occupied.second + gapPx &&
+                candidate.second > occupied.first - gapPx
+        }
+        anchors.indices.forEach { index ->
+            if (index == selectedIndex) return@forEach
+            val markerClashesWithSelected = selectedIndex >= 0 &&
+                anchors[index] >= intervals[selectedIndex].first - gapPx &&
+                anchors[index] <= intervals[selectedIndex].second + gapPx
+            if (markerClashesWithSelected || collides(intervals[index])) return@forEach
+            visible[index] = true
+            reserved += intervals[index]
+        }
+        // Preserve manual-mode behaviour: prefer the final real tick over the preceding label
+        // when space is tight. AUTO never displaces its already-reserved selected label.
         val last = anchors.lastIndex
-        if (!visible[last] && last > 0) {
-            val lastLeft = anchors[last] - labelWidthsPx[last] / 2f
+        if (selectedIndex < 0 && !visible[last] && last > 0) {
             val previousVisible = (last - 1 downTo 0).firstOrNull { visible[it] }
-            val beforePrevious = previousVisible?.let { prior ->
-                (prior - 1 downTo 0).firstOrNull { visible[it] }
+            val withoutPrevious = reserved.toMutableList().apply {
+                previousVisible?.let { remove(intervals[it]) }
             }
-            val safeLeft = beforePrevious?.let {
-                anchors[it] + labelWidthsPx[it] / 2f + gapPx
-            } ?: Float.NEGATIVE_INFINITY
-            if (lastLeft >= safeLeft) {
+            val lastFits = withoutPrevious.none { occupied ->
+                intervals[last].first < occupied.second + gapPx &&
+                    intervals[last].second > occupied.first - gapPx
+            }
+            if (lastFits) {
                 if (previousVisible != null) visible[previousVisible] = false
                 visible[last] = true
             }
         }
         return anchors.mapIndexed { index, anchor ->
-            RadarTimelineLabelPlacement(anchor, visible[index])
+            RadarTimelineLabelPlacement(
+                anchorPx = anchor,
+                labelCenterPx = labelCenters[index],
+                labelVisible = visible[index],
+                markerVisible = visible[index],
+            )
         }
     }
 }

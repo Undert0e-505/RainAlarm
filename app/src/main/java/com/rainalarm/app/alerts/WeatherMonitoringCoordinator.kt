@@ -69,7 +69,7 @@ private data class TargetWork(
     val target: FrozenMonitorTarget,
     val widgetConfigurations: MutableList<RainAlarmWidgetConfig> = mutableListOf(),
     var appSubscription: Boolean = false,
-    var requiresLightningDisplay: Boolean = false,
+    var requiresLightningAcquisition: Boolean = false,
 ) {
     val widgetIds: List<Int> get() = widgetConfigurations.map(RainAlarmWidgetConfig::appWidgetId)
 }
@@ -255,16 +255,16 @@ class WeatherMonitoringCoordinator(
             } else places.selected
             selected?.let { place ->
                 val target = place.toMonitorTarget(provider)
-                targets.getOrPut(target.key) { TargetWork(target) }.appSubscription = true
+                targets.getOrPut(target.monitoringKey) { TargetWork(target) }.appSubscription = true
             }
         }
         widgetStore.configurations().forEach { config ->
             when (val resolved = WidgetTargetResolver.resolve(config, places, provider)) {
-                is WidgetTargetResolution.Resolved -> targets.getOrPut(resolved.target.key) {
+                is WidgetTargetResolution.Resolved -> targets.getOrPut(resolved.target.monitoringKey) {
                     TargetWork(resolved.target)
                 }.also { work ->
                     work.widgetConfigurations += config
-                    work.requiresLightningDisplay = work.requiresLightningDisplay ||
+                    work.requiresLightningAcquisition = work.requiresLightningAcquisition ||
                         widgetRequiresLightning(config)
                     WidgetRefreshTrace.subscriptionRegistered(
                         config.appWidgetId,
@@ -286,7 +286,7 @@ class WeatherMonitoringCoordinator(
             options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0),
             options.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, 0),
         ).takeIf { it > 0 }
-        return config.requiresLightningDisplay(width)
+        return config.requiresLightningAcquisition(width)
     }
 
     private suspend fun processTarget(
@@ -303,7 +303,9 @@ class WeatherMonitoringCoordinator(
         WidgetRefreshTrace.targetStarted(work.target.key, work.widgetIds)
         val generation = generations.incrementAndGet()
         if (work.widgetIds.isNotEmpty()) {
-            widgetStore.prepare(work.widgetIds, work.target, generation)
+            work.widgetConfigurations.forEach { config ->
+                widgetStore.prepare(listOf(config.appWidgetId), work.widgetTarget(config), generation)
+            }
             WidgetUpdatePublisher.updateAll(context)
         }
         val rainStartedAt = SystemClock.elapsedRealtime()
@@ -317,12 +319,17 @@ class WeatherMonitoringCoordinator(
         val temperature = if (temperatureOverride != null) temperatureOverride else if (work.widgetIds.isNotEmpty()) {
             runCatching { WeatherLayerRepository.point(work.target.asPlace()).temperatureC }.getOrNull()
         } else null
-        val needLightning = lightningPreferences.snapshot().enabled || work.requiresLightningDisplay
+        val needLightning = lightningPreferences.snapshot().enabled || work.requiresLightningAcquisition
         val currentRainEnabled = rainPreferences.snapshot().enabled
         val currentLightningEnabled = lightningPreferences.snapshot().enabled
         val canDeliverNotification = notificationPermissionGranted()
         val priorState = monitoringStore.target(work.target.monitoringKey)
-        val lightningCheckpoint = if (currentLightningEnabled && canDeliverNotification) {
+        val widgetLightningNotifications = work.widgetConfigurations.any {
+            it.notificationsEnabled && it.includeLightningNotifications
+        }
+        val lightningCheckpoint = if ((currentLightningEnabled || widgetLightningNotifications) &&
+            canDeliverNotification
+        ) {
             priorState.lightningAlertCheckpoint
         } else {
             priorState.lightningContiguousCheckpoint
@@ -344,41 +351,34 @@ class WeatherMonitoringCoordinator(
             return TargetProcessOutcome(retryInitialRefresh = pendingIds.isNotEmpty())
         }
         val rainEvaluation = RainAlertDecisionEngine.evaluateMinuteSeries(rain.series)
-        val appRainDecision = if (work.appSubscription && currentRainEnabled &&
-            canDeliverNotification
-        ) RainAlertDecisionEngine.decide(
-            rainEvaluation,
-            rainPreferences.memory(work.target.stableId),
-            Instant.now().epochSecond,
-        ) else null
         val subscriptions = buildList {
             if (work.appSubscription && (currentRainEnabled || currentLightningEnabled)) {
-                add(MonitoringSubscription(APP_SUBSCRIPTION))
+                add(MonitoringSubscription(
+                    id = APP_SUBSCRIPTION,
+                    sourceClass = NotificationSourceClass.APP,
+                    rainEnabled = currentRainEnabled,
+                    lightningEnabled = currentLightningEnabled,
+                ))
             }
             work.widgetConfigurations.forEach { config ->
-                if (currentRainEnabled || currentLightningEnabled) {
-                    add(
-                        MonitoringSubscription(
-                            widgetSubscription(config.appWidgetId),
-                            config.quietHours,
-                            rainRequiresPriorClear = true,
-                        ),
-                    )
-                }
+                add(MonitoringSubscription(
+                    id = widgetSubscription(config.appWidgetId),
+                    sourceClass = NotificationSourceClass.WIDGET,
+                    quietHours = config.quietHours,
+                    rainEnabled = config.notificationsEnabled,
+                    lightningEnabled = config.notificationsEnabled &&
+                        config.includeLightningNotifications,
+                    rainRequiresPriorClear = true,
+                ))
             }
         }
         val evaluatedAt = Instant.now()
-        val decision = monitoringStore.apply(
+        val evaluation = monitoringStore.evaluate(
             target = work.target,
             rainEvaluation = rainEvaluation,
             lightningEvaluation = lightning,
-            rainAlertEnabled = currentRainEnabled,
-            lightningAlertEnabled = currentLightningEnabled,
             subscriptions = subscriptions,
             now = evaluatedAt,
-            appRainEventIdentity = (rainEvaluation as? RadarAlertEvaluation.Approaching)
-                ?.frameIdentity?.takeIf { appRainDecision?.shouldNotify == true },
-            notificationDeliveryAvailable = canDeliverNotification,
         )
 
         if (!stillCurrent(work, placesBefore)) {
@@ -387,22 +387,61 @@ class WeatherMonitoringCoordinator(
                 retryInitialRefresh = work.widgetIds.any(widgetStore::isInitialRefreshPending),
             )
         }
-        if (decision.kind != CombinedAlertPolicy.Kind.NONE && canDeliverNotification) {
-            MonitorNotificationPublisher(context).publish(
-                work.target,
-                decision.kind,
-                rainEvaluation as? RadarAlertEvaluation.Approaching,
-                evaluatedAt.epochSecond,
-                listOfNotNull(decision.rainEventIdentity, decision.lightningEventIdentity).joinToString("|"),
-            )
-        }
-        if (work.appSubscription && appRainDecision != null && canDeliverNotification) {
-            rainPreferences.record(
-                evaluatedAt.epochSecond,
-                rainPreferences.snapshot().status,
-                work.target.stableId,
-                appRainDecision.nextMemory,
-            )
+        if (canDeliverNotification) {
+            val latestAppRainEnabled = rainPreferences.snapshot().enabled
+            val latestAppLightningEnabled = lightningPreferences.snapshot().enabled
+            val orderedCandidates = evaluation.candidates.sortedBy { candidate ->
+                when {
+                    backgroundTransaction && candidate.sourceClass == NotificationSourceClass.WIDGET -> 0
+                    !backgroundTransaction && candidate.sourceClass == NotificationSourceClass.APP -> 0
+                    else -> 1
+                }
+            }
+            val publisher = MonitorNotificationPublisher(context)
+            orderedCandidates.forEach { candidate ->
+                val storedResolution = monitoringStore.resolveDelivery(
+                    work.target.monitoringKey,
+                    candidate,
+                    evaluatedAt,
+                )
+                val resolution = if (candidate.sourceClass == NotificationSourceClass.APP) {
+                    storedResolution.copy(
+                        deliverRainEvent = storedResolution.deliverRainEvent
+                            .takeIf { latestAppRainEnabled },
+                        deliverLightningEvent = storedResolution.deliverLightningEvent
+                            .takeIf { latestAppLightningEnabled },
+                    )
+                } else storedResolution
+                if (resolution.consumeRainEvent != null ||
+                    resolution.consumeLightningEvent != null
+                ) monitoringStore.consumeWithoutDelivery(
+                    work.target.monitoringKey,
+                    candidate.subscriptionId,
+                    resolution.consumeRainEvent,
+                    resolution.consumeLightningEvent,
+                )
+                if (resolution.kind != CombinedAlertPolicy.Kind.NONE) {
+                    val deliveryTarget = work.deliveryTarget(candidate.subscriptionId)
+                    val posted = publisher.publish(
+                        target = deliveryTarget,
+                        subscriptionId = candidate.subscriptionId,
+                        kind = resolution.kind,
+                        rain = rainEvaluation,
+                        evaluatedAtEpochSeconds = evaluatedAt.epochSecond,
+                        eventIdentity = listOfNotNull(
+                            resolution.deliverRainEvent,
+                            resolution.deliverLightningEvent,
+                        ).joinToString("|"),
+                    )
+                    if (posted) monitoringStore.recordSuccessfulDelivery(
+                        work.target.monitoringKey,
+                        candidate,
+                        resolution.deliverRainEvent,
+                        resolution.deliverLightningEvent,
+                        evaluatedAt,
+                    )
+                }
+            }
         }
         if (work.appSubscription) updateSettingsStatus(
             work.target,
@@ -411,29 +450,33 @@ class WeatherMonitoringCoordinator(
             evaluatedAt.epochSecond,
         )
         if (work.widgetIds.isNotEmpty()) {
-            val lightningState = when (decision.targetState.lightningDisplayObservation) {
+            val lightningState = when (evaluation.targetState.lightningDisplayObservation) {
                 LightningFrameObservation.DETECTED -> WidgetLightningState.DETECTED
                 LightningFrameObservation.NO_DETECTION -> WidgetLightningState.NO_DETECTION
                 LightningFrameObservation.UNAVAILABLE -> WidgetLightningState.UNAVAILABLE
                 null -> if (needLightning) WidgetLightningState.UNAVAILABLE
                     else WidgetLightningState.NOT_REQUESTED
             }
-            val snapshot = WidgetWeatherSnapshot.from(
-                target = work.target,
-                series = rain.series,
-                temperatureC = temperature,
-                lightning = lightningState,
-                lightningFrameEpochSeconds = decision.targetState.lightningDisplayFrameEpochSeconds,
-                updatedEpochSeconds = evaluatedAt.epochSecond,
-                generation = generation,
-            ).copy(
-                provider = rain.activeProvider,
-                updateUnavailable = rain.series.availability == RainMinuteAvailability.UNAVAILABLE &&
-                    lightningState == WidgetLightningState.UNAVAILABLE && temperature == null,
-            )
-            val usable = WidgetSnapshotCachePolicy.hasUsableData(snapshot, evaluatedAt.epochSecond)
+            val snapshots = work.widgetConfigurations.associate { config ->
+                config.appWidgetId to WidgetWeatherSnapshot.from(
+                    target = work.widgetTarget(config),
+                    series = rain.series,
+                    temperatureC = temperature,
+                    lightning = lightningState,
+                    lightningFrameEpochSeconds = evaluation.targetState.lightningDisplayFrameEpochSeconds,
+                    updatedEpochSeconds = evaluatedAt.epochSecond,
+                    generation = generation,
+                ).copy(
+                    provider = rain.activeProvider,
+                    updateUnavailable = rain.series.availability == RainMinuteAvailability.UNAVAILABLE &&
+                        lightningState == WidgetLightningState.UNAVAILABLE && temperature == null,
+                )
+            }
+            val usable = snapshots.values.firstOrNull()?.let {
+                WidgetSnapshotCachePolicy.hasUsableData(it, evaluatedAt.epochSecond)
+            } == true
             if (usable) {
-                widgetStore.publish(work.widgetIds, snapshot)
+                snapshots.forEach { (id, snapshot) -> widgetStore.publish(listOf(id), snapshot) }
                 widgetStore.completeInitialRefresh(pendingIds)
                 WidgetRefreshTrace.stateWritten(
                     work.target.key, work.widgetIds, true, "complete",
@@ -442,12 +485,9 @@ class WeatherMonitoringCoordinator(
                 val failures = widgetStore.recordInitialFailure(pendingIds)
                 val ordinaryIds = work.widgetIds.filterNot(pendingIds::contains)
                 val publishIds = ordinaryIds + failures.terminalIds
-                if (publishIds.isNotEmpty()) {
-                    widgetStore.publish(
-                        publishIds,
-                        snapshot.copy(updateUnavailable = true),
-                    )
-                }
+                publishIds.forEach { id -> snapshots[id]?.let { snapshot ->
+                    widgetStore.publish(listOf(id), snapshot.copy(updateUnavailable = true))
+                } }
                 widgetStore.cancelUpdating(failures.retryIds, generation)
                 WidgetRefreshTrace.stateWritten(
                     work.target.key,
@@ -464,9 +504,17 @@ class WeatherMonitoringCoordinator(
     private suspend fun stillCurrent(work: TargetWork, placesBefore: PlaceCollection): Boolean {
         val currentPlaces = placePreferences.collection.first()
         val provider = radarSettings.selectedProvider()
-        val resolved = resolveTargets(currentPlaces, provider)[work.target.key] ?: return false
+        val resolved = resolveTargets(currentPlaces, provider)[work.target.monitoringKey] ?: return false
         val originalIds = work.widgetIds.toSet()
         if (resolved.widgetIds.toSet() != originalIds) return false
+        if (resolved.target.selectedProvider != work.target.selectedProvider) return false
+        val originalWidgetSettings = work.widgetConfigurations.associate { config ->
+            config.appWidgetId to config.deliveryConfigurationIdentity()
+        }
+        val currentWidgetSettings = resolved.widgetConfigurations.associate { config ->
+            config.appWidgetId to config.deliveryConfigurationIdentity()
+        }
+        if (currentWidgetSettings != originalWidgetSettings) return false
         if (work.appSubscription && !resolved.appSubscription) return false
         return placesBefore.selectedId == currentPlaces.selectedId || !work.appSubscription
     }
@@ -545,7 +593,7 @@ class WeatherMonitoringCoordinator(
                     target.displayName,
                     rain.etaStartMinutes,
                 )
-                RadarAlertEvaluation.WetNow -> context.getString(R.string.notification_status_wet, target.displayName)
+                is RadarAlertEvaluation.WetNow -> context.getString(R.string.notification_status_wet, target.displayName)
                 RadarAlertEvaluation.Clear -> context.getString(R.string.notification_status_clear, target.displayName)
                 RadarAlertEvaluation.Unknown -> context.getString(R.string.notification_status_unknown, target.displayName)
             }
@@ -584,6 +632,32 @@ class WeatherMonitoringCoordinator(
     private fun sameCoordinate(target: FrozenMonitorTarget, place: SavedPlace): Boolean =
         target.stableId == place.id && target.latitude == place.latitude && target.longitude == place.longitude
 
+    private fun TargetWork.widgetTarget(config: RainAlarmWidgetConfig): FrozenMonitorTarget {
+        val saved = config.savedPlace ?: return target
+        return FrozenMonitorTarget(
+            saved.stableId,
+            saved.displayName,
+            saved.latitude,
+            saved.longitude,
+            target.selectedProvider,
+            target.radiusKilometres,
+        )
+    }
+
+    private fun TargetWork.deliveryTarget(subscriptionId: String): FrozenMonitorTarget =
+        widgetConfigurations.firstOrNull {
+            widgetSubscription(it.appWidgetId) == subscriptionId
+        }?.let { widgetTarget(it) } ?: target
+
+    private fun RainAlarmWidgetConfig.deliveryConfigurationIdentity(): List<Any?> = listOf(
+        savedPlace,
+        notificationsEnabled,
+        includeLightningNotifications,
+        quietHoursEnabled,
+        quietStartMinuteOfDay,
+        quietEndMinuteOfDay,
+    )
+
     private companion object {
         const val APP_SUBSCRIPTION = "app"
         const val REGIONAL_DIRECTION_TIMEOUT_MILLIS = 8_000L
@@ -597,38 +671,44 @@ class WeatherMonitoringCoordinator(
 private class MonitorNotificationPublisher(private val context: Context) {
     fun publish(
         target: FrozenMonitorTarget,
+        subscriptionId: String,
         kind: CombinedAlertPolicy.Kind,
-        approaching: RadarAlertEvaluation.Approaching?,
+        rain: RadarAlertEvaluation,
         evaluatedAtEpochSeconds: Long,
         eventIdentity: String,
-    ) {
+    ): Boolean {
         createNotificationChannel(context)
-        val rainContent = approaching?.let {
-            RainAlertNotificationText.forApproaching(context, target.displayName, it, evaluatedAtEpochSeconds)
+        val rainContent = when (rain) {
+            is RadarAlertEvaluation.Approaching -> RainAlertNotificationText.forApproaching(
+                context, target.displayName, rain, evaluatedAtEpochSeconds,
+            )
+            is RadarAlertEvaluation.WetNow -> RainAlertNotificationText.forWetNow(
+                context, target.displayName, rain,
+            )
+            else -> null
         }
         val title = when (kind) {
-            CombinedAlertPolicy.Kind.RAIN -> rainContent?.title ?: return
+            CombinedAlertPolicy.Kind.RAIN -> rainContent?.title ?: return false
             CombinedAlertPolicy.Kind.LIGHTNING -> context.getString(
                 R.string.notification_lightning_title,
                 target.displayName,
             )
-            CombinedAlertPolicy.Kind.COMBINED -> context.getString(
-                R.string.notification_combined_title,
-                target.displayName,
+            CombinedAlertPolicy.Kind.COMBINED -> rainContent?.title ?: context.getString(
+                R.string.notification_lightning_title, target.displayName,
             )
-            CombinedAlertPolicy.Kind.NONE -> return
+            CombinedAlertPolicy.Kind.NONE -> return false
         }
         val summary = when (kind) {
-            CombinedAlertPolicy.Kind.RAIN -> rainContent?.summary ?: return
+            CombinedAlertPolicy.Kind.RAIN -> rainContent?.summary ?: return false
             CombinedAlertPolicy.Kind.LIGHTNING -> context.getString(
                 R.string.notification_lightning_detail,
                 LightningDetectionPolicy.defaultRadiusKilometres.toInt(),
             )
-            CombinedAlertPolicy.Kind.COMBINED -> context.getString(
-                R.string.notification_combined_summary,
-                rainContent?.summary ?: context.getString(R.string.notification_rain_approaching),
+            CombinedAlertPolicy.Kind.COMBINED -> rainContent?.summary ?: context.getString(
+                R.string.notification_lightning_detail,
+                LightningDetectionPolicy.defaultRadiusKilometres.toInt(),
             )
-            CombinedAlertPolicy.Kind.NONE -> return
+            CombinedAlertPolicy.Kind.NONE -> return false
         }
         val detail = when (kind) {
             CombinedAlertPolicy.Kind.RAIN -> rainContent?.detail ?: summary
@@ -641,7 +721,7 @@ private class MonitorNotificationPublisher(private val context: Context) {
                 rainContent?.detail ?: summary,
                 LightningDetectionPolicy.defaultRadiusKilometres.toInt(),
             )
-            CombinedAlertPolicy.Kind.NONE -> summary
+            CombinedAlertPolicy.Kind.NONE -> return false
         }
         val intent = RadarAlertDeepLink.put(
             Intent(context, MainActivity::class.java).addFlags(
@@ -651,7 +731,8 @@ private class MonitorNotificationPublisher(private val context: Context) {
             showLightningTemporarily = kind == CombinedAlertPolicy.Kind.LIGHTNING ||
                 kind == CombinedAlertPolicy.Kind.COMBINED,
         )
-        val requestCode = (target.key + eventIdentity).hashCode().and(Int.MAX_VALUE).coerceAtLeast(1)
+        val requestCode = (target.monitoringKey + subscriptionId + eventIdentity)
+            .hashCode().and(Int.MAX_VALUE).coerceAtLeast(1)
         val pendingIntent = PendingIntent.getActivity(
             context,
             requestCode,
@@ -669,6 +750,7 @@ private class MonitorNotificationPublisher(private val context: Context) {
             builder.setStyle(NotificationCompat.BigTextStyle().bigText(detail))
         }
         val notification = builder.build()
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return false
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.POST_NOTIFICATIONS,
@@ -676,13 +758,16 @@ private class MonitorNotificationPublisher(private val context: Context) {
         ) {
             try {
                 NotificationManagerCompat.from(context).notify(
-                    (4107 xor target.key.hashCode()).and(Int.MAX_VALUE).coerceAtLeast(1),
+                    (4107 xor (target.monitoringKey + subscriptionId).hashCode())
+                        .and(Int.MAX_VALUE).coerceAtLeast(1),
                     notification,
                 )
-            } catch (_: SecurityException) {
-                // Permission may be revoked between the check and publication. The next
-                // reconciliation records that state without crashing the worker.
+                return true
+            } catch (_: RuntimeException) {
+                // Permission/channel/system delivery can fail after validation. No successful
+                // claim is written, so a later transaction can retry the same component.
             }
         }
+        return false
     }
 }

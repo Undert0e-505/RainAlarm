@@ -82,6 +82,7 @@ class LightningDetectionPolicyTest {
             listOf(1_100L to LightningFrameObservation.DETECTED),
         )
         assertEquals(null, continued.newEventIdentity)
+        assertEquals(1_000L, continued.state.activeEventIdentity)
         val clear = LightningEpisodePolicy.reduce(
             continued.state,
             listOf(1_300L to LightningFrameObservation.NO_DETECTION),
@@ -109,6 +110,20 @@ class LightningDetectionPolicyTest {
         )
         assertEquals(active, result.state)
         assertEquals(null, result.newEventIdentity)
+    }
+
+    @Test fun `catch up reports the newest episode when clear separates detections`() {
+        val result = LightningEpisodePolicy.reduce(
+            LightningEpisodeState(),
+            listOf(
+                1_000L to LightningFrameObservation.DETECTED,
+                1_300L to LightningFrameObservation.NO_DETECTION,
+                1_600L to LightningFrameObservation.DETECTED,
+            ),
+        )
+
+        assertEquals(1_600L, result.newEventIdentity)
+        assertEquals(LightningEpisodeState(active = true, activeEventIdentity = 1_600L), result.state)
     }
 
     @Test fun `png validation accepts bounded structure and rejects checksum or dimensions`() {

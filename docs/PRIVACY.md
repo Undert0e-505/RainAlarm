@@ -2,7 +2,7 @@
 
 Rain Alarm is designed without user accounts, advertising, analytics, billing or embedded provider credentials. It does not operate an application server: the app talks directly to the weather, map and search services needed for the feature the user requests.
 
-This disclosure describes version 0.9.0. Provider services necessarily receive ordinary network metadata such as the connecting IP address; consult each provider's current terms and privacy policy for how it handles that traffic.
+This disclosure describes version 0.9.1. Provider services necessarily receive ordinary network metadata such as the connecting IP address; consult each provider's current terms and privacy policy for how it handles that traffic.
 
 ## Android permissions
 

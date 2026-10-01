@@ -18,6 +18,7 @@
     <string name="now_refresh">Adnewyddu rhagolwg radar</string><string name="now_next_hour">Yr awr nesaf</string><string name="now_now">Nawr</string><string name="now_no_rain">Dim glaw</string><string name="now_from">O %1$s</string><string name="now_raining">Yn bwrw glaw nawr</string><string name="now_snow_likely">Eira’n debygol</string><string name="now_rain_in">Glaw yn dechrau mewn</string><string name="now_snow_in">Eira’n debygol mewn</string><string name="now_no_rain_yet">Dim glaw wedi’i ganfod eto</string><string name="now_no_rain_hour">Dim glaw disgwyliedig yn yr awr nesaf</string><string name="now_sunrise">Codiad haul</string><string name="now_sunset">Machlud haul</string><string name="now_severe">Trwm</string><string name="now_medium">Canolig</string><string name="now_light">Ysgafn</string>
 <string name="notification_channel_name">Rhybuddion glaw a mellt</string><string name="notification_channel_description">Rhybuddion tawel am law yn agosáu a gweithgarwch mellt a welwyd gerllaw</string><string name="notification_rain_title">Glaw yn agosáu at %1$s</string><string name="notification_snow_title">Eira tebygol yn agosáu at %1$s</string><string name="notification_eta">Mewn %1$d mun · tua %2$s</string><string name="notification_detail">%1$s · tua %2$d mun; dwysedd uchaf %3$d%%</string>
     <plurals name="notification_eta_plural"><item quantity="zero">Mewn %1$d munud · tua %2$s</item><item quantity="one">Mewn %1$d munud · tua %2$s</item><item quantity="two">Mewn %1$d funud · tua %2$s</item><item quantity="few">Mewn %1$d munud · tua %2$s</item><item quantity="many">Mewn %1$d munud · tua %2$s</item><item quantity="other">Mewn %1$d munud · tua %2$s</item></plurals>
+    <plurals name="notification_starts_eta_plural"><item quantity="zero">Yn dechrau am %1$s · mewn %2$d munud</item><item quantity="one">Yn dechrau am %1$s · mewn %2$d munud</item><item quantity="two">Yn dechrau am %1$s · mewn %2$d funud</item><item quantity="few">Yn dechrau am %1$s · mewn %2$d munud</item><item quantity="many">Yn dechrau am %1$s · mewn %2$d munud</item><item quantity="other">Yn dechrau am %1$s · mewn %2$d munud</item></plurals><string name="notification_bounded_detail">%1$s · yn para tua %2$d mun · dwysedd uchaf %3$d%%</string><string name="notification_duration_detail">%1$s · yn para tua %2$d mun</string><string name="notification_unbounded_detail">%1$s · o leiaf %2$d%%</string><string name="notification_rain_now_title">Glaw nawr yn %1$s</string><string name="notification_snow_now_title">Eira tebygol nawr yn %1$s</string><plurals name="notification_stops_remaining_plural"><item quantity="zero">Disgwylir iddo stopio am %1$s · tua %2$d munud ar ôl</item><item quantity="one">Disgwylir iddo stopio am %1$s · tua %2$d munud ar ôl</item><item quantity="two">Disgwylir iddo stopio am %1$s · tua %2$d funud ar ôl</item><item quantity="few">Disgwylir iddo stopio am %1$s · tua %2$d munud ar ôl</item><item quantity="many">Disgwylir iddo stopio am %1$s · tua %2$d munud ar ôl</item><item quantity="other">Disgwylir iddo stopio am %1$s · tua %2$d munud ar ôl</item></plurals><string name="notification_intensity_at_least">O leiaf %1$d%%</string><string name="notification_peak_detail">%1$s · dwysedd uchaf %2$d%%</string>
     <string name="places_switch_description">Dewis lle; wedi’i ddewis: %1$s</string>
     <string name="common_expanded">Wedi ehangu</string><string name="common_collapsed">Wedi cau</string><string name="common_active_label">Gweithredol</string><string name="common_source_terms">Ffynhonnell / telerau</string>
     <string name="places_search_failed">Methodd chwilio am le</string><string name="places_permission_denied">Ni roddwyd caniatâd lleoliad. Nid yw eich dewis wedi’i gadw wedi newid.</string><string name="places_search_sources">Trefi: Open-Meteo · Lleoedd a enwir: Photon/OSM + Wicipedia · Codau post y DU: postcodes.io</string>
@@ -96,7 +97,7 @@
     <string name="notification_lightning_detail">Canfuwyd gweithgarwch mellt o fewn %1$d km.</string>
     <string name="notification_combined_title">Glaw yn nesáu at %1$s · gweithgarwch mellt gerllaw</string>
     <string name="notification_combined_summary">%1$s · gweithgarwch mellt wedi’i ganfod</string>
-    <string name="notification_combined_detail">%1$s. Canfuwyd gweithgarwch mellt o fewn %2$d km; nid rhagolwg taro yw hwn.</string>
+    <string name="notification_combined_detail">%1$s · Canfuwyd gweithgarwch mellt o fewn %2$d km.</string>
     <string name="notification_rain_approaching">Glaw yn nesáu</string>
     <string name="widget_description">Teclyn tywydd Rain Alarm</string>
     <string name="widget_tap_to_configure">Tapiwch i ffurfweddu</string>
@@ -130,6 +131,10 @@
     <string name="widget_preview_description">Rhagolwg teclyn gyda chefndir %1$d y cant yn ddi-draidd</string>
     <string name="widget_preview_place">Lle enghreifftiol</string>
     <string name="widget_quiet_hours_heading">HYSBYSIADAU</string>
+    <string name="widget_notifications">Hysbysiadau teclyn</string>
+    <string name="widget_notifications_help">Hysbysu am gyfnodau glaw newydd yn lleoliad y teclyn hwn.</string>
+    <string name="widget_include_lightning">Cynnwys mellt</string>
+    <string name="widget_include_lightning_help">Hysbysu hefyd pan ganfyddir gweithgarwch mellt o fewn 15 km.</string>
     <string name="widget_quiet_hours">Peidiwch ag aflonyddu</string>
     <string name="widget_quiet_off">Peidiwch ag aflonyddu · I ffwrdd</string>
     <string name="widget_quiet_summary">Peidiwch ag aflonyddu · %1$s–%2$s</string>
@@ -146,4 +151,8 @@
     <string name="radar_travel_auto_badge">AWTO</string>
     <string name="radar_travel_auto_accessibility">Amser teithio awtomatig</string>
     <string name="radar_current_time_unavailable">Nid yw amser presennol y radar ar gael</string>
+<string name="notification_rain_severity_title">Glaw %1$s yn agosáu at %2$s</string>
+<string name="notification_snow_severity_title">Eira %1$s tebygol yn agosáu at %2$s</string>
+<string name="notification_rain_now_severity_title">Glaw %1$s nawr yn %2$s</string>
+<string name="notification_snow_now_severity_title">Eira %1$s tebygol nawr yn %2$s</string>
 </resources>

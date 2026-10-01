@@ -11,6 +11,48 @@ import java.time.ZoneId
 import java.util.Locale
 
 class RadarPresentationTest {
+    @Test fun `AUTO play handoff replaces a stale cursor with the displayed Travel instant`() {
+        val selected = Instant.parse("2026-10-01T05:30:42Z").epochSecond
+        val start = selected - 183L
+        val auto = RadarTravelAutoPolicy.frame(
+            selectedEpochSeconds = selected,
+            dataStartEpochSeconds = start,
+            latestObservationEpochSeconds = start,
+            dataEndEpochSeconds = start + 600L,
+            forecastAvailable = true,
+            zoneId = ZoneId.of("UTC"),
+        )
+        val playbackCursor = RadarPlaybackHandoffPolicy.startingCursorSeconds(
+            currentCursorSeconds = 25f,
+            autoFrame = auto,
+            endOffsetSeconds = 600f,
+        )
+        assertEquals(183f, playbackCursor, 0f)
+        assertEquals(selected, start + playbackCursor.toLong())
+        assertEquals("05:30", auto.localMinuteText)
+
+        val bracket = RadarTimeline.bracket(
+            frameTimes = listOf(start, start + 300L, start + 600L),
+            forecastFlags = listOf(false, true, true),
+            cursorEpochSeconds = start + playbackCursor.toDouble(),
+        )
+        assertEquals(0, bracket.firstIndex)
+        assertEquals(1, bracket.secondIndex)
+        assertEquals(183.0 / 300.0, bracket.fraction, 0.000_001)
+    }
+
+    @Test fun `manual play handoff preserves the existing cursor without an AUTO frame`() {
+        assertEquals(
+            427.5f,
+            RadarPlaybackHandoffPolicy.startingCursorSeconds(
+                currentCursorSeconds = 427.5f,
+                autoFrame = null,
+                endOffsetSeconds = 900f,
+            ),
+            0f,
+        )
+    }
+
     @Test fun `travel follow changes only for deliberate exit reasons`() {
         assertTrue(RadarTravelModePolicy.next(false, RadarTravelTransitionReason.USER_ENTER))
         assertFalse(RadarTravelModePolicy.next(true, RadarTravelTransitionReason.USER_EXIT))
@@ -27,13 +69,31 @@ class RadarPresentationTest {
     @Test fun `only an owned live map pointer accepts MapLibre gesture camera start`() {
         val ownership = RadarMapGestureOwnership()
         assertFalse(ownership.acceptsCameraStart(isMapGestureReason = true))
-        ownership.pointerStarted(ownedByMap = false)
+        assertFalse(ownership.pointerStarted(ownedByMap = false))
         assertFalse(ownership.acceptsCameraStart(isMapGestureReason = true))
-        ownership.pointerStarted(ownedByMap = true)
+        assertFalse(ownership.pointerFinished())
+        assertTrue(ownership.pointerStarted(ownedByMap = true))
         assertTrue(ownership.acceptsCameraStart(isMapGestureReason = true))
         assertFalse(ownership.acceptsCameraStart(isMapGestureReason = false))
-        ownership.pointerFinished()
+        assertFalse(ownership.pointerFinished())
         assertFalse(ownership.acceptsCameraStart(isMapGestureReason = true))
+    }
+
+    @Test fun `unclaimed map touch resumes follow but pan and pinch retain manual camera`() {
+        val ownership = RadarMapGestureOwnership()
+
+        assertTrue(ownership.pointerStarted(ownedByMap = true))
+        assertTrue(ownership.pointerFinished())
+
+        assertTrue(ownership.pointerStarted(ownedByMap = true))
+        assertTrue(ownership.acceptsCameraStart(isMapGestureReason = true))
+        assertFalse(ownership.pointerFinished())
+
+        assertTrue(ownership.pointerStarted(ownedByMap = true))
+        assertTrue(ownership.acceptsCameraStart(isMapGestureReason = true))
+        // A scale recogniser may report the same owned gesture more than once.
+        assertTrue(ownership.acceptsCameraStart(isMapGestureReason = true))
+        assertFalse(ownership.pointerFinished())
     }
 
     @Test fun `top control pointer pass-through is excluded from map gesture ownership`() {
@@ -75,7 +135,8 @@ class RadarPresentationTest {
             first.epochSeconds - 1_800L + oldSession.dataCursorSeconds.toLong())
         assertEquals(first.epochSeconds,
             first.epochSeconds - 1_200L + refreshedSession.dataCursorSeconds.toLong())
-        assertEquals(oldSession.displayStartEpochSeconds, refreshedSession.displayStartEpochSeconds)
+        assertEquals(first.epochSeconds - 1_800L, oldSession.displayStartEpochSeconds)
+        assertEquals(first.epochSeconds - 1_200L, refreshedSession.displayStartEpochSeconds)
     }
 
     @Test fun `travel auto clock follows device zone rules across daylight saving fold`() {
@@ -90,17 +151,20 @@ class RadarPresentationTest {
         assertEquals("01:00", after.localMinuteText)
     }
 
-    @Test fun `travel timeline holds marker x while wall clock and labels roll`() {
+    @Test fun `travel timeline keeps the data domain invariant while current time advances`() {
         val first = RadarTravelTimelinePolicy.frame(2_000L, 1_000L, 1_900L, 2_600L, true)
         val later = RadarTravelTimelinePolicy.frame(2_001L, 1_000L, 1_900L, 2_600L, true)
-        assertEquals(first.displayCursorSeconds, later.displayCursorSeconds, 0f)
-        assertEquals(first.displayStartEpochSeconds + 1L, later.displayStartEpochSeconds)
+        assertEquals(first.displayCursorSeconds + 1f, later.displayCursorSeconds, 0f)
+        assertEquals(first.displayStartEpochSeconds, later.displayStartEpochSeconds)
+        assertEquals(first.displayEndEpochSeconds, later.displayEndEpochSeconds)
+        assertEquals(1_000L, first.displayStartEpochSeconds)
+        assertEquals(2_600L, first.displayEndEpochSeconds)
         assertEquals(1_000f, first.dataCursorSeconds, 0f)
         assertEquals(1_001f, later.dataCursorSeconds, 0f)
         assertTrue(first.wallClockCovered)
     }
 
-    @Test fun `travel timeline clamps honestly and manual takeover maps rolling window`() {
+    @Test fun `travel timeline clamps honestly and manual takeover maps the base domain`() {
         val frame = RadarTravelTimelinePolicy.frame(2_000L, 1_000L, 1_900L, 2_600L, true)
         assertTrue(frame.wallClockCovered)
         assertEquals(1_000f, frame.dataCursorSeconds, 0f)
@@ -117,6 +181,195 @@ class RadarPresentationTest {
         assertFalse(RadarTravelTimelinePolicy.frame(
             3_000L, 1_000L, 1_900L, 2_600L, true,
         ).wallClockCovered)
+    }
+
+    @Test fun `one AUTO frame owns label slider overlay and satellite instant`() {
+        val selected = Instant.parse("2026-10-01T05:30:00Z").epochSecond
+        val auto = RadarTravelAutoPolicy.frame(
+            selectedEpochSeconds = selected,
+            dataStartEpochSeconds = selected - 3_600,
+            latestObservationEpochSeconds = selected - 300,
+            dataEndEpochSeconds = selected + 3_600,
+            forecastAvailable = true,
+            zoneId = ZoneId.of("Europe/London"),
+            use24Hour = true,
+            locale = Locale.UK,
+        )
+        assertEquals(selected, auto.selectedEpochSeconds)
+        assertEquals(selected, auto.overlayEpochSeconds)
+        assertEquals(selected, auto.satelliteEpochSeconds)
+        assertEquals("06:30", auto.localMinuteText)
+        assertEquals(
+            selected,
+            auto.timeline.displayStartEpochSeconds + auto.timeline.displayCursorSeconds.toLong(),
+        )
+        assertEquals(
+            selected,
+            selected - 3_600 + auto.timeline.dataCursorSeconds.toLong(),
+        )
+
+        val ticks = RadarTimelineTicks.withSelected(
+            RadarTimelineTicks.between(
+                auto.timeline.displayStartEpochSeconds,
+                auto.timeline.displayEndEpochSeconds,
+                ZoneId.of("Europe/London"),
+            ),
+            auto.timeline.displayStartEpochSeconds,
+            auto.timeline.displayEndEpochSeconds,
+            selected,
+            auto.localMinuteText,
+        )
+        val selectedTick = ticks.single { it.selected }
+        assertEquals(auto.displayFraction, selectedTick.fraction, 0f)
+        assertEquals(
+            RadarTimelineTrackGeometry.anchorPx(
+                auto.displayFraction, 317, RadarTimelineTrackGeometry.INNER_INSET_DP,
+            ),
+            RadarTimelineTrackGeometry.anchorPx(
+                selectedTick.fraction, 317, RadarTimelineTrackGeometry.INNER_INSET_DP,
+            ),
+            0f,
+        )
+    }
+
+    @Test fun `AUTO frame stays absolute through session replacement and uncovered time is truthful`() {
+        val selected = 10_000L
+        val old = RadarTravelAutoPolicy.frame(
+            selected, 8_000, 9_600, 12_000, true, ZoneId.of("UTC"),
+        )
+        val replacement = RadarTravelAutoPolicy.frame(
+            selected, 9_000, 9_900, 13_000, true, ZoneId.of("UTC"),
+        )
+        assertEquals(selected, old.overlayEpochSeconds)
+        assertEquals(selected, replacement.overlayEpochSeconds)
+        assertEquals(old.selectedEpochSeconds, replacement.selectedEpochSeconds)
+
+        val unavailable = RadarTravelAutoPolicy.frame(
+            selected, 8_000, 9_500, 9_900, true, ZoneId.of("UTC"),
+        )
+        assertFalse(unavailable.wallClockCovered)
+        assertEquals(null, unavailable.overlayEpochSeconds)
+        assertEquals(selected, unavailable.satelliteEpochSeconds)
+        assertEquals(selected, unavailable.timeline.selectedEpochSeconds)
+
+        val loading = RadarTravelAutoPolicy.unavailableFrame(
+            selectedEpochSeconds = selected,
+            displayDurationSeconds = 3_600,
+            zoneId = ZoneId.of("UTC"),
+        )
+        assertFalse(loading.wallClockCovered)
+        assertEquals(null, loading.overlayEpochSeconds)
+        assertEquals(selected, loading.selectedEpochSeconds)
+        assertEquals(
+            selected,
+            loading.timeline.displayStartEpochSeconds +
+                loading.timeline.displayCursorSeconds.toLong(),
+        )
+    }
+
+    @Test fun `shared measured track anchors ignore control-cell content and font widths`() {
+        val fraction = 0.64f
+        val trackWidth = 284
+        val thumbInset = RadarTimelineTrackGeometry.INNER_INSET_DP
+        val sliderAnchor = RadarTimelineTrackGeometry.anchorPx(fraction, trackWidth, thumbInset)
+        for (unrelatedControlContentWidth in listOf(0, 32, 57, 104)) {
+            for (fontScale in listOf(0.85f, 1f, 1.5f, 2f)) {
+                // The sibling dimensions determine the measured track width before this policy;
+                // once measured, both thumb and ticks consume this exact same coordinate space.
+                assertTrue(unrelatedControlContentWidth >= 0 && fontScale > 0f)
+                assertEquals(
+                    sliderAnchor,
+                    RadarTimelineTrackGeometry.anchorPx(fraction, trackWidth, thumbInset),
+                    0f,
+                )
+            }
+        }
+        for (controlContentWidth in listOf(0, 36, 48, 96)) {
+            assertTrue(controlContentWidth >= 0)
+            assertEquals(
+                306,
+                RadarTimelineTrackGeometry.measuredTrackWidthPx(
+                    containerWidthPx = 360,
+                    playColumnWidthPx = 48,
+                    gapWidthPx = 6,
+                ),
+            )
+        }
+    }
+
+    @Test fun `inline AUTO follows the thumb and remains wholly inside the filled track`() {
+        val first = requireNotNull(RadarTimelineInlineAutoLabelPolicy.place(
+            fraction = .55f,
+            widthPx = 320,
+            heightPx = 48,
+            labelWidthPx = 42,
+            labelHeightPx = 20,
+            trackInsetPx = 2f,
+            thumbWidthPx = 4f,
+            gapPx = 8f,
+            glyphSafetyInsetPx = 2f,
+        ))
+        val later = requireNotNull(RadarTimelineInlineAutoLabelPolicy.place(
+            fraction = .80f,
+            widthPx = 320,
+            heightPx = 48,
+            labelWidthPx = 42,
+            labelHeightPx = 20,
+            trackInsetPx = 2f,
+            thumbWidthPx = 4f,
+            gapPx = 8f,
+            glyphSafetyInsetPx = 2f,
+        ))
+        assertTrue(later.leftPx > first.leftPx)
+        listOf(first, later).forEach { placement ->
+            assertEquals(placement.thumbAnchorPx - 12f, placement.leftPx + 42f, 0f)
+            assertEquals(placement.thumbAnchorPx - 10f, placement.safeVisualRightPx, 0f)
+            assertEquals(placement.leftPx - 2f, placement.safeVisualLeftPx, 0f)
+            assertTrue(placement.safeVisualLeftPx >= 2f)
+            assertEquals(8f,
+                (placement.thumbAnchorPx - 2f) - placement.safeVisualRightPx, 0f)
+            assertEquals(14f, placement.topPx, 0f)
+        }
+    }
+
+    @Test fun `inline AUTO is omitted when the cyan fill cannot contain it`() {
+        assertEquals(null, RadarTimelineInlineAutoLabelPolicy.place(
+            fraction = .12f,
+            widthPx = 320,
+            heightPx = 48,
+            labelWidthPx = 42,
+            labelHeightPx = 20,
+            trackInsetPx = 2f,
+            thumbWidthPx = 4f,
+            gapPx = 8f,
+            glyphSafetyInsetPx = 2f,
+        ))
+        val justFits = RadarTimelineInlineAutoLabelPolicy.place(
+            fraction = .20f,
+            widthPx = 320,
+            heightPx = 48,
+            labelWidthPx = 42,
+            labelHeightPx = 20,
+            trackInsetPx = 2f,
+            thumbWidthPx = 4f,
+            gapPx = 8f,
+            glyphSafetyInsetPx = 2f,
+        )
+        assertTrue(justFits != null)
+        val nearRight = requireNotNull(RadarTimelineInlineAutoLabelPolicy.place(
+            fraction = .98f,
+            widthPx = 320,
+            heightPx = 48,
+            labelWidthPx = 42,
+            labelHeightPx = 20,
+            trackInsetPx = 2f,
+            thumbWidthPx = 4f,
+            gapPx = 8f,
+            glyphSafetyInsetPx = 2f,
+        ))
+        assertEquals(8f,
+            (nearRight.thumbAnchorPx - 2f) - nearRight.safeVisualRightPx, 0f)
+        assertTrue(nearRight.safeVisualRightPx < 320f)
     }
     @Test
     fun entryOpensAtWallClockOnlyWhenForecastCoversIt() {
@@ -176,18 +429,147 @@ class RadarPresentationTest {
     @Test fun `measured label collision thinning never moves a label away from its tick`() {
         val fractions = listOf(0f, .25f, .5f, .75f, 1f)
         val roomy = RadarTimelineLabelLayout.arrange(fractions, List(5) { 34 }, 400, 8f, 6f)
-        assertTrue(roomy.all { it.visible })
-        assertEquals(listOf(17f, 104f, 200f, 296f, 383f), roomy.map { it.anchorPx })
+        assertTrue(roomy.all { it.labelVisible && it.markerVisible })
+        assertEquals(listOf(8f, 104f, 200f, 296f, 392f), roomy.map { it.anchorPx })
+        assertEquals(listOf(17f, 104f, 200f, 296f, 383f), roomy.map { it.labelCenterPx })
 
         val narrow = RadarTimelineLabelLayout.arrange(fractions, List(5) { 58 }, 180, 8f, 6f)
-        assertTrue(narrow.count { it.visible } < narrow.size)
-        assertEquals(29f, narrow.first().anchorPx, 0f)
-        assertEquals(151f, narrow.last().anchorPx, 0f)
-        assertTrue(narrow.last().visible)
+        assertTrue(narrow.count { it.labelVisible } < narrow.size)
+        assertEquals(8f, narrow.first().anchorPx, 0f)
+        assertEquals(172f, narrow.last().anchorPx, 0f)
+        assertEquals(29f, narrow.first().labelCenterPx, 0f)
+        assertEquals(151f, narrow.last().labelCenterPx, 0f)
+        assertTrue(narrow.last().labelVisible)
         assertTrue(narrow.zip(fractions).all { (placement, fraction) ->
             val expectedRaw = 8f + (180f - 16f) * fraction
-            placement.anchorPx == expectedRaw.coerceIn(29f, 151f)
+            placement.anchorPx == expectedRaw
         })
+    }
+
+    @Test fun `AUTO overlays the unchanged ordinary tick grid and surviving anchors stay exact`() {
+        val start = 10_000L
+        val end = start + 3_600L
+        val base = RadarTimelineTicks.between(start, end, ZoneId.of("UTC"))
+        val auto = RadarTimelineTicks.withSelected(
+            ticks = base,
+            startEpochSeconds = start,
+            endEpochSeconds = end,
+            selectedEpochSeconds = start + 1_234L,
+            selectedLabel = "00:20",
+        )
+        assertEquals(base, auto.filterNot { it.selected })
+        val exact = RadarTimelineTicks.withSelected(
+            ticks = base,
+            startEpochSeconds = start,
+            endEpochSeconds = end,
+            selectedEpochSeconds = base[2].epochSeconds,
+            selectedLabel = base[2].label,
+        )
+        assertEquals(base, exact.filterNot { it.selected })
+        assertEquals(2, exact.count { it.epochSeconds == base[2].epochSeconds })
+
+        val baseLayout = RadarTimelineLabelLayout.arrange(
+            fractions = base.map { it.fraction },
+            labelWidthsPx = List(base.size) { 40 },
+            widthPx = 360,
+            innerInsetPx = 6f,
+            gapPx = 5f,
+        )
+        val autoLayout = RadarTimelineLabelLayout.arrange(
+            fractions = auto.map { it.fraction },
+            labelWidthsPx = auto.map { if (it.selected) 48 else 40 },
+            selected = auto.map { it.selected },
+            widthPx = 360,
+            innerInsetPx = 6f,
+            gapPx = 5f,
+        )
+        val autoOrdinary = auto.indices.filter { !auto[it].selected }
+        assertEquals(baseLayout.map { it.anchorPx }, autoOrdinary.map { autoLayout[it].anchorPx })
+        autoOrdinary.filter { autoLayout[it].markerVisible }.forEachIndexed { _, autoIndex ->
+            val epoch = auto[autoIndex].epochSeconds
+            val baseIndex = base.indexOfFirst { it.epochSeconds == epoch }
+            assertEquals(baseLayout[baseIndex].anchorPx, autoLayout[autoIndex].anchorPx, 0f)
+        }
+    }
+
+    @Test fun `exact and near AUTO collisions suppress ordinary labels and marker lines`() {
+        val placements = RadarTimelineLabelLayout.arrange(
+            fractions = listOf(.5f, .5f, .53f, .82f),
+            labelWidthsPx = listOf(40, 48, 40, 40),
+            selected = listOf(false, true, false, false),
+            widthPx = 320,
+            innerInsetPx = 6f,
+            gapPx = 5f,
+        )
+        assertTrue(placements[1].labelVisible && placements[1].markerVisible)
+        listOf(0, 2).forEach { index ->
+            assertFalse(placements[index].labelVisible)
+            assertFalse(placements[index].markerVisible)
+        }
+        assertTrue(placements[3].labelVisible && placements[3].markerVisible)
+        assertEquals(placements[0].anchorPx, placements[1].anchorPx, 0f)
+    }
+
+    @Test fun `AUTO edge markers retain exact domain anchors while labels remain visible`() {
+        for (selectedFraction in listOf(0f, 1f)) {
+            val nearby = if (selectedFraction == 0f) .02f else .98f
+            val far = if (selectedFraction == 0f) .55f else .45f
+            val placements = RadarTimelineLabelLayout.arrange(
+                fractions = listOf(nearby, far, selectedFraction),
+                labelWidthsPx = listOf(34, 34, 52),
+                selected = listOf(false, false, true),
+                widthPx = 300,
+                innerInsetPx = 7f,
+                gapPx = 5f,
+            )
+            val selected = placements[2]
+            assertEquals(if (selectedFraction == 0f) 7f else 293f, selected.anchorPx, 0f)
+            assertTrue(selected.labelVisible && selected.markerVisible)
+            assertFalse(placements[0].labelVisible)
+            assertFalse(placements[0].markerVisible)
+            assertTrue(placements[1].labelVisible && placements[1].markerVisible)
+        }
+        val beforeDomain = RadarTimelineTicks.withSelected(
+            ticks = emptyList(),
+            startEpochSeconds = 100L,
+            endEpochSeconds = 200L,
+            selectedEpochSeconds = 99L,
+            selectedLabel = "00:01",
+        ).single()
+        val afterDomain = RadarTimelineTicks.withSelected(
+            ticks = emptyList(),
+            startEpochSeconds = 100L,
+            endEpochSeconds = 200L,
+            selectedEpochSeconds = 201L,
+            selectedLabel = "00:03",
+        ).single()
+        assertEquals(0f, beforeDomain.fraction, 0f)
+        assertEquals(1f, afterDomain.fraction, 0f)
+        assertTrue(beforeDomain.selected && afterDomain.selected)
+    }
+
+    @Test fun `AUTO selected label and marker win measured collisions at every font scale`() {
+        val fractions = listOf(.48f, .50f, .78f)
+        for (widths in listOf(
+            listOf(38, 42, 38),
+            listOf(57, 63, 57),
+            listOf(76, 84, 76),
+        )) {
+            val placements = RadarTimelineLabelLayout.arrange(
+                fractions = fractions,
+                labelWidthsPx = widths,
+                selected = listOf(false, true, false),
+                widthPx = 320,
+                innerInsetPx = RadarTimelineTrackGeometry.INNER_INSET_DP,
+                gapPx = 5f,
+            )
+            assertTrue(placements[1].labelVisible)
+            assertTrue(placements[1].markerVisible)
+            assertFalse(placements[0].labelVisible)
+            assertFalse(placements[0].markerVisible)
+            assertTrue(placements[2].labelVisible)
+            assertTrue(placements[2].markerVisible)
+        }
     }
 
     @Test fun `entry focus and radar edge swipes are bounded and deliberate`() {

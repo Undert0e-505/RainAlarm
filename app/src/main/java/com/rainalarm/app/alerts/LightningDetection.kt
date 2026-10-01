@@ -178,8 +178,10 @@ object LightningEpisodePolicy {
                 LightningFrameObservation.NO_DETECTION ->
                     current = current.copy(active = false, activeEventIdentity = 0L)
                 LightningFrameObservation.DETECTED -> {
-                    if (!current.active && event == null) event = identity
-                    current = current.copy(active = true, activeEventIdentity = identity)
+                    if (!current.active) {
+                        event = identity
+                        current = current.copy(active = true, activeEventIdentity = identity)
+                    }
                 }
                 LightningFrameObservation.UNAVAILABLE -> Unit
             }

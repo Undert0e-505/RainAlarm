@@ -18,6 +18,7 @@
     <string name="now_refresh">Athnuaigh réamhaisnéis radar</string><string name="now_next_hour">An chéad uair eile</string><string name="now_now">Anois</string><string name="now_no_rain">Gan bháisteach</string><string name="now_from">Ó %1$s</string><string name="now_raining">Tá sé ag cur báistí anois</string><string name="now_snow_likely">Sneachta dóchúil</string><string name="now_rain_in">Tosóidh báisteach i</string><string name="now_snow_in">Sneachta dóchúil i</string><string name="now_no_rain_yet">Níor braitheadh báisteach fós</string><string name="now_no_rain_hour">Níltear ag súil le báisteach sa chéad uair eile</string><string name="now_sunrise">Éirí gréine</string><string name="now_sunset">Luí gréine</string><string name="now_severe">Trom</string><string name="now_medium">Meánach</string><string name="now_light">Éadrom</string>
 <string name="notification_channel_name">Foláirimh báistí agus tintrí</string><string name="notification_channel_description">Foláirimh chiúine faoi bháisteach ag teacht agus gníomhaíocht tintrí a breathnaíodh in aice láimhe</string><string name="notification_rain_title">Báisteach ag teacht chuig %1$s</string><string name="notification_snow_title">Sneachta dóchúil ag teacht chuig %1$s</string><string name="notification_eta">I gceann %1$d nóim · thart ar %2$s</string><string name="notification_detail">%1$s · thart ar %2$d nóim; buaicdhéine %3$d%%</string>
     <plurals name="notification_eta_plural"><item quantity="one">I gceann %1$d nóiméad · thart ar %2$s</item><item quantity="two">I gceann %1$d nóiméad · thart ar %2$s</item><item quantity="few">I gceann %1$d nóiméad · thart ar %2$s</item><item quantity="many">I gceann %1$d nóiméad · thart ar %2$s</item><item quantity="other">I gceann %1$d nóiméad · thart ar %2$s</item></plurals>
+    <plurals name="notification_starts_eta_plural"><item quantity="one">Tosaíonn sé ag %1$s · i gceann %2$d nóiméad</item><item quantity="two">Tosaíonn sé ag %1$s · i gceann %2$d nóiméad</item><item quantity="few">Tosaíonn sé ag %1$s · i gceann %2$d nóiméad</item><item quantity="many">Tosaíonn sé ag %1$s · i gceann %2$d nóiméad</item><item quantity="other">Tosaíonn sé ag %1$s · i gceann %2$d nóiméad</item></plurals><string name="notification_bounded_detail">%1$s · thart ar %2$d nóim ar fad · buaicdhéine %3$d%%</string><string name="notification_duration_detail">%1$s · thart ar %2$d nóim ar fad</string><string name="notification_unbounded_detail">%1$s · ar a laghad %2$d%%</string><string name="notification_rain_now_title">Báisteach anois ag %1$s</string><string name="notification_snow_now_title">Sneachta dóchúil anois ag %1$s</string><plurals name="notification_stops_remaining_plural"><item quantity="one">Meastar go stopfaidh sé ag %1$s · thart ar %2$d nóiméad fágtha</item><item quantity="two">Meastar go stopfaidh sé ag %1$s · thart ar %2$d nóiméad fágtha</item><item quantity="few">Meastar go stopfaidh sé ag %1$s · thart ar %2$d nóiméad fágtha</item><item quantity="many">Meastar go stopfaidh sé ag %1$s · thart ar %2$d nóiméad fágtha</item><item quantity="other">Meastar go stopfaidh sé ag %1$s · thart ar %2$d nóiméad fágtha</item></plurals><string name="notification_intensity_at_least">Ar a laghad %1$d%%</string><string name="notification_peak_detail">%1$s · buaicdhéine %2$d%%</string>
     <string name="places_switch_description">Roghnaigh áit; roghnaithe: %1$s</string>
     <string name="common_expanded">Leathnaithe</string><string name="common_collapsed">Laghdaíodh</string><string name="common_active_label">Gníomhach</string><string name="common_source_terms">Foinse / téarmaí</string>
     <string name="places_search_failed">Theip ar chuardach áite</string><string name="places_permission_denied">Níor tugadh cead suímh. Níor athraíodh do rogha sábháilte.</string><string name="places_search_sources">Bailte: Open-Meteo · Áiteanna ainmnithe: Photon/OSM + Vicipéid · Cóid poist RA: postcodes.io</string>
@@ -96,7 +97,7 @@
     <string name="notification_lightning_detail">Braitheadh gníomhaíocht tintrí laistigh de %1$d km.</string>
     <string name="notification_combined_title">Báisteach ag druidim le %1$s · gníomhaíocht tintrí in aice láimhe</string>
     <string name="notification_combined_summary">%1$s · gníomhaíocht tintrí braite</string>
-    <string name="notification_combined_detail">%1$s. Braitheadh gníomhaíocht tintrí laistigh de %2$d km; ní réamhaisnéis buailte é seo.</string>
+    <string name="notification_combined_detail">%1$s · Braitheadh gníomhaíocht tintrí laistigh de %2$d km.</string>
     <string name="notification_rain_approaching">Báisteach ag druidim</string>
     <string name="widget_description">Giuirléid aimsire Rain Alarm</string>
     <string name="widget_tap_to_configure">Tapáil le cumrú</string>
@@ -130,6 +131,10 @@
     <string name="widget_preview_description">Réamhamharc giuirléide le cúlra %1$d faoin gcéad teimhneach</string>
     <string name="widget_preview_place">Áit shamplach</string>
     <string name="widget_quiet_hours_heading">FÓGRAÍ</string>
+    <string name="widget_notifications">Fógraí giuirléid</string>
+    <string name="widget_notifications_help">Cuir in iúl faoi eachtraí nua báistí ag suíomh an ghiuirléid seo.</string>
+    <string name="widget_include_lightning">Cuir tintreach san áireamh</string>
+    <string name="widget_include_lightning_help">Cuir in iúl freisin nuair a bhraitear gníomhaíocht tintrí laistigh de 15 km.</string>
     <string name="widget_quiet_hours">Ná cuir isteach</string>
     <string name="widget_quiet_off">Ná cuir isteach · As</string>
     <string name="widget_quiet_summary">Ná cuir isteach · %1$s–%2$s</string>
@@ -146,4 +151,8 @@
     <string name="radar_travel_auto_badge">UATHOIBRÍOCH</string>
     <string name="radar_travel_auto_accessibility">Am taistil uathoibríoch</string>
     <string name="radar_current_time_unavailable">Níl am reatha an radair ar fáil</string>
+<string name="notification_rain_severity_title">Báisteach %1$s ag teacht chuig %2$s</string>
+<string name="notification_snow_severity_title">Sneachta %1$s dóchúil ag teacht chuig %2$s</string>
+<string name="notification_rain_now_severity_title">Báisteach %1$s anois ag %2$s</string>
+<string name="notification_snow_now_severity_title">Sneachta %1$s dóchúil anois ag %2$s</string>
 </resources>

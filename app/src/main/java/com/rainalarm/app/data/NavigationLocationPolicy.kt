@@ -75,7 +75,7 @@ data class NavigationLocationFix(
     val bearingAccuracyDegrees: Float? = null,
 )
 
-enum class TravelVisualMotionSource { STATIONARY, PLATFORM, DERIVED }
+enum class TravelVisualMotionSource { STATIONARY, INTERPOLATED, PLATFORM, DERIVED }
 
 /**
  * A visual-only Travel target. It is deliberately not a [SavedPlace] or a
@@ -96,6 +96,11 @@ internal object TravelVisualMotionPolicy {
     const val tickMillis = 200L
     const val maximumProjectionMillis = 1_200L
     const val reconciliationMillis = 600L
+    const val defaultInterpolationMillis = 800L
+    const val minimumInterpolationMillis = 200L
+    const val maximumInterpolationMillis = 1_000L
+    const val maximumInterpolationCadenceMillis = 3_000L
+    const val maximumInterpolationDistanceMetres = 150.0
     const val maximumAccuracyMetres = 50f
     const val stationarySpeedMetresPerSecond = 0.75
     const val maximumSpeedMetresPerSecond = 70.0
@@ -107,6 +112,14 @@ internal object TravelVisualMotionPolicy {
     fun usableForProjection(fix: NavigationLocationFix): Boolean =
         fix.finePermission && fix.source != LocationFixSource.NETWORK &&
             fix.accuracyMetres.isFinite() && fix.accuracyMetres <= maximumAccuracyMetres
+
+    fun crediblyStationary(fix: NavigationLocationFix): Boolean {
+        val speed = fix.speedMetresPerSecond ?: return false
+        if (!speed.isFinite() || speed >= stationarySpeedMetresPerSecond) return false
+        return fix.speedAccuracyMetresPerSecond?.let {
+            it.isFinite() && it <= 2.5f
+        } ?: true
+    }
 
     fun shouldPublish(previous: TravelDisplayTarget?, candidate: TravelDisplayTarget): Boolean =
         previous == null || distanceMetres(
@@ -127,6 +140,27 @@ internal object TravelVisualMotionPolicy {
         return min(
             (nowElapsedNanos - fixElapsedNanos) / 1_000_000_000.0,
             maximumProjectionMillis / 1_000.0,
+        )
+    }
+
+    fun interpolationDurationMillis(
+        previous: NavigationLocationFix?,
+        current: NavigationLocationFix,
+    ): Long {
+        val cadenceMillis = previous?.let {
+            when {
+                current.elapsedRealtimeNanos > it.elapsedRealtimeNanos &&
+                    it.elapsedRealtimeNanos > 0L ->
+                    (current.elapsedRealtimeNanos - it.elapsedRealtimeNanos) / 1_000_000L
+                current.wallTimeMillis > it.wallTimeMillis ->
+                    current.wallTimeMillis - it.wallTimeMillis
+                else -> null
+            }
+        } ?: return defaultInterpolationMillis
+        if (cadenceMillis > maximumInterpolationCadenceMillis) return 0L
+        return (cadenceMillis * 85L / 100L).coerceIn(
+            minimumInterpolationMillis,
+            maximumInterpolationMillis,
         )
     }
 
@@ -179,8 +213,9 @@ internal object TravelVisualMotionPolicy {
 }
 
 /**
- * Bounded visual dead-reckoning for Travel. Real fixes remain separately owned by the location
- * and weather pipeline; this tracker only supplies short-lived marker/camera presentation targets.
+ * Visual-only Travel smoothing. Reliable motion can use bounded dead reckoning; otherwise sparse
+ * genuine fixes are approached causally so presentation remains smooth without inventing a future
+ * position. Real fixes remain separately owned by the location and weather pipeline.
  */
 internal class TravelVisualMotionTracker {
     private data class Motion(
@@ -196,6 +231,12 @@ internal class TravelVisualMotionTracker {
     private var correctionLatitudeDegrees = 0.0
     private var correctionLongitudeDegrees = 0.0
     private var correctionStartedElapsedNanos = 0L
+    private var interpolationStartLatitude: Double? = null
+    private var interpolationStartLongitude: Double? = null
+    private var interpolationEndLatitude: Double? = null
+    private var interpolationEndLongitude: Double? = null
+    private var interpolationStartedElapsedNanos = 0L
+    private var interpolationDurationMillis = 0L
 
     fun clear() {
         latestFix = null
@@ -205,6 +246,7 @@ internal class TravelVisualMotionTracker {
         correctionLatitudeDegrees = 0.0
         correctionLongitudeDegrees = 0.0
         correctionStartedElapsedNanos = 0L
+        clearInterpolation()
     }
 
     fun accept(
@@ -222,19 +264,25 @@ internal class TravelVisualMotionTracker {
             max(3.0, min(12.0, max(it.accuracyMetres, fix.accuracyMetres).toDouble()))
         } ?: 0.0
         val holdStationary = usable && before != null &&
-            (selectedMotion == null ||
-                selectedMotion.speedMetresPerSecond < TravelVisualMotionPolicy.stationarySpeedMetresPerSecond) &&
+            TravelVisualMotionPolicy.crediblyStationary(fix) &&
             rawDistance != null && rawDistance <= jitterRadius
 
         latestFix = fix
         motion = if (usable) selectedMotion else null
         if (!usable || holdStationary) {
+            clearInterpolation()
             baseLatitude = before?.latitude ?: fix.latitude
             baseLongitude = before?.longitude ?: fix.longitude
             correctionLatitudeDegrees = 0.0
             correctionLongitudeDegrees = 0.0
             correctionStartedElapsedNanos = receivedElapsedNanos
+        } else if (before != null &&
+            (selectedMotion == null || selectedMotion.source == TravelVisualMotionSource.STATIONARY) &&
+            rawDistance != null
+        ) {
+            startCausalInterpolation(before, fix, priorFix, rawDistance, receivedElapsedNanos)
         } else {
+            clearInterpolation()
             baseLatitude = fix.latitude
             baseLongitude = fix.longitude
             val correctionDistance = before?.let {
@@ -256,6 +304,7 @@ internal class TravelVisualMotionTracker {
 
     fun target(nowElapsedNanos: Long): TravelDisplayTarget? {
         val fix = latestFix ?: return null
+        interpolationTarget(fix, nowElapsedNanos)?.let { return it }
         val startLatitude = baseLatitude ?: fix.latitude
         val startLongitude = baseLongitude ?: fix.longitude
         val activeMotion = motion
@@ -297,6 +346,75 @@ internal class TravelVisualMotionTracker {
             projected = isProjected,
             motionSource = activeMotion?.source ?: TravelVisualMotionSource.STATIONARY,
         )
+    }
+
+    private fun startCausalInterpolation(
+        before: TravelDisplayTarget,
+        fix: NavigationLocationFix,
+        previous: NavigationLocationFix?,
+        distanceMetres: Double,
+        receivedElapsedNanos: Long,
+    ) {
+        val duration = TravelVisualMotionPolicy.interpolationDurationMillis(previous, fix)
+        val safeToInterpolate = duration > 0L &&
+            distanceMetres <= TravelVisualMotionPolicy.maximumInterpolationDistanceMetres
+        motion = null
+        correctionLatitudeDegrees = 0.0
+        correctionLongitudeDegrees = 0.0
+        correctionStartedElapsedNanos = receivedElapsedNanos
+        if (!safeToInterpolate) {
+            clearInterpolation()
+            baseLatitude = fix.latitude
+            baseLongitude = fix.longitude
+            return
+        }
+        baseLatitude = fix.latitude
+        baseLongitude = fix.longitude
+        interpolationStartLatitude = before.latitude
+        interpolationStartLongitude = before.longitude
+        interpolationEndLatitude = fix.latitude
+        interpolationEndLongitude = fix.longitude
+        interpolationStartedElapsedNanos = receivedElapsedNanos
+        interpolationDurationMillis = duration
+    }
+
+    private fun interpolationTarget(
+        fix: NavigationLocationFix,
+        nowElapsedNanos: Long,
+    ): TravelDisplayTarget? {
+        val startLatitude = interpolationStartLatitude ?: return null
+        val startLongitude = interpolationStartLongitude ?: return null
+        val endLatitude = interpolationEndLatitude ?: return null
+        val endLongitude = interpolationEndLongitude ?: return null
+        val duration = interpolationDurationMillis.takeIf { it > 0L } ?: return null
+        val ageMillis = if (nowElapsedNanos > interpolationStartedElapsedNanos) {
+            (nowElapsedNanos - interpolationStartedElapsedNanos) / 1_000_000.0
+        } else 0.0
+        val fraction = (ageMillis / duration).coerceIn(0.0, 1.0)
+        val longitudeDelta = normalizeLongitude(endLongitude - startLongitude)
+        return TravelDisplayTarget(
+            latitude = (startLatitude + (endLatitude - startLatitude) * fraction)
+                .coerceIn(-90.0, 90.0),
+            longitude = normalizeLongitude(startLongitude + longitudeDelta * fraction),
+            sourceFixElapsedRealtimeNanos = fix.elapsedRealtimeNanos,
+            displayElapsedRealtimeNanos = nowElapsedNanos,
+            source = fix.source,
+            projected = false,
+            motionSource = if (fraction < 1.0) {
+                TravelVisualMotionSource.INTERPOLATED
+            } else {
+                TravelVisualMotionSource.STATIONARY
+            },
+        )
+    }
+
+    private fun clearInterpolation() {
+        interpolationStartLatitude = null
+        interpolationStartLongitude = null
+        interpolationEndLatitude = null
+        interpolationEndLongitude = null
+        interpolationStartedElapsedNanos = 0L
+        interpolationDurationMillis = 0L
     }
 
     private fun selectMotion(

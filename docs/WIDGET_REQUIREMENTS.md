@@ -1,9 +1,12 @@
 # Android home-screen widget requirements
 
-> **Status: implemented in Rain Alarm 0.9.0.** This remains the normative engineering description
+> **Status: implemented in Rain Alarm 0.9.1.** This remains the normative engineering description
 > of the Android home-screen widget and supporting polling/alert behaviour. Lightning observation,
 > notification and temporary Radar-layer behaviour are specified separately in
-> [Lightning activity alert requirements](LIGHTNING_ALERT_REQUIREMENTS.md). Launcher, device and
+> [Lightning activity alert requirements](LIGHTNING_ALERT_REQUIREMENTS.md). All app/widget
+> notification settings, eligibility, episode correlation, content, DND and cross-source
+> suppression are authoritative in
+> [App and widget notification requirements](NOTIFICATION_REQUIREMENTS.md). Launcher, device and
 > live-provider validation continues on the road to 1.0.
 
 ## Objective
@@ -48,8 +51,9 @@ Every widget instance has independent persisted configuration:
 | Setting | Choices/default |
 | --- | --- |
 | Location | One saved place |
-| 1×1 content | **Smart** (default), Rain, Lightning or Temperature |
 | Background opacity | 0–100%, defaulting to the opacity of the app's existing cards |
+| Widget notifications | **On** by default; independent for every instance |
+| Include lightning | **Off** by default; subordinate to this widget's notification master |
 | Do Not Disturb | **Off** by default; when on, distinct local start and end times |
 
 The configuration screen must show the resolved place and a live miniature widget preview. It uses
@@ -57,9 +61,9 @@ the app's currently resolved palette, card shapes, controls, iconography, spacin
 system-sans typography. It does not have a per-widget theme selector; background opacity is the only
 widget-specific visual override.
 
-Saving a location/content change triggers an immediate network-constrained refresh. Saving only
-opacity or Do Not Disturb changes republishes control/appearance state without a weather fetch,
-provider change or alert re-arm. The launcher and an in-app entry point must allow an existing
+Saving a location or newly required Lightning stream triggers an immediate network-constrained
+refresh. Saving only opacity, notification eligibility or Do Not Disturb republishes configuration
+without changing the weather target. The launcher and an in-app entry point must allow an existing
 widget to be reconfigured.
 
 There is no per-widget radar-provider choice in this version. Each resolved target uses the same
@@ -131,8 +135,8 @@ The widget must not convert normalized display severity into invented millimetre
   rate.
 - Show a predicted stop time only when the same episode has a confirmed first dry minute inside
   actual available coverage. If the episode runs to the coverage edge, omit the stop claim.
-- When all available samples are dry, show a fresh temperature as the current dry state where the
-  selected widget mode permits it; otherwise use the neutral **Dry now** state. An incomplete
+- When all available samples are dry, show a fresh temperature in the 1×1 disc or as adjacent text
+  at wider sizes; wider discs and temperature-missing 1×1 widgets use the neutral dash. An incomplete
   horizon must not be described as a complete one-hour clear outlook or arm prior-clear alert
   eligibility.
 - `Unavailable`, no-usable-sample and stale states use concise explicit wording and an em
@@ -217,38 +221,28 @@ disc or compact textual status at narrower widths.
 
 ## Lightning in the widget
 
-When a widget mode/layout requires lightning, it is evaluated in the same polling transaction and
+When a widget layout or per-widget notification choice requires Lightning, it is evaluated in the same polling transaction and
 at the exact same frozen target coordinate as rain. Detection radius, five-minute frame catch-up,
 freshness, episode deduplication, wording and error semantics are defined in
 [Lightning activity alert requirements](LIGHTNING_ALERT_REQUIREMENTS.md).
 
 - Nearby detected activity appears as a distinct lightning badge/status alongside rain. It never
   hides a known wet/approaching rain state.
-- If rain is clear but lightning is detected, Lightning may become the primary Smart 1×1 state.
+- A 1×1 never presents Lightning: it remains rain-first, then temperature/dash when dry.
 - A widget displaying nearby lightning opens Radar with the target-bound ten-minute temporary
   Lightning state.
 - No-detection and unavailable are different. Do not show an unavailable source as safely clear.
-- The Lightning notification setting controls alerts, not whether the widget may display the most
-  recent successfully evaluated lightning state.
-- Smart and Lightning 1×1 modes, plus responsive layouts that contain the Lightning badge, create
-  Lightning display demand. Rain- or Temperature-only layouts that do not present Lightning create
-  no such demand. If the alert switch is also off, omit Lightning acquisition for those widgets.
+- A wider widget's Lightning text is independent of its Include lightning notification choice.
+- Wider responsive layouts create Lightning display demand. A 1×1 creates Lightning demand only
+  when its own Widget notifications and Include lightning controls are both on.
 
 ## Responsive content priority
 
-### 1×1 primary modes
+### 1×1 rain-first state
 
-The user chooses one primary mode per widget:
-
-| Mode | Primary rule | Fallback |
-| --- | --- | --- |
-| **Smart** | Wet/approaching precipitation, then nearby lightning, then fresh dry-state temperature | Neutral em dash with unavailable/update action |
-| **Rain** | Mini Compass rain/snow/dry-current state | **Dry now** with a neutral dash when usable samples are dry; unavailable only when no usable state exists |
-| **Lightning** | Nearby activity, successful no-detection, or unavailable | Never substitute rain/temperature for an unavailable Lightning result |
-| **Temperature** | Fresh model temperature | Em dash when missing/stale; never infer it from the rain series |
-
-In Smart mode, lightning does not replace an existing rain/snow state; it remains a secondary badge
-when space permits. Accessibility text announces both facts.
+The 1×1 has no selectable primary mode. Rain/likely snow now or approaching always owns the disc.
+When usable rain data is dry, fresh rounded temperature is shown; otherwise it shows a neutral
+dash. Lightning is never shown or announced by the 1×1 face.
 
 ### Intermediate and 4×1
 
@@ -268,51 +262,17 @@ balanced outer padding rather than reserving dead spacer columns.
 
 ## Alerts and notification state
 
-Adding a widget does not silently enable either global notification switch. **Rain notification**
-makes configured widget targets eligible for rain alerts; **Lightning activity notification** does
-the same independently for lightning alerts. A widget may still request Lightning for display while
-that alert switch is off, but its result cannot notify. Instances that resolve to the same
-target/provider/configuration share one eligible decision and one notification. Different fixed
-targets retain independent state.
-
-### Rain episode arming
-
-The app subscription and widget subscriptions deliberately have different eligibility rules. The
-app's selected-place Rain notification retains its established immediate approaching-rain
-behaviour and cooldown/event deduplication; it does **not** wait for a prior clear poll. Each widget
-monitoring subscription independently uses the following prior-clear state, separate from
-Lightning and from the app subscription:
-
-| Evaluation | Alert effect |
-| --- | --- |
-| Complete 0–60 minute clear window | Arm/re-arm rain. |
-| Approaching while armed and dry now | Notify once, then disarm. |
-| Approaching while disarmed | Do not repeat. |
-| Wet now | Do not issue a new approaching alert; mark the episode active/disarmed. |
-| Partial, unknown, unavailable or stale | Do not notify, arm or re-arm. |
-
-For a widget subscription, this deliberately requires at least one earlier successful
-complete-window dry evaluation before an approaching-rain notification. A new widget target that
-is already wet/approaching establishes state without immediately alerting. A later complete clear
-hour re-arms the next widget episode. It never changes or consumes the app subscription's legacy
-eligibility, even when both share one target acquisition.
-
-Persist each widget subscription's armed state, event identity, last successfully evaluated series
-identity and delivery/consumed policy separately. Shared target evidence remains coalesced. Worker,
-widget and foreground app paths must call one atomic decision engine so concurrent checks cannot
-duplicate an alert.
-
-Lightning has its own no-detection/detected arming state. If both independently trigger during the
-same transaction, send one combined notification. Lightning may notify alone, or later after rain
-was already notified, as specified in
-[Rain interaction and notification content](LIGHTNING_ALERT_REQUIREMENTS.md#rain-interaction-and-notification-content).
+Every widget has its own notification master (on by default), Include lightning (off by default),
+prior-clear rain state, component consumption and DND. App switches are unrelated. Episode rules,
+Rain-now behavior, exact content, symmetric first-successful app/widget suppression and exhaustive
+examples are normative in [App and widget notification requirements](NOTIFICATION_REQUIREMENTS.md).
 
 ### Per-widget Do Not Disturb
 
 Every widget is a separate **monitoring subscription** with its own Do Not Disturb (DND), also
 described in the UI as **Quiet hours**. DND controls notification delivery arising from that widget
-subscription. It does not change Android's system Do Not Disturb, the global Rain/Lightning
-notification switches, an unrelated widget, or the app's separate alert subscription.
+subscription. It does not change Android's system Do Not Disturb, an unrelated widget, or the
+app's separate notification settings.
 
 #### Configuration and time rules
 
@@ -327,8 +287,8 @@ notification switches, an unrelated widget, or the app's separate alert subscrip
 - When start is before end, the quiet interval is the ordinary same-day range. When start is after
   end, it crosses midnight. Start is inclusive and end is exclusive in both forms.
 - Equal start and end is invalid, not an all-day interval. Saving remains unavailable and a concise
-  validation message explains that the times must differ. Users can turn the global notification
-  switches off when they want alerts disabled entirely.
+  validation message explains that the times must differ. Users can turn this widget's notification
+  master off when they want its alerts disabled entirely.
 - Determine membership from the current instant converted with Android's current local time-zone
   rules. A spring-forward gap contains no nonexistent clock times; in a fall-back overlap, both
   occurrences of a repeated quiet wall-clock time remain quiet. Do not schedule exact alarms for
@@ -366,15 +326,14 @@ subscription so widgets sharing one target can have different quiet hours.
 For one target/event:
 
 1. evaluate weather evidence once;
-2. apply the global Rain/Lightning notification switch;
-3. evaluate each eligible subscription's DND at the decision instant;
+2. apply each widget's independent master and Include lightning choice;
+3. evaluate each eligible widget's DND at the decision instant;
 4. mark quiet subscriptions consumed without delivery; and
-5. emit at most one notification if at least one eligible subscription is outside its quiet window.
+5. coordinate persistent component claims against the app source without collapsing sibling
+   widget subscriptions.
 
-Every participating subscription is then consumed for that event, including quiet subscriptions,
-so none can replay it later. If all are quiet, emit nothing. A separate app alert subscription or
-another widget outside quiet hours may still allow the single notification; one widget's DND does
-not silence unrelated subscriptions.
+One widget's DND or delivered claim does not silence another widget. Cross-source app/widget
+suppression follows the first successful delivery as specified in `NOTIFICATION_REQUIREMENTS.md`.
 
 DND settings belong to the widget ID. Reconfiguration carries the new values with that instance;
 deleting the widget removes its DND/delivery state without deleting shared target evidence still
@@ -499,8 +458,9 @@ follow the app's existing emphasis; timestamps and source/status detail use its 
 - The whole weather surface is a clear tap target. Any separate reconfigure action must have an
   unambiguous label and must not overlap the primary Radar action.
 - Expose one concise content description containing place, rain/snow status, arrival, intensity,
-  confirmed stop (if known), temperature (when applicable), lightning state, availability and last
-  update. Do not force TalkBack to traverse decorative graph points.
+  confirmed stop (if known), temperature (when applicable), availability and last update. Wider
+  widgets may add their visible Lightning state; 1×1 must not announce hidden Lightning evidence.
+  Do not force TalkBack to traverse decorative graph points.
 - Rain, likely snow, lightning, unavailable and stale states must differ by words/iconography as
   well as colour or texture.
 - Honour Android font scale, high-contrast expectations and localized expansion. At large font
@@ -576,7 +536,7 @@ Automated tests must cover at least:
 - exact mini-disc state equivalence with Now for wet threshold, peak colour, centre text, rain
   texture and RainViewer likely-snow texture/palette;
 - no invented bearing, snow, rainfall rate or dry conclusion;
-- deterministic 1×1 modes and responsive content priority through 4×1, including equivalent
+- deterministic rain-first 1×1 and responsive content priority through 4×1, including equivalent
   place/status/intensity/stop/update hierarchy at 2×1 and 3×1, identical Compass diameter and
   pixel geometry at 2×1/3×1/4×1, and independent square-filling 1×1 sizing;
 - graph horizon, full-width/full-height sample mapping, actual-pixel/density render sizing,
@@ -584,16 +544,15 @@ Automated tests must cover at least:
   including a Samsung-like 4×1 bound where the graph fills the expanded remaining width without
   colliding with ordinary status text;
 - app-immediate versus widget-prior-clear rain eligibility, widget arming transitions and
-  shared-target notification deduplication;
+  symmetric first-successful cross-source component suppression;
 - linked Lightning episode/combined-notification/deep-link behaviour;
-- Lightning display with its alert switch off, and omitted acquisition when no widget presentation
-  or enabled alert requires it;
+- wider-widget Lightning display with Include lightning off, compact omission, and acquisition only
+  when a visible layout or that widget's enabled Lightning notifications require it;
 - DND-off default, same-day and overnight membership, inclusive-start/exclusive-end boundaries,
   equal-time rejection, current-zone changes and DST gap/overlap behaviour;
 - rain/Lightning events consumed during DND with no late alert, later clear/no-detection re-arming,
   and manual/foreground checks respecting quiet delivery while display refresh continues;
-- independent DND schedules for widgets sharing or not sharing a target, including a single
-  coalesced notification when at least one eligible subscription is outside quiet hours;
+- independent DND and delivery state for widgets sharing or not sharing a target;
 - unique-target work coalescing, overlapping generation rejection, last-good retention through
   resize/transient/partial failure, target-change isolation, hard expiry,
   successful recovery, and clock advance proving a countdown cannot freeze beyond source coverage;

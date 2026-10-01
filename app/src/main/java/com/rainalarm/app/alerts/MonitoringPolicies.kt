@@ -15,22 +15,26 @@ data class RainEpisodeTransition(
     val newEventIdentity: Long? = null,
 )
 
-/** A complete clear hour is the only input that can arm the next approaching-rain episode. */
+/** Evidence-only reducer. Delivery/DND/claim consumption is deliberately handled separately. */
 object RainEpisodePolicy {
     fun reduce(state: RainEpisodeState, evaluation: RadarAlertEvaluation): RainEpisodeTransition = when (evaluation) {
         RadarAlertEvaluation.Clear -> RainEpisodeTransition(
             state.copy(armed = true, activeEventIdentity = 0L),
         )
         is RadarAlertEvaluation.Approaching -> {
-            val event = evaluation.frameIdentity
+            val event = state.activeEventIdentity.takeIf { it > 0L } ?: evaluation.frameIdentity
             RainEpisodeTransition(
-                state.copy(armed = false, activeEventIdentity = event, lastSeriesIdentity = event),
+                state.copy(activeEventIdentity = event, lastSeriesIdentity = evaluation.frameIdentity),
                 event.takeIf { state.armed },
             )
         }
-        RadarAlertEvaluation.WetNow -> RainEpisodeTransition(
-            state.copy(armed = false),
-        )
+        is RadarAlertEvaluation.WetNow -> {
+            val event = state.activeEventIdentity.takeIf { it > 0L } ?: evaluation.frameIdentity
+            RainEpisodeTransition(
+                state.copy(activeEventIdentity = event, lastSeriesIdentity = evaluation.frameIdentity),
+                event.takeIf { state.armed },
+            )
+        }
         RadarAlertEvaluation.Unknown -> RainEpisodeTransition(state)
     }
 }

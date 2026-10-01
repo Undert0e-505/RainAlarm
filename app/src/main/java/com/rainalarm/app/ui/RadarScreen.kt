@@ -68,6 +68,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -80,6 +81,7 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -151,6 +153,7 @@ import com.rainalarm.app.domain.RadarResolutionTier
 import com.rainalarm.app.domain.RadarCameraMemory
 import com.rainalarm.app.domain.RadarSelectedCenterPolicy
 import com.rainalarm.app.domain.RadarPlaybackClock
+import com.rainalarm.app.domain.RadarPlaybackHandoffPolicy
 import com.rainalarm.app.domain.RadarEntryClock
 import com.rainalarm.app.domain.GeoPoint
 import com.rainalarm.app.domain.RadarMotionPolicy
@@ -159,8 +162,10 @@ import com.rainalarm.app.domain.RadarTimelineBracket
 import com.rainalarm.app.domain.RadarTimelineTicks
 import com.rainalarm.app.domain.FeatureTourRadarField
 import com.rainalarm.app.domain.RadarTimelineLabelLayout
+import com.rainalarm.app.domain.RadarTimelineInlineAutoLabelPolicy
+import com.rainalarm.app.domain.RadarTimelineTrackGeometry
+import com.rainalarm.app.domain.RadarTravelAutoPolicy
 import com.rainalarm.app.domain.RadarTravelTimelinePolicy
-import com.rainalarm.app.domain.RadarTravelClockPolicy
 import com.rainalarm.app.domain.RadarTravelTransitionReason
 import com.rainalarm.app.domain.EntryTransitionPhase
 import com.rainalarm.app.domain.EntryTransitionPolicy
@@ -733,6 +738,7 @@ fun LiveRadarScreen(
     var permissionOperationGeneration by remember { mutableStateOf<Int?>(null) }
     var travelNoticeActivationToken by remember { mutableIntStateOf(0) }
     var travelTimelineActivationToken by remember { mutableIntStateOf(0) }
+    var explicitTravelTimelineActivationToken by remember { mutableIntStateOf(0) }
     var travelNoticeVisible by remember { mutableStateOf(false) }
     LaunchedEffect(travelNoticeActivationToken) {
         val token = travelNoticeActivationToken
@@ -745,7 +751,8 @@ fun LiveRadarScreen(
         if (!followLive) travelNoticeVisible = false
     }
     LaunchedEffect(screenActive) {
-        if (screenActive && followLive) travelTimelineActivationToken++
+        // A graph-time navigation may retain location follow, but it owns timeline selection.
+        if (screenActive && followLive && chartTimeRequest == null) travelTimelineActivationToken++
     }
     val radarView = LocalView.current
     val keepScreenOn = appForeground && selectedPlaceId == CURRENT_LOCATION_ID && followLive
@@ -793,8 +800,11 @@ fun LiveRadarScreen(
         }
     }
     val requestTravelMode: () -> Unit = {
+        // Explicit Travel is the one action allowed to supersede a sticky graph-time intent.
+        chartTimeRequest?.let { onChartTimeConsumed(it.token) }
         travelNoticeActivationToken++
         travelTimelineActivationToken++
+        explicitTravelTimelineActivationToken++
         travelNoticeVisible = true
         locationMessage = null
         // Travel is navigation-style following: an existing approximate grant is enough
@@ -1760,6 +1770,7 @@ fun LiveRadarScreen(
                 hasFreshLiveFix = RadarLiveMapPolicy.canFollow(selectedPlaceId, liveMapPlace),
                 followLive = followLive,
                 travelTimelineActivationToken = travelTimelineActivationToken,
+                explicitTravelTimelineActivationToken = explicitTravelTimelineActivationToken,
                 followCapability = followCapability,
                 liveFixElapsedRealtimeNanos = travelDisplayTarget
                     ?.takeIf { followLive }
@@ -2300,6 +2311,7 @@ private fun ColumnScope.RadarPlayer(
     hasFreshLiveFix: Boolean,
     followLive: Boolean,
     travelTimelineActivationToken: Int,
+    explicitTravelTimelineActivationToken: Int,
     followCapability: FollowUiCapability,
     liveFixElapsedRealtimeNanos: Long,
     liveTargetProjected: Boolean,
@@ -2363,6 +2375,10 @@ private fun ColumnScope.RadarPlayer(
         }
     }
     val context = LocalContext.current
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val use24Hour = DateFormat.is24HourFormat(context)
+    val locale = configuration.locales[0]
+    val zoneId = ZoneId.systemDefault()
     val darkMap = mapStyle.darkControls
     val secondaryColor = Secondary
     val timelineDescription = stringResource(R.string.radar_timeline)
@@ -2427,8 +2443,9 @@ private fun ColumnScope.RadarPlayer(
         RadarChartTimeLink.decide(it, selectedPlaceId, requireNotNull(session).place.id, sessionTimes.first(),
             sessionTimes.first() + realEndOffset.toDouble())
     }
+    val chartApply = chartDecision as? RadarChartTimeDecision.Apply
     var cursor by remember(session) { mutableFloatStateOf(
-        (chartDecision as? RadarChartTimeDecision.Apply)?.cursorSeconds ?: initialCursor,
+        chartApply?.cursorSeconds ?: initialCursor,
     ) }
     val playbackRefreshIdentity = RadarPlaybackRefreshPolicy.identity(
         session,
@@ -2436,7 +2453,10 @@ private fun ColumnScope.RadarPlayer(
     )
     var playing by remember(playbackRefreshIdentity) { mutableStateOf(false) }
     var travelTimeAutomatic by remember { mutableStateOf(false) }
-    var travelWallClockEpochSeconds by remember { mutableStateOf(Instant.now().epochSecond) }
+    var travelWallClockEpochSeconds by remember { mutableLongStateOf(Instant.now().epochSecond) }
+    var observedExplicitTravelActivation by remember {
+        mutableIntStateOf(explicitTravelTimelineActivationToken)
+    }
     var tourCursor by remember(featureTourScenario) { mutableFloatStateOf(0f) }
     var tourPlaying by remember(featureTourScenario) { mutableStateOf(false) }
     var chartTimeMessage by remember(session) { mutableStateOf<String?>(null) }
@@ -2457,11 +2477,29 @@ private fun ColumnScope.RadarPlayer(
             else -> Unit
         }
     }
-    LaunchedEffect(followLive, travelTimelineActivationToken) {
+    LaunchedEffect(
+        followLive,
+        travelTimelineActivationToken,
+        explicitTravelTimelineActivationToken,
+    ) {
+        val explicitActivation =
+            explicitTravelTimelineActivationToken != observedExplicitTravelActivation
+        observedExplicitTravelActivation = explicitTravelTimelineActivationToken
         if (followLive) {
-            travelTimeAutomatic = true
-            playing = false
-            travelWallClockEpochSeconds = Instant.now().epochSecond
+            if (RadarTimelineActivationPolicy.automaticOnActivation(
+                    following = true,
+                    chartIntentPending = chartTimeRequest != null,
+                    explicitTravelRequest = explicitActivation,
+                )
+            ) {
+                travelTimeAutomatic = true
+                playing = false
+                travelWallClockEpochSeconds = Instant.now().epochSecond
+            } else {
+                // A Now-chart request controls time independently of location following.
+                travelTimeAutomatic = false
+                playing = false
+            }
         } else {
             travelTimeAutomatic = false
         }
@@ -2494,17 +2532,28 @@ private fun ColumnScope.RadarPlayer(
     var satellitePreparation by remember {
         mutableStateOf<Map<RadarMapLayer, SatellitePreparationStatus>>(emptyMap())
     }
-    val travelTimelineFrame = if (travelTimeAutomatic && hasRealRadarSession) {
-        RadarTravelTimelinePolicy.frame(
-            nowEpochSeconds = travelWallClockEpochSeconds,
+    val travelAutoFrame = if (!travelTimeAutomatic) null else if (hasRealRadarSession) {
+        RadarTravelAutoPolicy.frame(
+            selectedEpochSeconds = travelWallClockEpochSeconds,
             dataStartEpochSeconds = sessionTimes.first(),
             latestObservationEpochSeconds = sessionTimes[realLatestObservationIndex],
             dataEndEpochSeconds = sessionTimes.first() + realEndOffset.toLong(),
             forecastAvailable = realForecastAvailable,
+            zoneId = zoneId,
+            use24Hour = use24Hour,
+            locale = locale,
         )
-    } else null
+    } else {
+        RadarTravelAutoPolicy.unavailableFrame(
+            selectedEpochSeconds = travelWallClockEpochSeconds,
+            displayDurationSeconds = RadarTimeline.FORECAST_HORIZON_SECONDS,
+            zoneId = zoneId,
+            use24Hour = use24Hour,
+            locale = locale,
+        )
+    }
     val activeCursor = if (featureTourScenario != null) tourCursor
-        else travelTimelineFrame?.dataCursorSeconds ?: cursor
+        else travelAutoFrame?.timeline?.dataCursorSeconds ?: cursor
     val displayPlaying = if (featureTourScenario != null) tourPlaying else playing
     val safeCursor = activeCursor.takeIf { it.isFinite() }?.coerceIn(0f, endOffset)
         ?: if (featureTourScenario != null) 0f else initialCursor
@@ -2513,16 +2562,25 @@ private fun ColumnScope.RadarPlayer(
     } else {
         RadarTimeline.bracket(times, times.first() + safeCursor.toDouble())
     }
-    val realCursor = travelTimelineFrame?.dataCursorSeconds ?: cursor
+    val realCursor = travelAutoFrame?.timeline?.dataCursorSeconds ?: cursor
     val realSafeCursor = realCursor.takeIf { it.isFinite() }?.coerceIn(0f, realEndOffset) ?: initialCursor
-    val realBracket = if (!hasRealRadarSession) null else if (sessionProviderForecast) {
+    val realBracket = if (!hasRealRadarSession || travelAutoFrame?.wallClockCovered == false ||
+        chartApply?.covered == false
+    ) {
+        null
+    } else if (sessionProviderForecast) {
         RadarTimeline.bracket(
             sessionTimes,
             sessionForecastFlags,
-            sessionTimes.first() + realSafeCursor.toDouble(),
+            travelAutoFrame?.overlayEpochSeconds?.toDouble()
+                ?: (sessionTimes.first() + realSafeCursor.toDouble()),
         )
     } else {
-        RadarTimeline.bracket(sessionTimes, sessionTimes.first() + realSafeCursor.toDouble())
+        RadarTimeline.bracket(
+            sessionTimes,
+            travelAutoFrame?.overlayEpochSeconds?.toDouble()
+                ?: (sessionTimes.first() + realSafeCursor.toDouble()),
+        )
     }
 
     LaunchedEffect(displayPlaying, session, featureTourScenario, playbackSpeed) {
@@ -2541,22 +2599,23 @@ private fun ColumnScope.RadarPlayer(
             if (featureTourScenario != null) tourCursor = advanced else cursor = advanced
         }
     }
-    val travelClock = if (travelTimeAutomatic) RadarTravelClockPolicy.snapshotAt(
-        epochSeconds = travelWallClockEpochSeconds,
-        zoneId = ZoneId.systemDefault(),
-        use24Hour = DateFormat.is24HourFormat(context),
-        locale = androidx.compose.ui.platform.LocalConfiguration.current.locales[0],
-    ) else null
+    val chartRequestedTimeText = chartApply?.let { selection ->
+        DateTimeFormatter.ofPattern(if (use24Hour) "HH:mm" else "h:mm a", locale).format(
+            Instant.ofEpochSecond(selection.selectedEpochSeconds.toLong()).atZone(zoneId),
+        )
+    }
     val label = if (featureTourScenario != null) {
         val time = Instant.ofEpochSecond((times.first() + safeCursor.toLong()))
             .atZone(ZoneId.systemDefault())
             .format(DateTimeFormatter.ofPattern(if (DateFormat.is24HourFormat(context)) "HH:mm" else "h:mm a"))
         "${featureTourScenario.forecast.sourceLabel} · $time"
-    } else if (travelClock != null) {
+    } else if (chartApply?.covered == false && chartRequestedTimeText != null) {
+        stringResource(R.string.radar_forecast_unavailable_time, chartRequestedTimeText)
+    } else if (travelAutoFrame != null) {
         stringResource(
-            if (travelTimelineFrame?.wallClockCovered == true) R.string.radar_forecast_time
+            if (travelAutoFrame.wallClockCovered) R.string.radar_forecast_time
             else R.string.radar_forecast_unavailable_time,
-            travelClock.localMinuteText,
+            travelAutoFrame.localMinuteText,
         )
     } else bracket?.let {
         timelineLabel(times, it, safeCursor, latestOffset, forecastAvailable)
@@ -2580,7 +2639,8 @@ private fun ColumnScope.RadarPlayer(
         rendering = mapRenderOverlay,
     )
     val automaticCurrentTimeUnavailable = travelTimeAutomatic &&
-        travelTimelineFrame?.wallClockCovered == false
+        travelAutoFrame?.wallClockCovered == false
+    val requestedChartTimeUnavailable = chartApply?.covered == false
     val mapNotice = RadarMapNoticePolicy.select(
         (rendererStatus as? RadarRendererStatus.Error)?.let {
             RadarMapNotice(
@@ -2621,7 +2681,8 @@ private fun ColumnScope.RadarPlayer(
         recenterSignal = currentRecenterTick,
         cameraMemory = cameraMemory,
         isPlaying = playing,
-        radarPresentationVisible = featureTourScenario == null,
+        radarPresentationVisible = featureTourScenario == null &&
+            !automaticCurrentTimeUnavailable && !requestedChartTimeUnavailable,
         onRendererStatus = { rendererStatus = it },
         mapStyle = mapStyle,
         coverageMaskDarkness = coverageMaskDarkness,
@@ -2637,8 +2698,9 @@ private fun ColumnScope.RadarPlayer(
         enabledSatelliteLayers = enabledMapLayers.filterTo(mutableSetOf()) {
             it == RadarMapLayer.FOG || it == RadarMapLayer.LIGHTNING
         },
-        satelliteDisplayEpochSeconds =
-            (timelineStartEpochSeconds + safeCursor.toDouble()).toLong(),
+        satelliteDisplayEpochSeconds = travelAutoFrame?.satelliteEpochSeconds
+            ?: chartApply?.selectedEpochSeconds?.toLong()
+            ?: (timelineStartEpochSeconds + safeCursor.toDouble()).toLong(),
         satelliteTimelineStartEpochSeconds = timelineStartEpochSeconds,
         satelliteTimelineEndEpochSeconds = timelineStartEpochSeconds + endOffset.toLong(),
         satelliteWeather = currentWeather,
@@ -2773,117 +2835,191 @@ private fun ColumnScope.RadarPlayer(
             onBounds = onFeatureTourTarget,
         ),
     ) {
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        IconButton(
-            onClick = {
-                if (featureTourScenario == null) {
-                    TravelModeDiagnostics.record(
-                        followLive, followLive, RadarTravelTransitionReason.TIMELINE_MANUAL,
-                    )
-                    travelTimeAutomatic = false
-                    if (!playing) chartTimeRequest?.let { onChartTimeConsumed(it.token) }
-                    playing = !playing
-                } else {
-                    tourPlaying = !tourPlaying
-                }
-            },
-            enabled = hasRadarSession,
-            modifier = Modifier.size(48.dp),
-        ) {
-            Icon(
-                if (displayPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                contentDescription = stringResource(
-                    if (displayPlaying) R.string.radar_pause else R.string.radar_play,
-                ),
-            )
-        }
-        val timelineSliderValue = travelTimelineFrame?.displayCursorSeconds ?: safeCursor
-        Slider(
-            value = timelineSliderValue,
-            onValueChange = {
-                chartTimeRequest?.let { request -> onChartTimeConsumed(request.token) }
-                if (featureTourScenario != null) {
-                    tourCursor = it.takeIf { value -> value.isFinite() }
-                        ?.coerceIn(0f, endOffset) ?: safeCursor
-                    tourPlaying = false
-                } else {
-                    TravelModeDiagnostics.record(
-                        followLive, followLive, RadarTravelTransitionReason.TIMELINE_MANUAL,
-                    )
-                    val finite = it.takeIf { value -> value.isFinite() } ?: timelineSliderValue
-                    cursor = travelTimelineFrame?.let { frame ->
-                        RadarTravelTimelinePolicy.dataCursorForManualSelection(
-                            finite,
-                            frame,
-                            times.first(),
-                            times.first() + endOffset.toLong(),
-                        )
-                    } ?: finite.coerceIn(0f, endOffset)
-                    travelTimeAutomatic = false
-                    playing = false
-                }
-            },
-            valueRange = 0f..endOffset,
-            enabled = hasRadarSession,
-            modifier = Modifier.weight(1f).semantics {
-                contentDescription = timelineDescription
-                stateDescription = label
-            },
-        )
-        if (travelTimeAutomatic) {
-            Text(
-                text = stringResource(R.string.radar_travel_auto_badge),
-                color = Accent,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                modifier = Modifier
-                    .background(Accent.copy(alpha = 0.14f), RoundedCornerShape(8.dp))
-                    .padding(horizontal = 6.dp, vertical = 3.dp)
-                    .semantics {
-                        contentDescription = travelAutoAccessibility
-                    },
-            )
-        }
+    // Normal and AUTO share one base domain. AUTO contributes only its current-time overlay;
+    // activating Travel must never roll or regenerate the ordinary quarter-hour grid.
+    val timelineDomainStart = timelineStartEpochSeconds
+    val timelineDomainEnd = timelineDomainStart + endOffset.toLong().coerceAtLeast(1L)
+    val automaticTimelineCursor = travelAutoFrame?.let { auto ->
+        (auto.selectedEpochSeconds - timelineDomainStart)
+            .coerceIn(0L, timelineDomainEnd - timelineDomainStart)
+            .toFloat()
     }
-    if (hasRadarSession && endOffset > 0f) {
-        val configuration = androidx.compose.ui.platform.LocalConfiguration.current
-        val use24Hour = DateFormat.is24HourFormat(context)
-        val locale = configuration.locales[0]
-        val tickStart = travelTimelineFrame?.displayStartEpochSeconds ?: times.first()
-        val tickEnd = travelTimelineFrame?.displayEndEpochSeconds ?:
-            (times.first() + endOffset.toLong())
-        val ticks = remember(
-            session,
-            featureTourScenario,
-            endOffset,
-            use24Hour,
-            locale,
-            tickStart,
-            tickEnd,
-        ) {
+    val timelineSliderValue = automaticTimelineCursor ?: safeCursor
+    val ordinaryTicks = remember(
+        use24Hour,
+        locale,
+        timelineDomainStart,
+        timelineDomainEnd,
+    ) {
+        if (endOffset > 0f && timelineDomainEnd > timelineDomainStart) {
             RadarTimelineTicks.between(
-                tickStart,
-                tickEnd,
-                ZoneId.systemDefault(),
+                timelineDomainStart,
+                timelineDomainEnd,
+                zoneId,
                 use24Hour,
                 locale,
             )
+        } else emptyList()
+    }
+    val visibleOrdinaryTicks = if (hasRadarSession || travelAutoFrame != null) {
+        ordinaryTicks
+    } else emptyList()
+    val timelineTicks = remember(visibleOrdinaryTicks, travelAutoFrame) {
+        travelAutoFrame?.let { auto ->
+            RadarTimelineTicks.withSelected(
+                visibleOrdinaryTicks,
+                timelineDomainStart,
+                timelineDomainEnd,
+                auto.selectedEpochSeconds,
+                auto.localMinuteText,
+            )
+        } ?: visibleOrdinaryTicks
+    }
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.Top,
+        ) {
+            IconButton(
+                onClick = {
+                    if (featureTourScenario == null) {
+                        TravelModeDiagnostics.record(
+                            followLive, followLive, RadarTravelTransitionReason.TIMELINE_MANUAL,
+                        )
+                        if (!playing) {
+                            // AUTO renders from its immutable wall-clock frame while the manual
+                            // cursor is intentionally dormant. Publish that exact mapped cursor
+                            // before leaving AUTO so the first playback frame cannot reveal stale
+                            // graph/manual state.
+                            if (travelTimeAutomatic && travelAutoFrame != null) {
+                                cursor = RadarPlaybackHandoffPolicy.startingCursorSeconds(
+                                    currentCursorSeconds = cursor,
+                                    autoFrame = travelAutoFrame,
+                                    endOffsetSeconds = endOffset,
+                                )
+                            }
+                            chartTimeRequest?.let { onChartTimeConsumed(it.token) }
+                        }
+                        travelTimeAutomatic = false
+                        playing = !playing
+                    } else {
+                        tourPlaying = !tourPlaying
+                    }
+                },
+                enabled = hasRadarSession,
+                modifier = Modifier.size(48.dp),
+            ) {
+                Icon(
+                    if (displayPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    contentDescription = stringResource(
+                        if (displayPlaying) R.string.radar_pause else R.string.radar_play,
+                    ),
+                    modifier = if (displayPlaying) Modifier else Modifier.size(37.44.dp),
+                )
+            }
+            Spacer(Modifier.width(6.dp))
+            Box(
+                Modifier.weight(1f).height(48.dp).clipToBounds(),
+            ) {
+                Slider(
+                    value = timelineSliderValue,
+                    onValueChange = {
+                        chartTimeRequest?.let { request -> onChartTimeConsumed(request.token) }
+                        if (featureTourScenario != null) {
+                            tourCursor = it.takeIf { value -> value.isFinite() }
+                                ?.coerceIn(0f, endOffset) ?: safeCursor
+                            tourPlaying = false
+                        } else {
+                            TravelModeDiagnostics.record(
+                                followLive, followLive, RadarTravelTransitionReason.TIMELINE_MANUAL,
+                            )
+                            val finite = it.takeIf { value -> value.isFinite() }
+                                ?: timelineSliderValue
+                            cursor = travelAutoFrame?.timeline?.let { frame ->
+                                RadarTravelTimelinePolicy.dataCursorForManualSelection(
+                                    finite,
+                                    frame,
+                                    times.first(),
+                                    times.first() + endOffset.toLong(),
+                                )
+                            } ?: finite.coerceIn(0f, endOffset)
+                            travelTimeAutomatic = false
+                            playing = false
+                        }
+                    },
+                    valueRange = 0f..endOffset,
+                    enabled = hasRadarSession,
+                    modifier = Modifier.fillMaxSize().semantics {
+                        contentDescription = timelineDescription
+                        stateDescription = if (travelTimeAutomatic) {
+                            "$label. $travelAutoAccessibility"
+                        } else label
+                    },
+                )
+                if (travelTimeAutomatic) {
+                    RadarTimelineInlineAutoLabel(
+                        text = stringResource(R.string.radar_travel_auto_badge),
+                        fraction = if (endOffset > 0f) {
+                            (timelineSliderValue / endOffset).coerceIn(0f, 1f)
+                        } else 0f,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+            }
         }
-        // Match the 48dp play target, 6dp row gap and Slider's 10dp thumb inset.
-        RadarTimelineTickRow(
-            ticks = ticks,
-            color = secondaryColor,
-            modifier = Modifier.fillMaxWidth().height(21.dp).padding(
-                start = 54.dp,
-                end = if (travelTimeAutomatic) 44.dp else 0.dp,
-            ),
+        // Preserve the exact slider/tick x-domain without retaining a standalone AUTO cell.
+        if (timelineTicks.isNotEmpty()) {
+            RadarTimelineTickRow(
+                ticks = timelineTicks,
+                color = secondaryColor,
+                modifier = Modifier.fillMaxWidth().height(21.dp).padding(start = 54.dp),
+            )
+        } else Spacer(Modifier.fillMaxWidth().height(21.dp))
+    }
+    }
+}
+
+@Composable
+private fun RadarTimelineInlineAutoLabel(
+    text: String,
+    fraction: Float,
+    modifier: Modifier = Modifier,
+) {
+    val density = LocalDensity.current
+    Layout(
+        modifier = modifier,
+        content = {
+            Text(
+                text = text,
+                color = Color.Black,
+                fontSize = 15.sp,
+                lineHeight = 19.5.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                softWrap = false,
+                // The measured advance can be narrower than the final antialiased bold glyph.
+                // The placement policy reserves the overflow envelope inside the cyan fill.
+                overflow = TextOverflow.Visible,
+                modifier = Modifier.clearAndSetSemantics { },
+            )
+        },
+    ) { measurables, constraints ->
+        val loose = constraints.copy(minWidth = 0, minHeight = 0)
+        val label = measurables.single().measure(loose)
+        val placement = RadarTimelineInlineAutoLabelPolicy.place(
+            fraction = fraction,
+            widthPx = constraints.maxWidth,
+            heightPx = constraints.maxHeight,
+            labelWidthPx = label.width,
+            labelHeightPx = label.height,
+            trackInsetPx = with(density) { RadarTimelineTrackGeometry.INNER_INSET_DP.dp.toPx() },
+            thumbWidthPx = with(density) { RadarTimelineTrackGeometry.THUMB_WIDTH_DP.dp.toPx() },
+            gapPx = with(density) { 8.dp.toPx() },
+            glyphSafetyInsetPx = with(density) { 2.dp.toPx() },
         )
-    } else Spacer(Modifier.fillMaxWidth().height(21.dp))
+        layout(constraints.maxWidth, constraints.maxHeight) {
+            placement?.let { label.place(it.leftPx.toInt(), it.topPx.toInt()) }
+        }
     }
 }
 
@@ -2959,16 +3095,17 @@ private fun RadarTimelineTickRow(
     Layout(
         modifier = modifier,
         content = {
-            ticks.forEach {
-                Spacer(Modifier.width(1.dp).height(4.dp).background(color))
+            ticks.forEach { tick ->
+                Spacer(Modifier.width(1.dp).height(4.dp)
+                    .background(if (tick.selected) Accent else color))
             }
             ticks.forEach { tick ->
                 Text(
                     tick.label,
-                    color = color,
+                    color = if (tick.selected) Accent else color,
                     fontSize = 11.sp,
                     lineHeight = 13.sp,
-                    fontWeight = FontWeight.Normal,
+                    fontWeight = if (tick.selected) FontWeight.Bold else FontWeight.Normal,
                     maxLines = 1,
                     softWrap = false,
                     textAlign = TextAlign.Center,
@@ -2984,18 +3121,21 @@ private fun RadarTimelineTickRow(
         val placements = RadarTimelineLabelLayout.arrange(
             fractions = ticks.map { it.fraction },
             labelWidthsPx = labelPlaceables.map { it.width },
+            selected = ticks.map { it.selected },
             widthPx = constraints.maxWidth,
-            innerInsetPx = with(density) { 10.dp.toPx() },
+            innerInsetPx = with(density) { RadarTimelineTrackGeometry.INNER_INSET_DP.dp.toPx() },
             gapPx = with(density) { 5.dp.toPx() },
         )
         layout(constraints.maxWidth, height) {
             placements.forEachIndexed { index, placement ->
                 val tick = tickPlaceables[index]
-                tick.placeRelative((placement.anchorPx - tick.width / 2f).toInt(), 0)
-                if (placement.visible) {
+                if (placement.markerVisible) {
+                    tick.placeRelative((placement.anchorPx - tick.width / 2f).toInt(), 0)
+                }
+                if (placement.labelVisible) {
                     val label = labelPlaceables[index]
                     label.placeRelative(
-                        (placement.anchorPx - label.width / 2f).toInt(),
+                        (placement.labelCenterPx - label.width / 2f).toInt(),
                         with(density) { 4.dp.roundToPx() },
                     )
                 }

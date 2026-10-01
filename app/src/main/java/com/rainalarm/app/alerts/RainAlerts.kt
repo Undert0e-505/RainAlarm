@@ -46,6 +46,8 @@ import com.rainalarm.app.domain.DenseRadarAdvection
 import com.rainalarm.app.domain.ProviderMinuteSeriesBuilder
 import com.rainalarm.app.domain.RainMinuteSeries
 import com.rainalarm.app.domain.RainMinuteSeriesAnalyzer
+import com.rainalarm.app.domain.RainEventSeverityPolicy
+import com.rainalarm.app.domain.QualitativeIntensity
 import com.rainalarm.app.data.RegionalRainChartService
 import com.rainalarm.app.widget.RainAlarmWidgetStore
 import com.rainalarm.app.widget.WidgetRefreshTrace
@@ -91,8 +93,17 @@ sealed interface RadarAlertEvaluation {
         val confirmedPeakIntensity: Float? = null,
         val expectedStartEpochSeconds: Long? = null,
         val likelySnow: Boolean = false,
+        val maximumKnownIntensity: Float? = confirmedPeakIntensity,
+        val expectedSeverity: QualitativeIntensity? = null,
     ) : RadarAlertEvaluation
-    data object WetNow : RadarAlertEvaluation
+    data class WetNow(
+        val frameIdentity: Long,
+        val confirmedRemainingMinutes: Int? = null,
+        val maximumKnownIntensity: Float? = null,
+        val expectedStopEpochSeconds: Long? = null,
+        val likelySnow: Boolean = false,
+        val expectedSeverity: QualitativeIntensity? = null,
+    ) : RadarAlertEvaluation
     data object Clear : RadarAlertEvaluation
     data object Unknown : RadarAlertEvaluation
 }
@@ -121,7 +132,7 @@ object RainAlertDecisionEngine {
         val centerX = (latest.width - 1) / 2.0
         val centerY = (latest.height - 1) / 2.0
         val current = latest.wetFractionAround(centerX, centerY) ?: return RadarAlertEvaluation.Unknown
-        if (current >= 0.12) return RadarAlertEvaluation.WetNow
+        if (current >= 0.12) return RadarAlertEvaluation.WetNow(frameIdentity)
         val reliableMotion = motion?.takeIf {
             RadarMotionPolicy.usable(it) && it.confidence >= minimumConfidence
         }
@@ -165,7 +176,7 @@ object RainAlertDecisionEngine {
         val centerX = (latest.width - 1) / 2.0
         val centerY = (latest.height - 1) / 2.0
         val current = latest.wetFractionAround(centerX, centerY) ?: return RadarAlertEvaluation.Unknown
-        if (current >= 0.12) return RadarAlertEvaluation.WetNow
+        if (current >= 0.12) return RadarAlertEvaluation.WetNow(frameIdentity)
         val reliable = field?.takeIf { it.confidence >= minimumConfidence }
             ?: return if (latest.values.none { it >= 0.16f }) RadarAlertEvaluation.Clear else RadarAlertEvaluation.Unknown
         var first: Int? = null
@@ -205,7 +216,20 @@ object RainAlertDecisionEngine {
 
     fun evaluateMinuteSeries(series: RainMinuteSeries): RadarAlertEvaluation {
         val analysis = RainMinuteSeriesAnalyzer.analyze(series) ?: return RadarAlertEvaluation.Unknown
-        if (analysis.rainingNow) return RadarAlertEvaluation.WetNow
+        val expectedSeverity = RainEventSeverityPolicy.forEvent(series, analysis)?.qualitative
+        if (analysis.rainingNow) {
+            val end = analysis.endMinute
+            val episodePoints = series.points.take((end ?: series.points.size).coerceAtMost(series.points.size))
+            val peak = episodePoints.map { it.average }.filter(Float::isFinite).maxOrNull()
+            return RadarAlertEvaluation.WetNow(
+                frameIdentity = series.startEpochSeconds,
+                confirmedRemainingMinutes = end?.takeIf { it > 0 },
+                maximumKnownIntensity = peak,
+                expectedStopEpochSeconds = end?.let { series.startEpochSeconds + it * 60L },
+                likelySnow = series.points.firstOrNull()?.likelySnow == true,
+                expectedSeverity = expectedSeverity,
+            )
+        }
         val first = analysis.arrivalMinute ?: return if (
             series.availability == com.rainalarm.app.domain.RainMinuteAvailability.PARTIAL
         ) RadarAlertEvaluation.Unknown else RadarAlertEvaluation.Clear
@@ -219,11 +243,16 @@ object RainAlertDecisionEngine {
             },
             expectedStartEpochSeconds = series.startEpochSeconds + first * 60L,
             likelySnow = series.points[first].likelySnow,
+            maximumKnownIntensity = series.points.subList(first, analysis.endMinute ?: series.points.size)
+                .map { it.average }.filter(Float::isFinite).maxOrNull(),
+            expectedSeverity = expectedSeverity,
         )
     }
 
     fun evaluateProviderTimeline(timeline: RadarPointTimeline): RadarAlertEvaluation {
-        if (timeline.currentlyWet) return RadarAlertEvaluation.WetNow
+        if (timeline.currentlyWet) return RadarAlertEvaluation.WetNow(
+            timeline.latestObservationEpochSeconds,
+        )
         val first = timeline.wetForecastMinutes.minOrNull() ?: return RadarAlertEvaluation.Clear
         val orderedWet = timeline.wetForecastMinutes.sorted()
         var last = first
@@ -262,7 +291,7 @@ object RainAlertDecisionEngine {
             )
         }
         RadarAlertEvaluation.Clear -> AlertDecision(false, memory)
-        RadarAlertEvaluation.WetNow, RadarAlertEvaluation.Unknown -> AlertDecision(false, memory)
+        is RadarAlertEvaluation.WetNow, RadarAlertEvaluation.Unknown -> AlertDecision(false, memory)
     }
 
     /** etaEndMinutes is the final inclusive wet minute, so expiry starts one minute later. */
@@ -303,10 +332,72 @@ internal object RainAlertNotificationIdentity {
         (4107 xor placeId.hashCode()).and(Int.MAX_VALUE).coerceAtLeast(1)
 }
 
+internal interface RainAlertTitleStrings {
+    fun approaching(
+        placeName: String,
+        likelySnow: Boolean,
+        severity: QualitativeIntensity?,
+    ): String
+
+    fun wetNow(
+        placeName: String,
+        likelySnow: Boolean,
+        severity: QualitativeIntensity?,
+    ): String
+}
+
+private class AndroidRainAlertTitleStrings(private val context: Context) : RainAlertTitleStrings {
+    override fun approaching(
+        placeName: String,
+        likelySnow: Boolean,
+        severity: QualitativeIntensity?,
+    ): String = if (severity == null) {
+        context.getString(
+            if (likelySnow) R.string.notification_snow_title else R.string.notification_rain_title,
+            placeName,
+        )
+    } else {
+        context.getString(
+            if (likelySnow) R.string.notification_snow_severity_title
+            else R.string.notification_rain_severity_title,
+            severityLabel(severity),
+            placeName,
+        )
+    }
+
+    override fun wetNow(
+        placeName: String,
+        likelySnow: Boolean,
+        severity: QualitativeIntensity?,
+    ): String = if (severity == null) {
+        context.getString(
+            if (likelySnow) R.string.notification_snow_now_title
+            else R.string.notification_rain_now_title,
+            placeName,
+        )
+    } else {
+        context.getString(
+            if (likelySnow) R.string.notification_snow_now_severity_title
+            else R.string.notification_rain_now_severity_title,
+            severityLabel(severity),
+            placeName,
+        )
+    }
+
+    private fun severityLabel(severity: QualitativeIntensity): String = context.getString(
+        when (severity) {
+            QualitativeIntensity.LIGHT -> R.string.now_light
+            QualitativeIntensity.MEDIUM -> R.string.now_medium
+            QualitativeIntensity.SEVERE -> R.string.now_severe
+        },
+    )
+}
+
 internal object RainAlertNotificationText {
     data class Content(val title: String, val summary: String, val detail: String)
 
     fun forApproaching(
+        titles: RainAlertTitleStrings,
         placeName: String,
         approaching: RadarAlertEvaluation.Approaching,
         evaluatedAtEpochSeconds: Long,
@@ -316,14 +407,21 @@ internal object RainAlertNotificationText {
             ?: evaluatedAtEpochSeconds + approaching.etaStartMinutes * 60L
         val clock = DateTimeFormatter.ofPattern("HH:mm", Locale.getDefault())
             .withZone(zone).format(Instant.ofEpochSecond(start))
-        val title = if (approaching.likelySnow) "Snow likely approaching $placeName"
-            else "Rain approaching $placeName"
-        val summary = "In ${approaching.etaStartMinutes} min · around $clock"
+        val title = titles.approaching(
+            placeName,
+            approaching.likelySnow,
+            approaching.expectedSeverity,
+        )
+        val summary = "Starts at $clock · in ${approaching.etaStartMinutes} min"
         val confirmed = approaching.confirmedDurationMinutes?.takeIf { it > 0 }
-        val peak = approaching.confirmedPeakIntensity?.takeIf { it.isFinite() && it in 0f..1f }
-        val detail = if (confirmed != null && peak != null) {
-            "$summary · about $confirmed min; peak intensity ${(peak * 100).roundToInt()}%"
-        } else summary
+        val peak = normalizedPeak(approaching.maximumKnownIntensity)
+        val detail = when {
+            confirmed != null && peak != null ->
+                "$summary · lasting about $confirmed min · peak intensity ${(peak * 100).roundToInt()}%"
+            confirmed != null -> "$summary · lasting about $confirmed min"
+            peak != null -> "$summary · at least ${(peak * 100).roundToInt()}%"
+            else -> summary
+        }
         return Content(title, summary, detail)
     }
 
@@ -337,27 +435,103 @@ internal object RainAlertNotificationText {
             ?: evaluatedAtEpochSeconds + approaching.etaStartMinutes * 60L
         val clock = android.text.format.DateFormat.getTimeFormat(context)
             .format(Date(start * 1_000L))
-        val title = context.getString(
-            if (approaching.likelySnow) R.string.notification_snow_title
-            else R.string.notification_rain_title,
+        val title = AndroidRainAlertTitleStrings(context).approaching(
             placeName,
+            approaching.likelySnow,
+            approaching.expectedSeverity,
         )
         val summary = context.resources.getQuantityString(
-            R.plurals.notification_eta_plural,
-            approaching.etaStartMinutes,
+            R.plurals.notification_starts_eta_plural,
             approaching.etaStartMinutes,
             clock,
+            approaching.etaStartMinutes,
         )
         val confirmed = approaching.confirmedDurationMinutes?.takeIf { it > 0 }
-        val peak = approaching.confirmedPeakIntensity?.takeIf { it.isFinite() && it in 0f..1f }
-        val detail = if (confirmed != null && peak != null) context.getString(
-            R.string.notification_detail,
+        val peak = normalizedPeak(approaching.maximumKnownIntensity)
+        val detail = when {
+            confirmed != null && peak != null -> context.getString(
+                R.string.notification_bounded_detail,
+                summary,
+                confirmed,
+                (peak * 100).roundToInt(),
+            )
+            confirmed != null -> context.getString(
+                R.string.notification_duration_detail,
+                summary,
+                confirmed,
+            )
+            peak != null -> context.getString(
+                R.string.notification_unbounded_detail,
+                summary,
+                (peak * 100).roundToInt(),
+            )
+            else -> summary
+        }
+        return Content(title, summary, detail)
+    }
+
+    fun forWetNow(
+        titles: RainAlertTitleStrings,
+        placeName: String,
+        wet: RadarAlertEvaluation.WetNow,
+        zone: ZoneId = ZoneId.systemDefault(),
+    ): Content {
+        val title = titles.wetNow(placeName, wet.likelySnow, wet.expectedSeverity)
+        val stop = wet.expectedStopEpochSeconds?.let {
+            DateTimeFormatter.ofPattern("HH:mm", Locale.getDefault()).withZone(zone)
+                .format(Instant.ofEpochSecond(it))
+        }
+        val remaining = wet.confirmedRemainingMinutes?.takeIf { it > 0 }
+        val peak = normalizedPeak(wet.maximumKnownIntensity)
+        val summary = when {
+            stop != null && remaining != null -> "Expected to stop at $stop · about $remaining min remaining"
+            peak != null -> "At least ${(peak * 100).roundToInt()}%"
+            else -> title
+        }
+        val detail = if (stop != null && remaining != null && peak != null) {
+            "$summary · peak intensity ${(peak * 100).roundToInt()}%"
+        } else summary
+        return Content(title, summary, detail)
+    }
+
+    fun forWetNow(
+        context: Context,
+        placeName: String,
+        wet: RadarAlertEvaluation.WetNow,
+    ): Content {
+        val title = AndroidRainAlertTitleStrings(context).wetNow(
+            placeName,
+            wet.likelySnow,
+            wet.expectedSeverity,
+        )
+        val stop = wet.expectedStopEpochSeconds?.let {
+            android.text.format.DateFormat.getTimeFormat(context).format(Date(it * 1_000L))
+        }
+        val remaining = wet.confirmedRemainingMinutes?.takeIf { it > 0 }
+        val peak = normalizedPeak(wet.maximumKnownIntensity)
+        val summary = when {
+            stop != null && remaining != null -> context.resources.getQuantityString(
+                R.plurals.notification_stops_remaining_plural,
+                remaining,
+                stop,
+                remaining,
+            )
+            peak != null -> context.getString(
+                R.string.notification_intensity_at_least,
+                (peak * 100).roundToInt(),
+            )
+            else -> title
+        }
+        val detail = if (stop != null && remaining != null && peak != null) context.getString(
+            R.string.notification_peak_detail,
             summary,
-            confirmed,
             (peak * 100).roundToInt(),
         ) else summary
         return Content(title, summary, detail)
     }
+
+    private fun normalizedPeak(value: Float?): Float? =
+        value?.takeIf(Float::isFinite)?.coerceIn(0f, 1f)
 }
 
 object RainAlertSelectionGuard {
@@ -645,7 +819,7 @@ class RainApproachingWorker(
                         evaluation.etaStartMinutes,
                     )
                 }
-                RadarAlertEvaluation.WetNow -> applicationContext.getString(
+                is RadarAlertEvaluation.WetNow -> applicationContext.getString(
                     R.string.notification_status_wet, place.name)
                 RadarAlertEvaluation.Clear -> applicationContext.getString(
                     R.string.notification_status_clear, place.name)

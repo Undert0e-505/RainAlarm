@@ -9,8 +9,21 @@ data class RadarChartTimeRequest(
 
 internal sealed interface RadarChartTimeDecision {
     data object Waiting : RadarChartTimeDecision
-    data class Apply(val cursorSeconds: Float) : RadarChartTimeDecision
+    data class Apply(
+        val cursorSeconds: Float,
+        /** Absolute graph intent retained across a changed session origin. */
+        val selectedEpochSeconds: Double,
+        val covered: Boolean,
+    ) : RadarChartTimeDecision
     data object Unavailable : RadarChartTimeDecision
+}
+
+internal object RadarTimelineActivationPolicy {
+    fun automaticOnActivation(
+        following: Boolean,
+        chartIntentPending: Boolean,
+        explicitTravelRequest: Boolean,
+    ): Boolean = following && (explicitTravelRequest || !chartIntentPending)
 }
 
 internal object RadarChartTimeLink {
@@ -33,10 +46,16 @@ internal object RadarChartTimeLink {
         if (!request.epochSeconds.isFinite() || !endEpochSeconds.isFinite() ||
             endEpochSeconds < firstEpochSeconds) return RadarChartTimeDecision.Unavailable
         // Publication refresh can move the real domain past the requested instant. Preserve the
-        // absolute intent and deterministically select the nearest available edge, still paused.
+        // absolute intent and expose whether the nearest edge is only a UI position; callers must
+        // not render that edge as though it represented the requested time.
+        val covered = request.epochSeconds in firstEpochSeconds.toDouble()..endEpochSeconds
         val resolvedEpoch = request.epochSeconds.coerceIn(
             firstEpochSeconds.toDouble(), endEpochSeconds,
         )
-        return RadarChartTimeDecision.Apply((resolvedEpoch - firstEpochSeconds).toFloat())
+        return RadarChartTimeDecision.Apply(
+            cursorSeconds = (resolvedEpoch - firstEpochSeconds).toFloat(),
+            selectedEpochSeconds = request.epochSeconds,
+            covered = covered,
+        )
     }
 }

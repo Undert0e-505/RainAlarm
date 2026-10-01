@@ -69,7 +69,8 @@ class RainAlarmWidgetStore(context: Context) {
         val prior = configuration(configuration.appWidgetId)
         val targetChoiceChanged = prior != null && prior.savedPlace != configuration.savedPlace
         val acquisitionChanged = prior == null || targetChoiceChanged ||
-            prior.primaryContent != configuration.primaryContent
+            prior.includeLightningNotifications != configuration.includeLightningNotifications ||
+            prior.notificationsEnabled != configuration.notificationsEnabled
         val ids = ids().toMutableSet().apply { add(configuration.appWidgetId) }
         preferences.edit(commit = true) {
             putString(KEY_IDS, ids.sorted().joinToString(","))

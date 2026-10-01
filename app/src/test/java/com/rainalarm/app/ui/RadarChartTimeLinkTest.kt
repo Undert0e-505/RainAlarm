@@ -33,15 +33,15 @@ class RadarChartTimeLinkTest {
         assertEquals(RadarChartTimeDecision.Waiting,
             RadarChartTimeLink.decide(request, "current-location", null, null, null))
         // Harmless live fix drift changes coordinates, not the virtual Current ID.
-        assertEquals(RadarChartTimeDecision.Apply(1_050.5f),
+        assertEquals(RadarChartTimeDecision.Apply(1_050.5f, 2_050.5, true),
             RadarChartTimeLink.decide(request, "current-location", "current-location", 1_000, 4_000.0))
         assertEquals(RadarChartTimeDecision.Unavailable,
             RadarChartTimeLink.decide(request, "saved-place", "saved-place", 1_000, 4_000.0))
         assertEquals(RadarChartTimeDecision.Waiting,
             RadarChartTimeLink.decide(request, "current-location", "other-place", 1_000, 4_000.0))
-        assertEquals(RadarChartTimeDecision.Apply(0f),
+        assertEquals(RadarChartTimeDecision.Apply(0f, 2_050.5, false),
             RadarChartTimeLink.decide(request, "current-location", "current-location", 2_100, 4_000.0))
-        assertEquals(RadarChartTimeDecision.Apply(1_000f),
+        assertEquals(RadarChartTimeDecision.Apply(1_000f, 2_050.5, false),
             RadarChartTimeLink.decide(request, "current-location", "current-location", 1_000, 2_000.0))
         assertTrue(RadarChartTimeLink.decide(request.copy(epochSeconds = Double.NaN),
             "current-location", "current-location", 1_000, 4_000.0) is RadarChartTimeDecision.Unavailable)
@@ -55,9 +55,9 @@ class RadarChartTimeLinkTest {
         val request = RadarChartTimeRequest(9, "place", 2_500.0)
         assertEquals(RadarChartTimeDecision.Waiting,
             RadarChartTimeLink.decide(request, "place", "old-place", 1_000, 4_000.0))
-        assertEquals(RadarChartTimeDecision.Apply(1_500f),
+        assertEquals(RadarChartTimeDecision.Apply(1_500f, 2_500.0, true),
             RadarChartTimeLink.decide(request, "place", "place", 1_000, 4_000.0))
-        assertEquals(RadarChartTimeDecision.Apply(0f),
+        assertEquals(RadarChartTimeDecision.Apply(0f, 2_500.0, false),
             RadarChartTimeLink.decide(request, "place", "place", 3_000, 6_000.0))
 
         val screen = listOf(
@@ -67,11 +67,48 @@ class RadarChartTimeLinkTest {
         val applyBlock = screen.substringAfter("is RadarChartTimeDecision.Apply -> {")
             .substringBefore("RadarChartTimeDecision.Unavailable")
         assertTrue(!applyBlock.contains("onChartTimeConsumed"))
-        assertTrue(screen.contains(
-            "if (!playing) chartTimeRequest?.let { onChartTimeConsumed(it.token) }",
+        val playBlock = screen.substringAfter("if (!playing) {")
+            .substringBefore("playing = !playing")
+        assertTrue(playBlock.contains(
+            "chartTimeRequest?.let { onChartTimeConsumed(it.token) }",
         ))
         assertTrue(screen.contains(
             "chartTimeRequest?.let { request -> onChartTimeConsumed(request.token) }",
         ))
+    }
+
+    @Test fun `graph intent outranks retained follow until explicit Travel takeover`() {
+        assertTrue(!RadarTimelineActivationPolicy.automaticOnActivation(
+            following = true,
+            chartIntentPending = true,
+            explicitTravelRequest = false,
+        ))
+        assertTrue(RadarTimelineActivationPolicy.automaticOnActivation(
+            following = true,
+            chartIntentPending = true,
+            explicitTravelRequest = true,
+        ))
+        assertTrue(RadarTimelineActivationPolicy.automaticOnActivation(
+            following = true,
+            chartIntentPending = false,
+            explicitTravelRequest = false,
+        ))
+        assertTrue(!RadarTimelineActivationPolicy.automaticOnActivation(
+            following = false,
+            chartIntentPending = false,
+            explicitTravelRequest = true,
+        ))
+
+        val screen = listOf(
+            File("src/main/java/com/rainalarm/app/ui/RadarScreen.kt"),
+            File("app/src/main/java/com/rainalarm/app/ui/RadarScreen.kt"),
+        ).first(File::isFile).readText()
+        assertTrue(screen.contains("chartIntentPending = chartTimeRequest != null"))
+        assertTrue(screen.contains("explicitTravelRequest = explicitActivation"))
+        assertTrue(screen.contains(
+            "chartTimeRequest?.let { onChartTimeConsumed(it.token) }",
+        ))
+        assertTrue(screen.contains("chartApply?.selectedEpochSeconds?.toLong()"))
+        assertTrue(screen.contains("chartApply?.covered == false"))
     }
 }

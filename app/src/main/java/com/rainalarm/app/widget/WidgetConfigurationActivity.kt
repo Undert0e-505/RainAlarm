@@ -28,7 +28,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
@@ -160,11 +159,14 @@ private fun WidgetConfigurationScreen(
                 places.places.firstOrNull()?.id,
         )
     }
-    var primary by rememberSaveable {
-        mutableStateOf(existing?.primaryContent ?: WidgetPrimaryContent.SMART)
-    }
     var opacity by rememberSaveable {
         mutableIntStateOf(existing?.backgroundOpacityPercent ?: 100)
+    }
+    var notificationsEnabled by rememberSaveable {
+        mutableStateOf(existing?.notificationsEnabled ?: true)
+    }
+    var includeLightning by rememberSaveable {
+        mutableStateOf(existing?.includeLightningNotifications ?: false)
     }
     var quietEnabled by rememberSaveable {
         mutableStateOf(existing?.quietHoursEnabled ?: false)
@@ -183,7 +185,7 @@ private fun WidgetConfigurationScreen(
     val quiet = QuietHours(quietEnabled, quietStart, quietEnd)
     val selectedSavedPlace = places.places.firstOrNull { it.id == fixedPlaceId }
     val validLocation = selectedSavedPlace != null
-    val valid = validLocation && (!quietEnabled || quiet.valid)
+    val valid = validLocation && (!notificationsEnabled || !quietEnabled || quiet.valid)
     val surface = androidx.compose.ui.graphics.Color(
         WidgetOpacityPolicy.applyToArgb(palette.surface, opacity),
     )
@@ -234,18 +236,6 @@ private fun WidgetConfigurationScreen(
                         },
                         modifier = Modifier.padding(top = 8.dp),
                     ) { Text(stringResource(R.string.widget_open_places)) }
-                }
-            }
-
-            Spacer(Modifier.height(22.dp))
-            SectionHeading(stringResource(R.string.widget_compact_content_heading), palette)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                WidgetPrimaryContent.entries.forEach { option ->
-                    FilterChip(
-                        selected = primary == option,
-                        onClick = { primary = option },
-                        label = { Text(primaryLabel(option), fontSize = 11.sp) },
-                    )
                 }
             }
 
@@ -317,27 +307,62 @@ private fun WidgetConfigurationScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text(stringResource(R.string.widget_quiet_hours), fontWeight = FontWeight.SemiBold)
+                        Text(stringResource(R.string.widget_notifications), fontWeight = FontWeight.SemiBold)
                         Text(
-                            quietSummary(context, quiet),
+                            stringResource(R.string.widget_notifications_help),
                             color = androidx.compose.ui.graphics.Color(palette.muted),
                             fontSize = 12.sp,
                         )
                     }
-                    val quietLabel = stringResource(R.string.widget_quiet_hours)
-                    val quietState = stringResource(
-                        if (quietEnabled) R.string.common_enabled else R.string.common_disabled,
+                    val notificationsLabel = stringResource(R.string.widget_notifications)
+                    val notificationsState = stringResource(
+                        if (notificationsEnabled) R.string.common_enabled else R.string.common_disabled,
                     )
                     RainAlarmSwitch(
-                        quietEnabled,
-                        { quietEnabled = it },
+                        notificationsEnabled,
+                        { notificationsEnabled = it },
                         Modifier.semantics {
-                            contentDescription = quietLabel
-                            stateDescription = quietState
+                            contentDescription = notificationsLabel
+                            stateDescription = notificationsState
                         },
                     )
                 }
-                if (quietEnabled) {
+                if (notificationsEnabled) {
+                    HorizontalDivider(color = androidx.compose.ui.graphics.Color(palette.border))
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                stringResource(R.string.widget_include_lightning),
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                stringResource(R.string.widget_include_lightning_help),
+                                color = androidx.compose.ui.graphics.Color(palette.muted),
+                                fontSize = 12.sp,
+                            )
+                        }
+                        RainAlarmSwitch(includeLightning, { includeLightning = it })
+                    }
+                    HorizontalDivider(color = androidx.compose.ui.graphics.Color(palette.border))
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(stringResource(R.string.widget_quiet_hours), fontWeight = FontWeight.SemiBold)
+                            Text(
+                                quietSummary(context, quiet),
+                                color = androidx.compose.ui.graphics.Color(palette.muted),
+                                fontSize = 12.sp,
+                            )
+                        }
+                        RainAlarmSwitch(quietEnabled, { quietEnabled = it })
+                    }
+                }
+                if (notificationsEnabled && quietEnabled) {
                     HorizontalDivider(color = androidx.compose.ui.graphics.Color(palette.border))
                     TimeRow(stringResource(R.string.widget_quiet_start), quietStart) { quietStart = it }
                     HorizontalDivider(color = androidx.compose.ui.graphics.Color(palette.border))
@@ -352,7 +377,7 @@ private fun WidgetConfigurationScreen(
                     }
                 }
             }
-            Text(
+            if (notificationsEnabled) Text(
                 stringResource(R.string.widget_quiet_help),
                 color = androidx.compose.ui.graphics.Color(palette.muted),
                 fontSize = 12.sp,
@@ -372,12 +397,14 @@ private fun WidgetConfigurationScreen(
                                 appWidgetId = appWidgetId,
                                 locationMode = WidgetLocationMode.FIXED,
                                 fixedPlaceId = selectedSavedPlace?.id,
-                                primaryContent = primary,
+                                primaryContent = WidgetPrimaryContent.SMART,
                                 backgroundOpacityPercent = opacity,
                                 quietHoursEnabled = quietEnabled,
                                 quietStartMinuteOfDay = quietStart,
                                 quietEndMinuteOfDay = quietEnd,
                                 savedPlace = selectedSavedPlace?.let(WidgetSavedPlaceTarget::from),
+                                notificationsEnabled = notificationsEnabled,
+                                includeLightningNotifications = includeLightning,
                             ),
                         )
                     },
@@ -431,16 +458,6 @@ private fun TimeRow(label: String, minute: Int, onChanged: (Int) -> Unit) {
         Text(clock, fontWeight = FontWeight.SemiBold)
     }
 }
-
-@Composable
-private fun primaryLabel(value: WidgetPrimaryContent): String = stringResource(
-    when (value) {
-        WidgetPrimaryContent.SMART -> R.string.widget_content_smart
-        WidgetPrimaryContent.RAIN -> R.string.widget_content_rain
-        WidgetPrimaryContent.LIGHTNING -> R.string.widget_content_lightning
-        WidgetPrimaryContent.TEMPERATURE -> R.string.widget_content_temperature
-    },
-)
 
 @Composable
 private fun quietSummary(context: android.content.Context, quiet: QuietHours): String = if (!quiet.enabled) {

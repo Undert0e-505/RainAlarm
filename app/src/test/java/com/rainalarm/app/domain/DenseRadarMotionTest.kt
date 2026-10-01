@@ -88,7 +88,7 @@ class DenseRadarMotionTest {
             for (y in 29..35) for (x in 29..35) pixels[y * 64 + x] = 1f
         })
         assertEquals(
-            RadarAlertEvaluation.WetNow,
+            RadarAlertEvaluation.WetNow(999L),
             RainAlertDecisionEngine.evaluateDenseField(wetNow, uniformField(4.0, 0.0), 999),
         )
     }

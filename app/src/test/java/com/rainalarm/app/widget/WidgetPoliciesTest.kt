@@ -224,7 +224,7 @@ class WidgetPoliciesTest {
         assertEquals("17°", temperature.headline)
     }
 
-    @Test fun `compact precipitation faces stay intact and lightning uses one neutral payload`() {
+    @Test fun `compact precipitation faces stay intact and legacy content choices are ignored`() {
         val rain = WeatherPresentationPolicy.from(series(wet = true), 17.0)
         val snow = WeatherPresentationPolicy.from(series(snow = true), 17.0)
         val rainFace = WidgetCompassContentPolicy.presentation(
@@ -242,16 +242,13 @@ class WidgetPoliciesTest {
         assertEquals(rain, rainFace)
         assertEquals(snow, snowFace)
 
-        val lightningFace = WidgetCompassContentPolicy.presentation(
+        val legacyLightningFace = WidgetCompassContentPolicy.presentation(
             WidgetCompassContentMode.COMPASS_ONLY,
             WidgetPrimaryContent.LIGHTNING,
             rain,
             WidgetPrimaryPresentation("⚡", null, "Lightning nearby", lightningBadge = true),
         )
-        assertEquals(PrecipitationPresentationKind.CLEAR, lightningFace.kind)
-        assertEquals("⚡", lightningFace.centerText)
-        assertNull(lightningFace.centerUnit)
-        assertFalse(lightningFace.hasPrecipitation)
+        assertEquals(rain, legacyLightningFace)
     }
 
     @Test fun `successful partial rain horizon is not reported as a whole update failure`() {
@@ -288,17 +285,24 @@ class WidgetPoliciesTest {
         )
     }
 
-    @Test fun `widget configuration validates dnd and lightning display demand without enabling alerts`() {
+    @Test fun `widget configuration validates dnd and separates display from notification demand`() {
         assertFalse(RainAlarmWidgetConfig(1, quietHoursEnabled = true).copy(
             quietStartMinuteOfDay = 60,
             quietEndMinuteOfDay = 60,
         ).valid)
-        assertTrue(RainAlarmWidgetConfig(1, primaryContent = WidgetPrimaryContent.LIGHTNING)
-            .requiresLightningDisplay(100))
-        assertFalse(RainAlarmWidgetConfig(1, primaryContent = WidgetPrimaryContent.RAIN)
-            .requiresLightningDisplay(100))
-        assertTrue(RainAlarmWidgetConfig(1, primaryContent = WidgetPrimaryContent.RAIN)
-            .requiresLightningDisplay(400))
+        assertFalse(RainAlarmWidgetConfig(1).requiresLightningDisplay(100))
+        assertTrue(RainAlarmWidgetConfig(1).requiresLightningDisplay(400))
+        assertFalse(RainAlarmWidgetConfig(1).requiresLightningAcquisition(100))
+        assertTrue(RainAlarmWidgetConfig(
+            1,
+            notificationsEnabled = true,
+            includeLightningNotifications = true,
+        ).requiresLightningAcquisition(100))
+        assertFalse(RainAlarmWidgetConfig(
+            1,
+            notificationsEnabled = false,
+            includeLightningNotifications = true,
+        ).requiresLightningAcquisition(100))
     }
 
     @Test fun `failed refresh retains last coherent rain snapshot for the same target`() {
@@ -499,7 +503,7 @@ class WidgetPoliciesTest {
         ))
     }
 
-    @Test fun `only widgets with dynamic rain presentation keep the shared ticker active`() {
+    @Test fun `every rain-first widget with usable data keeps the shared ticker active`() {
         val target = FrozenMonitorTarget(
             place.id, place.name, place.latitude, place.longitude,
             RadarProviderKind.METEOGROUP_REGIONAL,
@@ -511,7 +515,7 @@ class WidgetPoliciesTest {
         val smart = RainAlarmWidgetConfig(1, primaryContent = WidgetPrimaryContent.SMART)
         val temperature = RainAlarmWidgetConfig(2, primaryContent = WidgetPrimaryContent.TEMPERATURE)
         assertTrue(WidgetPresentationTickPolicy.requiresTick(smart, snapshot, 110, 1_000L))
-        assertFalse(WidgetPresentationTickPolicy.requiresTick(temperature, snapshot, 110, 1_000L))
+        assertTrue(WidgetPresentationTickPolicy.requiresTick(temperature, snapshot, 110, 1_000L))
         assertTrue(WidgetPresentationTickPolicy.requiresTick(temperature, snapshot, 200, 1_000L))
         assertFalse(WidgetPresentationTickPolicy.requiresTick(smart, snapshot, 110, 4_601L))
         assertFalse(WidgetPresentationTickPolicy.shouldSchedule(emptyList()))

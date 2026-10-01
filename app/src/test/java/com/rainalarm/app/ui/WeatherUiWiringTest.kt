@@ -428,10 +428,13 @@ class WeatherUiWiringTest {
             .substringBefore("internal fun Modifier.radarPageSwipeInput(")
         assertTrue(tickRow.contains("fontSize = 11.sp"))
         assertTrue(tickRow.contains("lineHeight = 13.sp"))
-        assertTrue(tickRow.contains("fontWeight = FontWeight.Normal"))
+        assertTrue(tickRow.contains(
+            "fontWeight = if (tick.selected) FontWeight.Bold else FontWeight.Normal",
+        ))
         assertTrue(tickRow.contains("textAlign = TextAlign.Center"))
         assertTrue(tickRow.contains("maxLines = 1"))
-        assertTrue(tickRow.contains("placement.anchorPx - label.width / 2f"))
+        assertTrue(tickRow.contains("placement.labelCenterPx - label.width / 2f"))
+        assertTrue(tickRow.contains("placement.anchorPx - tick.width / 2f"))
         assertFalse(tickRow.contains("fontSize = 9.sp"))
     }
 

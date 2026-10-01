@@ -35,7 +35,7 @@ class RainAlertDecisionTest {
         )
         assertEquals(RadarAlertEvaluation.Approaching(20, 30, 1234L), approaching)
         assertEquals(
-            RadarAlertEvaluation.WetNow,
+            RadarAlertEvaluation.WetNow(1234L),
             RainAlertDecisionEngine.evaluateProviderTimeline(RadarPointTimeline(true, listOf(5), 1234L)),
         )
         assertEquals(
@@ -104,7 +104,7 @@ class RainAlertDecisionTest {
 
     @Test fun wetClearAndUnknownDoNotAlterLegacyAppCooldown() {
         val memory = AlertMemory(10_000, 100, 12_000)
-        val wet = RainAlertDecisionEngine.decide(RadarAlertEvaluation.WetNow, memory, 20_000)
+        val wet = RainAlertDecisionEngine.decide(RadarAlertEvaluation.WetNow(100L), memory, 20_000)
         assertFalse(wet.shouldNotify)
         assertFalse(wet.nextMemory.armed)
         val unknown = RainAlertDecisionEngine.decide(RadarAlertEvaluation.Unknown, wet.nextMemory, 20_001)
@@ -118,7 +118,7 @@ class RainAlertDecisionTest {
         val event = RadarAlertEvaluation.Approaching(5, 15, 100)
         val armed = RainAlertDecisionEngine.decide(RadarAlertEvaluation.Clear, AlertMemory(), 9_999)
         val sent = RainAlertDecisionEngine.decide(event, armed.nextMemory, 10_000)
-        val wet = RainAlertDecisionEngine.decide(RadarAlertEvaluation.WetNow, sent.nextMemory, 10_600)
+        val wet = RainAlertDecisionEngine.decide(RadarAlertEvaluation.WetNow(100L), sent.nextMemory, 10_600)
         val partialDry = RainAlertDecisionEngine.decide(RadarAlertEvaluation.Unknown, wet.nextMemory, 11_200)
         assertFalse(partialDry.shouldNotify)
         assertEquals(sent.nextMemory.suppressedUntilEpochSeconds,
@@ -188,7 +188,9 @@ class RainAlertDecisionTest {
         val event = RainAlertDecisionEngine.evaluateMinuteSeries(series) as RadarAlertEvaluation.Approaching
         assertEquals(10, event.confirmedDurationMinutes)
         assertEquals(0.6f, event.confirmedPeakIntensity)
-        val text = RainAlertNotificationText.forApproaching("York", event, 1_000, ZoneId.of("UTC"))
+        val text = RainAlertNotificationText.forApproaching(
+            EnglishRainAlertTitleStrings, "York", event, 1_000, ZoneId.of("UTC"),
+        )
         assertTrue(text.title.contains("York"))
         assertTrue(text.summary.contains("10 min"))
         assertTrue(text.summary.contains("00:26"))
@@ -202,20 +204,32 @@ class RainAlertDecisionTest {
         val ongoing = RainAlertDecisionEngine.evaluateMinuteSeries(continuing) as RadarAlertEvaluation.Approaching
         assertEquals(null, ongoing.confirmedDurationMinutes)
         assertEquals(null, ongoing.confirmedPeakIntensity)
-        val restrained = RainAlertNotificationText.forApproaching("York", ongoing, 1_000, ZoneId.of("UTC"))
-        assertEquals(restrained.summary, restrained.detail)
+        val restrained = RainAlertNotificationText.forApproaching(
+            EnglishRainAlertTitleStrings, "York", ongoing, 1_000, ZoneId.of("UTC"),
+        )
+        assertEquals("Starts at 00:26 · in 10 min · at least 60%", restrained.detail)
         val partial = continuing.copy(points = continuing.points.take(36), availability = RainMinuteAvailability.PARTIAL)
         val partialEvent = RainAlertDecisionEngine.evaluateMinuteSeries(partial) as RadarAlertEvaluation.Approaching
         assertEquals(null, partialEvent.confirmedDurationMinutes)
-        assertEquals(RainAlertNotificationText.forApproaching("York", partialEvent, 1_000, ZoneId.of("UTC")).summary,
-            RainAlertNotificationText.forApproaching("York", partialEvent, 1_000, ZoneId.of("UTC")).detail)
+        assertEquals(
+            "Starts at 00:26 · in 10 min · at least 60%",
+            RainAlertNotificationText.forApproaching(
+                EnglishRainAlertTitleStrings, "York", partialEvent, 1_000, ZoneId.of("UTC"),
+            ).detail,
+        )
     }
 
     @Test
     fun `notification clock uses the selected zone across midnight`() {
         val event = RadarAlertEvaluation.Approaching(20, 20, 0,
             expectedStartEpochSeconds = 1_735_689_000L)
-        val text = RainAlertNotificationText.forApproaching("Manchester", event, 0, ZoneId.of("Europe/London"))
+        val text = RainAlertNotificationText.forApproaching(
+            EnglishRainAlertTitleStrings,
+            "Manchester",
+            event,
+            0,
+            ZoneId.of("Europe/London"),
+        )
         assertTrue(text.summary.contains("20 min"))
         assertTrue(text.summary.contains("23:50"))
     }
@@ -231,14 +245,18 @@ class RainAlertDecisionTest {
         val snowAtOnset = RainAlertDecisionEngine.evaluateMinuteSeries(series(setOf(10))) as
             RadarAlertEvaluation.Approaching
         assertTrue(snowAtOnset.likelySnow)
-        assertEquals("Snow likely approaching York",
-            RainAlertNotificationText.forApproaching("York", snowAtOnset, 1_000, ZoneId.of("UTC")).title)
+        assertEquals("Severe snow likely approaching York",
+            RainAlertNotificationText.forApproaching(
+                EnglishRainAlertTitleStrings, "York", snowAtOnset, 1_000, ZoneId.of("UTC"),
+            ).title)
 
         val rainThenSnow = RainAlertDecisionEngine.evaluateMinuteSeries(series(setOf(15))) as
             RadarAlertEvaluation.Approaching
         assertFalse(rainThenSnow.likelySnow)
-        assertEquals("Rain approaching York",
-            RainAlertNotificationText.forApproaching("York", rainThenSnow, 1_000, ZoneId.of("UTC")).title)
+        assertEquals("Severe rain approaching York",
+            RainAlertNotificationText.forApproaching(
+                EnglishRainAlertTitleStrings, "York", rainThenSnow, 1_000, ZoneId.of("UTC"),
+            ).title)
     }
 
     private fun gridWithWetSquare(start: Int, endExclusive: Int): IntensityGrid {

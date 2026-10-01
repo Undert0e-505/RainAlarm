@@ -11,6 +11,38 @@ enum class PrecipitationPresentationKind { RAIN, LIKELY_SNOW, CLEAR, UNKNOWN }
 
 enum class QualitativeIntensity { LIGHT, MEDIUM, SEVERE }
 
+data class RainEventSeverity(
+    val normalizedMaximum: Float,
+    val qualitative: QualitativeIntensity,
+)
+
+/**
+ * Notification severity uses the same upper-envelope samples, provider normalization and band
+ * boundaries as the Now graph, but only for the continuous rain event being notified.
+ */
+object RainEventSeverityPolicy {
+    fun forEvent(
+        series: RainMinuteSeries,
+        analysis: RainMinuteAnalysis,
+    ): RainEventSeverity? {
+        val start = if (analysis.rainingNow) 0 else analysis.arrivalMinute ?: return null
+        val endExclusive = (analysis.endMinute ?: series.points.size)
+            .coerceIn(start, series.points.size)
+        if (start !in series.points.indices || endExclusive <= start) return null
+        val rawMaximum = series.points.subList(start, endExclusive)
+            .map { it.maximum }
+            .filter(Float::isFinite)
+            .maxOrNull() ?: return null
+        val normalized = series.chartSeverity(rawMaximum)
+        return classifyNormalized(normalized)
+    }
+
+    fun classifyNormalized(value: Float?): RainEventSeverity? {
+        val normalized = value?.takeIf(Float::isFinite)?.coerceIn(0f, 1f) ?: return null
+        return RainEventSeverity(normalized, WeatherPresentationPolicy.qualitative(normalized))
+    }
+}
+
 data class MiniCompassPresentation(
     val kind: PrecipitationPresentationKind,
     val centerText: String,

@@ -123,6 +123,109 @@ class NavigationLocationPolicyTest {
         assertTrue(targets.drop(1).all { it.motionSource == TravelVisualMotionSource.PLATFORM })
     }
 
+    @Test fun sparseFixesWithoutMotionMetadataProduceCausalFiveHertzInterpolation() {
+        val tracker = TravelVisualMotionTracker()
+        val first = fix(
+            lon = -0.1,
+            elapsed = 1_000_000_000L,
+            accuracy = 2f,
+        )
+        val second = fix(
+            lon = -0.09998,
+            wall = first.wallTimeMillis + 1_000L,
+            elapsed = first.elapsedRealtimeNanos + 1_000_000_000L,
+            accuracy = 2f,
+        )
+        tracker.accept(first)
+        val start = requireNotNull(tracker.accept(second))
+        val targets = (200L..800L step 200L).map { offsetMillis ->
+            requireNotNull(tracker.target(second.elapsedRealtimeNanos + offsetMillis * 1_000_000L))
+        }
+        val settled = requireNotNull(tracker.target(second.elapsedRealtimeNanos + 850_000_000L))
+
+        assertEquals(first.longitude, start.longitude, 1e-10)
+        assertTrue(targets.all { it.motionSource == TravelVisualMotionSource.INTERPOLATED })
+        assertTrue((listOf(start) + targets + settled).zipWithNext().all { (before, after) ->
+            after.longitude >= before.longitude
+        })
+        assertTrue(targets.all { it.longitude in first.longitude..second.longitude })
+        assertEquals(second.longitude, settled.longitude, 1e-10)
+        assertFalse(settled.projected)
+    }
+
+    @Test fun newerSparseFixRetargetsFromCurrentInterpolationWithoutSnapOrOvershoot() {
+        val tracker = TravelVisualMotionTracker()
+        val first = fix(lon = -0.1, elapsed = 1_000_000_000L, accuracy = 2f)
+        val second = fix(
+            lon = -0.09998,
+            wall = first.wallTimeMillis + 1_000L,
+            elapsed = 2_000_000_000L,
+            accuracy = 2f,
+        )
+        tracker.accept(first)
+        tracker.accept(second)
+        val beforeRetarget = requireNotNull(tracker.target(2_500_000_000L))
+        val third = fix(
+            lon = -0.09996,
+            wall = second.wallTimeMillis + 500L,
+            elapsed = 2_500_000_000L,
+            accuracy = 2f,
+        )
+        val retargeted = requireNotNull(tracker.accept(third))
+        val advancing = requireNotNull(tracker.target(2_700_000_000L))
+        val settled = requireNotNull(tracker.target(2_925_000_000L))
+
+        assertEquals(beforeRetarget.latitude, retargeted.latitude, 1e-10)
+        assertEquals(beforeRetarget.longitude, retargeted.longitude, 1e-10)
+        assertTrue(advancing.longitude > retargeted.longitude)
+        assertTrue(advancing.longitude < third.longitude)
+        assertEquals(third.longitude, settled.longitude, 1e-10)
+    }
+
+    @Test fun staleOrImplausiblyLargeInterpolationTargetResetsToMeasuredFix() {
+        val staleTracker = TravelVisualMotionTracker()
+        val first = fix(lon = -0.1, elapsed = 1_000_000_000L, accuracy = 2f)
+        staleTracker.accept(first)
+        val stale = fix(
+            lon = -0.09998,
+            wall = first.wallTimeMillis + 4_000L,
+            elapsed = 5_000_000_000L,
+            accuracy = 2f,
+        )
+        val staleReset = requireNotNull(staleTracker.accept(stale))
+        assertEquals(stale.longitude, staleReset.longitude, 1e-10)
+
+        val jumpTracker = TravelVisualMotionTracker()
+        jumpTracker.accept(first)
+        val jump = fix(
+            lat = first.latitude + 0.01,
+            wall = first.wallTimeMillis + 1_000L,
+            elapsed = 2_000_000_000L,
+            accuracy = 2f,
+        )
+        val jumpReset = requireNotNull(jumpTracker.accept(jump))
+        assertEquals(jump.latitude, jumpReset.latitude, 1e-10)
+        assertEquals(jump.longitude, jumpReset.longitude, 1e-10)
+    }
+
+    @Test fun clearingTrackerDropsAnActiveInterpolationBeforeNextFirstFix() {
+        val tracker = TravelVisualMotionTracker()
+        val first = fix(lon = -0.1, elapsed = 1_000_000_000L, accuracy = 2f)
+        tracker.accept(first)
+        tracker.accept(fix(
+            lon = -0.09998,
+            wall = first.wallTimeMillis + 1_000L,
+            elapsed = 2_000_000_000L,
+            accuracy = 2f,
+        ))
+        tracker.clear()
+        assertTrue(tracker.target(2_400_000_000L) == null)
+        val restarted = fix(lat = 52.0, lon = 0.2, elapsed = 3_000_000_000L)
+        val target = requireNotNull(tracker.accept(restarted))
+        assertEquals(restarted.latitude, target.latitude, 1e-10)
+        assertEquals(restarted.longitude, target.longitude, 1e-10)
+    }
+
     @Test fun projectionFreezesAtBoundAndPoorFixNeverProjects() {
         val tracker = TravelVisualMotionTracker()
         val sourceElapsed = 1_000_000_000L
@@ -225,6 +328,26 @@ class NavigationLocationPolicyTest {
         assertEquals(200L, TravelVisualMotionPolicy.delayUntilNextTickMillis(1_000_000_000L))
         assertEquals(150L, TravelVisualMotionPolicy.delayUntilNextTickMillis(1_050_000_000L))
         assertEquals(1L, TravelVisualMotionPolicy.delayUntilNextTickMillis(1_199_999_999L))
+    }
+
+    @Test fun causalInterpolationDurationCoversMostOfSparseCadenceWithinBounds() {
+        val first = fix(elapsed = 1_000_000_000L)
+        assertEquals(200L, TravelVisualMotionPolicy.interpolationDurationMillis(
+            first,
+            fix(wall = first.wallTimeMillis + 200L, elapsed = 1_200_000_000L),
+        ))
+        assertEquals(850L, TravelVisualMotionPolicy.interpolationDurationMillis(
+            first,
+            fix(wall = first.wallTimeMillis + 1_000L, elapsed = 2_000_000_000L),
+        ))
+        assertEquals(1_000L, TravelVisualMotionPolicy.interpolationDurationMillis(
+            first,
+            fix(wall = first.wallTimeMillis + 2_000L, elapsed = 3_000_000_000L),
+        ))
+        assertEquals(0L, TravelVisualMotionPolicy.interpolationDurationMillis(
+            first,
+            fix(wall = first.wallTimeMillis + 4_000L, elapsed = 5_000_000_000L),
+        ))
     }
 
     @Test fun precisePermissionAndAccuracyGateFollow() {

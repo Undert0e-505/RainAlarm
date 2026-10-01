@@ -211,7 +211,8 @@ class RainMinuteSeriesTest {
             RadarAlertEvaluation.Approaching(15, 29, 1_000,
                 confirmedDurationMinutes = 15,
                 confirmedPeakIntensity = RAIN_INTENSITY_THRESHOLD,
-                expectedStartEpochSeconds = 1_900),
+                expectedStartEpochSeconds = 1_900,
+                expectedSeverity = QualitativeIntensity.LIGHT),
             RainAlertDecisionEngine.evaluateMinuteSeries(series(points)),
         )
     }

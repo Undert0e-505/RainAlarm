@@ -21,6 +21,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -33,6 +34,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.core.view.isVisible
 import com.rainalarm.app.BuildConfig
 import com.rainalarm.app.data.RadarSession
 import com.rainalarm.app.data.RadarCoverageRaster
@@ -1316,6 +1318,7 @@ private class LegacyStaticFallbackOverlayView(
     private var map: MapLibreMap? = null
     private var marker = session.place
     private var markerScale = 1f
+    private var markerVisible = true
     private var decodeStarted = false
     private var disposed = false
 
@@ -1337,6 +1340,12 @@ private class LegacyStaticFallbackOverlayView(
 
     fun setMarkerScale(scale: Float) {
         markerScale = scale.takeIf(Float::isFinite)?.coerceIn(1f, 1.6f) ?: 1f
+        invalidate()
+    }
+
+    fun setMarkerVisible(visible: Boolean) {
+        if (markerVisible == visible) return
+        markerVisible = visible
         invalidate()
     }
 
@@ -1428,9 +1437,11 @@ private class LegacyStaticFallbackOverlayView(
             max(topLeft.y, bottomRight.y),
         )
         canvas.drawBitmap(image, null, destination, paint)
-        val point = ready.projection.toScreenLocation(LatLng(marker.latitude, marker.longitude))
-        canvas.drawCircle(point.x, point.y, RadarMarkerGeometry.outerRadius(markerScale), markerOutlinePaint)
-        canvas.drawCircle(point.x, point.y, RadarMarkerGeometry.innerRadius(markerScale), markerPaint)
+        if (markerVisible) {
+            val point = ready.projection.toScreenLocation(LatLng(marker.latitude, marker.longitude))
+            canvas.drawCircle(point.x, point.y, RadarMarkerGeometry.outerRadius(markerScale), markerOutlinePaint)
+            canvas.drawCircle(point.x, point.y, RadarMarkerGeometry.innerRadius(markerScale), markerPaint)
+        }
     }
 }
 
@@ -1441,6 +1452,7 @@ internal interface RadarOverlayController {
     fun setState(next: RadarTimelineBracket, playing: Boolean, mapPlace: SavedPlace)
     fun setMarker(mapPlace: SavedPlace)
     fun setMarkerScale(scale: Float) = Unit
+    fun setMarkerVisible(visible: Boolean) = Unit
     fun onCameraMoved()
     fun dispose()
 }
@@ -1527,6 +1539,12 @@ private class RadarSessionOverlaySlot(
         staticFallback?.setMarkerScale(scale)
     }
 
+    fun setMarkerVisible(visible: Boolean) {
+        if (disposed) return
+        overlay.setMarkerVisible(visible)
+        staticFallback?.setMarkerVisible(visible)
+    }
+
     fun setVisible(visible: Boolean) {
         if (disposed) return
         val visibility = if (visible) View.VISIBLE else View.INVISIBLE
@@ -1562,12 +1580,16 @@ private class RadarBaseMarkerView(context: android.content.Context) : View(conte
     private var map: MapLibreMap? = null
     private var marker: SavedPlace? = null
     private var markerScale = 1f
+    private var fixedAtCenter = false
 
     init {
         setWillNotDraw(false)
         isClickable = false
         isFocusable = false
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+        // The Travel marker is screen-fixed above the radar TextureView; the opaque loading cover
+        // retains a still higher Z so an unfinished native frame is never exposed.
+        translationZ = resources.displayMetrics.density * 1.5f
     }
 
     fun bind(ready: MapLibreMap) {
@@ -1577,14 +1599,25 @@ private class RadarBaseMarkerView(context: android.content.Context) : View(conte
 
     fun update(place: SavedPlace) {
         if (marker?.latitude == place.latitude && marker?.longitude == place.longitude) return
+        val needsFirstDraw = marker == null
         marker = place
-        invalidate()
+        if (!fixedAtCenter || needsFirstDraw) invalidate()
     }
 
-    fun onCameraMoved() = invalidate()
+    fun onCameraMoved() {
+        // The Travel marker is screen-fixed: the map can move at display cadence beneath it
+        // without scheduling a redundant marker redraw on every native camera frame.
+        if (!fixedAtCenter) invalidate()
+    }
 
     fun setMarkerScale(scale: Float) {
         markerScale = scale.takeIf(Float::isFinite)?.coerceIn(1f, 1.6f) ?: 1f
+        invalidate()
+    }
+
+    fun setFixedAtCenter(fixed: Boolean) {
+        if (fixedAtCenter == fixed) return
+        fixedAtCenter = fixed
         invalidate()
     }
 
@@ -1592,9 +1625,12 @@ private class RadarBaseMarkerView(context: android.content.Context) : View(conte
         super.onDraw(canvas)
         val ready = map ?: return
         val place = marker ?: return
-        val point = ready.projection.toScreenLocation(LatLng(place.latitude, place.longitude))
-        canvas.drawCircle(point.x, point.y, RadarMarkerGeometry.outerRadius(markerScale), outline)
-        canvas.drawCircle(point.x, point.y, RadarMarkerGeometry.innerRadius(markerScale), fill)
+        val point = if (fixedAtCenter) null
+            else ready.projection.toScreenLocation(LatLng(place.latitude, place.longitude))
+        val x = point?.x ?: width / 2f
+        val y = point?.y ?: height / 2f
+        canvas.drawCircle(x, y, RadarMarkerGeometry.outerRadius(markerScale), outline)
+        canvas.drawCircle(x, y, RadarMarkerGeometry.innerRadius(markerScale), fill)
     }
 }
 
@@ -1621,6 +1657,7 @@ private class CanvasRadarOverlayView(context: android.content.Context) : View(co
     private var frameScheduled = false
     private var disposed = false
     private var markerScale = 1f
+    private var markerVisible = true
     private val choreographer = Choreographer.getInstance()
     private val frameCallback = Choreographer.FrameCallback {
         frameScheduled = false
@@ -1693,6 +1730,12 @@ private class CanvasRadarOverlayView(context: android.content.Context) : View(co
         postInvalidateOnAnimation()
     }
 
+    override fun setMarkerVisible(visible: Boolean) {
+        if (markerVisible == visible) return
+        markerVisible = visible
+        postInvalidateOnAnimation()
+    }
+
     override fun onCameraMoved() {
         if (disposed) return
         rebuildPlan(force = false)
@@ -1754,13 +1797,15 @@ private class CanvasRadarOverlayView(context: android.content.Context) : View(co
         if (secondPaint.alpha > 0) {
             canvas.drawBitmap(secondBitmap, null, secondDestination, secondPaint)
         }
-        val markerPoint = projection.toScreenLocation(markerLatLng)
-        canvas.drawCircle(
-            markerPoint.x, markerPoint.y, RadarMarkerGeometry.outerRadius(markerScale), markerOutlinePaint,
-        )
-        canvas.drawCircle(
-            markerPoint.x, markerPoint.y, RadarMarkerGeometry.innerRadius(markerScale), markerPaint,
-        )
+        if (markerVisible) {
+            val markerPoint = projection.toScreenLocation(markerLatLng)
+            canvas.drawCircle(
+                markerPoint.x, markerPoint.y, RadarMarkerGeometry.outerRadius(markerScale), markerOutlinePaint,
+            )
+            canvas.drawCircle(
+                markerPoint.x, markerPoint.y, RadarMarkerGeometry.innerRadius(markerScale), markerPaint,
+            )
+        }
     }
 
     private fun rebuildPlan(force: Boolean) {
@@ -2072,19 +2117,6 @@ private fun RadarImageMapInstance(
         }
     }
     val mapGestureOwnership = remember(mapView) { RadarMapGestureOwnership() }
-    DisposableEffect(mapView, mapGestureOwnership) {
-        mapView.setOnTouchListener { _, event ->
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> mapGestureOwnership.pointerStarted(
-                    RadarMapTouchPolicy.pointerOwnedByMap(event.y, density),
-                )
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
-                    mapGestureOwnership.pointerFinished()
-            }
-            false
-        }
-        onDispose { mapView.setOnTouchListener(null) }
-    }
     val currentStatusCallback by rememberUpdatedState(onRendererStatus)
     val currentLayerError by rememberUpdatedState(onLayerError)
     val currentSatellitePreparation by rememberUpdatedState(onSatellitePreparation)
@@ -2344,10 +2376,10 @@ private fun RadarImageMapInstance(
         mutableStateOf<MapLibreMap.OnCameraIdleListener?>(null)
     }
     var appliedPlace by remember(mapView) { mutableStateOf<SavedPlace?>(null) }
-    var lastFollowFixElapsedRealtimeNanos by remember(mapView) { mutableStateOf(0L) }
     var lastBracket by remember(mapView) { mutableStateOf<RadarTimelineBracket?>(null) }
     var lastPlaying by remember(mapView) { mutableStateOf<Boolean?>(null) }
     var lastMarker by remember(mapView) { mutableStateOf<SavedPlace?>(null) }
+    var lastWindViewportPublishElapsedNanos by remember(mapView) { mutableLongStateOf(0L) }
     val cameraIntentOwner = remember(mapView) { RadarCameraIntentOwner() }
     var activeEntryFocusToken by remember(mapView) { mutableStateOf<Long?>(null) }
     val entryFrameHandshake = remember(mapView) { RadarEntryFrameHandshake() }
@@ -2364,7 +2396,72 @@ private fun RadarImageMapInstance(
     val latestEntryFocusEnabled by rememberUpdatedState(entryFocusEnabled)
     val latestEntryFocusDurationMillis by rememberUpdatedState(entryFocusDurationMillis)
     val latestRadarPresentationVisible by rememberUpdatedState(radarPresentationVisible)
+    val latestLiveTargetProjected by rememberUpdatedState(liveTargetProjected)
     val currentEntryAnimationStart by rememberUpdatedState(onEntryAnimationStart)
+    val travelFrameDiagnostics = remember(mapView) { RadarTravelFrameDiagnosticSampler() }
+
+    val travelCameraFollower = remember(mapView) {
+        RadarTravelCameraFollower(Choreographer.getInstance()) { latitude, longitude, frameTimeNanos ->
+            val ready = map ?: return@RadarTravelCameraFollower
+            ready.cameraPosition = northUpCamera(
+                RadarCameraTarget(latitude, longitude, ready.cameraPosition.zoom),
+            )
+            travelFrameDiagnostics.record(frameTimeNanos)?.let { appliedFrames ->
+                LocationCadenceDiagnostics.record(
+                    "map-frame",
+                    null,
+                    frameTimeNanos,
+                    (if (latestLiveTargetProjected) "projected-vsync" else "measured-vsync") +
+                        " applied=$appliedFrames",
+                )
+            }
+        }
+    }
+    DisposableEffect(mapView, mapGestureOwnership, travelCameraFollower) {
+        mapView.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    val ownedByMap = RadarMapTouchPolicy.pointerOwnedByMap(event.y, density)
+                    if (mapGestureOwnership.pointerStarted(ownedByMap)) {
+                        // Claim automated camera ownership away from Travel before MapLibre's
+                        // recognisers see movement. Location targets keep flowing into the paused
+                        // trajectory, but no vsync camera write can contend with this pointer.
+                        travelCameraFollower.pauseForGesture()
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (mapGestureOwnership.pointerFinished() && latestFollowLive) {
+                        travelCameraFollower.resumeAfterUnclaimedGesture(
+                            android.os.SystemClock.elapsedRealtimeNanos(),
+                        )
+                    }
+                }
+            }
+            false
+        }
+        onDispose {
+            mapGestureOwnership.pointerFinished()
+            mapView.setOnTouchListener(null)
+        }
+    }
+
+    fun reconcileMarkerPresentation() {
+        val fixedTravelMarker = latestFollowLive
+        activeRadarSlot?.setMarkerVisible(!fixedTravelMarker)
+        pendingRadarSlot?.setMarkerVisible(!fixedTravelMarker)
+        baseMarkerView.setFixedAtCenter(fixedTravelMarker)
+        baseMarkerView.visibility = when {
+            nativePresentationGate.isHidden -> View.INVISIBLE
+            fixedTravelMarker -> View.VISIBLE
+            activeRadarSlot == null || !latestRadarPresentationVisible -> View.VISIBLE
+            else -> View.GONE
+        }
+        windView.bringToFront()
+        if (fixedTravelMarker && baseMarkerView.isVisible) {
+            baseMarkerView.bringToFront()
+        }
+        if (mapCover.isVisible) mapCover.bringToFront()
+    }
 
     fun hideNativePresentation(generation: Int) {
         if (!nativePresentationGate.prepare(generation) &&
@@ -2388,11 +2485,9 @@ private fun RadarImageMapInstance(
         mapCover.visibility = View.GONE
         activeRadarSlot?.setVisible(latestRadarPresentationVisible)
         pendingRadarSlot?.setVisible(latestRadarPresentationVisible)
-        baseMarkerView.visibility = if (activeRadarSlot == null ||
-            !latestRadarPresentationVisible) View.VISIBLE else View.GONE
         windView.visibility = View.VISIBLE
-        windView.bringToFront()
         windView.setRenderEligible(true)
+        reconcileMarkerPresentation()
         currentMapStyleError(null)
         Log.i(
             "RainRadarRender",
@@ -2454,16 +2549,13 @@ private fun RadarImageMapInstance(
             activeRadarSlot = slot
             pendingRadarSlot = null
             slot.setVisible(latestRadarPresentationVisible && !nativePresentationGate.isHidden)
-            baseMarkerView.visibility = if (nativePresentationGate.isHidden) View.INVISIBLE
-            else if (latestRadarPresentationVisible) View.GONE else View.VISIBLE
             outgoing?.removeFrom(mapContainer)
             outgoing?.dispose()
             map?.style?.let {
                 coverageMask.reconcile(it, slot.session, mapStyle, coverageMaskDarkness)
             }
             windView.visibility = if (nativePresentationGate.isHidden) View.INVISIBLE else View.VISIBLE
-            windView.bringToFront()
-            if (mapCover.visibility == View.VISIBLE) mapCover.bringToFront()
+            reconcileMarkerPresentation()
         }
     }
     // A renderer/style recovery replaces MapView and its teardown disposes the native slot.
@@ -2486,6 +2578,7 @@ private fun RadarImageMapInstance(
     val teardown = remember(mapView) {
         RadarResourceTeardown(
             stopOverlay = {
+                travelCameraFollower.stop()
                 satelliteBuffers.clear()
                 coverageMask.clear()
                 windView.setRenderEligible(false)
@@ -2501,7 +2594,9 @@ private fun RadarImageMapInstance(
                 val ready = map
                 val listener = cameraListener
                 val idleListener = cameraIdleListener
-                if (ready != null) appliedPlace?.let { saveCamera(ready, it) }
+                if (ready != null && !travelCameraFollower.isRunning) {
+                    appliedPlace?.let { saveCamera(ready, it) }
+                }
                 if (ready != null && listener != null) ready.removeOnCameraMoveListener(listener)
                 cameraStartListener?.let { if (ready != null) ready.removeOnCameraMoveStartedListener(it) }
                 if (ready != null && idleListener != null) ready.removeOnCameraIdleListener(idleListener)
@@ -2575,8 +2670,8 @@ private fun RadarImageMapInstance(
                     !mapRevealGate.isCovered && !entryStillWaiting
                 ) {
                     mapCover.visibility = View.GONE
-                    windView.bringToFront()
                     windView.setRenderEligible(true)
+                    reconcileMarkerPresentation()
                     currentMapStyleError(null)
                 }
             }
@@ -2600,8 +2695,8 @@ private fun RadarImageMapInstance(
                         readyEntryGeneration != transition.generation
                     if (!teardown.isClosed && !nativePresentationGate.isHidden && !entryStillWaiting) {
                         mapCover.visibility = View.GONE
-                        windView.bringToFront()
                         windView.setRenderEligible(true)
+                        reconcileMarkerPresentation()
                         currentMapStyleError(null)
                     }
                 }
@@ -2697,7 +2792,11 @@ private fun RadarImageMapInstance(
                     )
                     if (!pendingEntry) saveCamera(ready, initialPlace)
                     val listener = MapLibreMap.OnCameraMoveListener {
-                        appliedPlace?.let { saveCamera(ready, it) }
+                        // The Travel loop can publish at display refresh cadence. Persist only
+                        // settled/user cameras, not every intermediate centre.
+                        if (!travelCameraFollower.isRunning) {
+                            appliedPlace?.let { saveCamera(ready, it) }
+                        }
                         activeRadarSlot?.onCameraMoved()
                         pendingRadarSlot?.onCameraMoved()
                         baseMarkerView.onCameraMoved()
@@ -2717,6 +2816,11 @@ private fun RadarImageMapInstance(
                             reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE,
                         )
                         if (userGesture) {
+                            // A raw DOWN has already paused Travel's vsync writer. Cancel any
+                            // unrelated retained MapLibre transition and make the manual camera
+                            // authoritative; pointer UP must not resume this claimed gesture.
+                            ready.cancelTransitions()
+                            travelCameraFollower.stop()
                             nativeEntryPreparation?.let { preparation ->
                                 cancelledEntryGeneration = preparation.generation
                                 finishedEntryGeneration = preparation.generation
@@ -2728,7 +2832,7 @@ private fun RadarImageMapInstance(
                             activeEntryFocusToken = null
                             nativeEntryPreparation = null
                             currentManualGesture()
-                        } else {
+                        } else if (!travelCameraFollower.isRunning) {
                             TravelModeDiagnostics.record(
                                 latestFollowLive,
                                 latestFollowLive,
@@ -2748,10 +2852,20 @@ private fun RadarImageMapInstance(
                             pendingRadarSlot?.onCameraMoved()
                             baseMarkerView.onCameraMoved()
                             windView.cameraMoved()
-                            val bounds = ready.projection.visibleRegion.latLngBounds
-                            currentWindViewportCallback(WindViewport(
-                                bounds.getLatSouth(), bounds.getLonWest(), bounds.getLatNorth(), bounds.getLonEast(),
-                            ))
+                            val nowElapsedNanos = android.os.SystemClock.elapsedRealtimeNanos()
+                            if (RadarTravelViewportPolicy.shouldPublish(
+                                    following = travelCameraFollower.isRunning,
+                                    nowElapsedNanos = nowElapsedNanos,
+                                    lastPublishedElapsedNanos = lastWindViewportPublishElapsedNanos,
+                                )
+                            ) {
+                                val bounds = ready.projection.visibleRegion.latLngBounds
+                                currentWindViewportCallback(WindViewport(
+                                    bounds.getLatSouth(), bounds.getLonWest(),
+                                    bounds.getLatNorth(), bounds.getLonEast(),
+                                ))
+                                lastWindViewportPublishElapsedNanos = nowElapsedNanos
+                            }
                             latestRadarSession?.let { current ->
                                 currentRadarTierCallback(RadarOverlayPlanner.activeTier(
                                     ready.cameraPosition.zoom,
@@ -2804,16 +2918,13 @@ private fun RadarImageMapInstance(
                     latestBracket?.let { desiredRadarSlot.setState(it, latestPlaying, latestMarkerPlace) }
                     desiredRadarSlot.setMarker(latestMarkerPlace)
                     windView.bringToFront()
-                    if (mapCover.visibility == View.VISIBLE) mapCover.bringToFront()
+                    if (mapCover.isVisible) mapCover.bringToFront()
                 }
             }
             baseMarkerView.update(markerPlace)
             baseMarkerView.setMarkerScale(markerScale)
             activeRadarSlot?.setVisible(radarPresentationVisible && !nativePresentationGate.isHidden)
             pendingRadarSlot?.setVisible(radarPresentationVisible && !nativePresentationGate.isHidden)
-            baseMarkerView.visibility = if (nativePresentationGate.isHidden) View.INVISIBLE
-            else if (activeRadarSlot == null) View.VISIBLE
-            else if (!radarPresentationVisible) View.VISIBLE else View.GONE
             activeRadarSlot?.setMarkerScale(markerScale)
             pendingRadarSlot?.setMarkerScale(markerScale)
             if (bracket != null && (lastBracket != bracket || lastPlaying != isPlaying)) {
@@ -2840,6 +2951,7 @@ private fun RadarImageMapInstance(
             }
             windView.visibility = if (nativePresentationGate.isHidden) View.INVISIBLE else View.VISIBLE
             windView.update(displayedWindGrid, windRenderToken, windArrowScale)
+            reconcileMarkerPresentation()
             // Preference-only changes replace the scrim source/layer in-place. They do not
             // recreate the style, radar session, camera, timeline or ancillary data.
             map?.style?.let {
@@ -3000,6 +3112,7 @@ private fun RadarImageMapInstance(
         nativeEntryPreparation = null
         readyEntryGeneration = null
         failedEntryGeneration = null
+        travelCameraFollower.stop()
         ready.cancelTransitions()
         oldPlace?.let { saveCamera(ready, it) }
         val mapWidth = mapView.width.takeIf { it > 0 } ?: mapView.resources.displayMetrics.widthPixels
@@ -3039,6 +3152,7 @@ private fun RadarImageMapInstance(
             return@LaunchedEffect
         }
         val starting = target.copy(zoom = RadarEntryFocusPolicy.startZoom(target.zoom))
+        travelCameraFollower.stop()
         val intentToken = cameraIntentOwner.claim()
         activeEntryFocusToken = intentToken
         cancelledEntryGeneration = null
@@ -3231,41 +3345,41 @@ private fun RadarImageMapInstance(
     }
 
     LaunchedEffect(
-        map, followLive, markerPlace.latitude, markerPlace.longitude,
+        map, followLive, markerPlace.latitude, markerPlace.longitude, recenterSignal,
         liveFixElapsedRealtimeNanos, liveTargetProjected,
     ) {
         val ready = map ?: return@LaunchedEffect
         if (!followLive || teardown.isClosed) {
-            lastFollowFixElapsedRealtimeNanos = 0L
+            travelCameraFollower.stop()
+            reconcileMarkerPresentation()
             return@LaunchedEffect
         }
+        reconcileMarkerPresentation()
         // The entry transition owns the camera for one second. Marker projection still updates;
         // its latest accepted fix is applied exactly when that transition completes.
         if (activeEntryFocusToken != null) return@LaunchedEffect
-        cameraIntentOwner.invalidate()
-        val target = RadarCameraTarget(markerPlace.latitude, markerPlace.longitude, ready.cameraPosition.zoom)
-        appliedPlace = markerPlace
-        val duration = RadarFollowCameraPolicy.durationMillis(
-            lastFollowFixElapsedRealtimeNanos, liveFixElapsedRealtimeNanos,
-        )
-        ready.cancelTransitions()
-        ready.easeCamera(CameraUpdateFactory.newCameraPosition(northUpCamera(target)), duration)
-        LocationCadenceDiagnostics.record(
-            "map-apply",
-            null,
-            liveFixElapsedRealtimeNanos,
-            if (liveTargetProjected) "projected durationMs=$duration" else "measured durationMs=$duration",
-        )
-        Choreographer.getInstance().postFrameCallback { frameTimeNanos ->
-            LocationCadenceDiagnostics.record(
-                "map-frame",
-                null,
-                frameTimeNanos,
-                if (liveTargetProjected) "projected" else "measured",
+        if (!travelCameraFollower.isRunning) {
+            cameraIntentOwner.invalidate()
+            val current = ready.cameraPosition.target
+            if (current != null) travelCameraFollower.start(
+                current.latitude,
+                current.longitude,
+                android.os.SystemClock.elapsedRealtimeNanos(),
             )
         }
-        lastFollowFixElapsedRealtimeNanos = liveFixElapsedRealtimeNanos
-        saveCamera(ready, markerPlace)
+        appliedPlace = markerPlace
+        val action = travelCameraFollower.submit(
+            markerPlace.latitude,
+            markerPlace.longitude,
+            liveFixElapsedRealtimeNanos,
+        )
+        LocationCadenceDiagnostics.record(
+            "map-target",
+            null,
+            liveFixElapsedRealtimeNanos,
+            (if (liveTargetProjected) "projected" else "measured") +
+                " action=${action.name.lowercase()}",
+        )
     }
 }
 

@@ -42,6 +42,10 @@ data class WidgetSavedPlaceTarget(
     }
 }
 
+/**
+ * Serialization-only compatibility with widgets configured before 0.9.0.  Rendering is now
+ * unconditionally rain-first; this value is deliberately ignored by runtime presentation.
+ */
 @Serializable
 enum class WidgetPrimaryContent { SMART, RAIN, LIGHTNING, TEMPERATURE }
 
@@ -58,19 +62,25 @@ data class RainAlarmWidgetConfig(
     val quietStartMinuteOfDay: Int = 22 * 60,
     val quietEndMinuteOfDay: Int = 7 * 60,
     val savedPlace: WidgetSavedPlaceTarget? = null,
+    val notificationsEnabled: Boolean = true,
+    val includeLightningNotifications: Boolean = false,
 ) {
     val opacity: Float get() = backgroundOpacityPercent.coerceIn(0, 100) / 100f
     val quietHours: QuietHours get() = QuietHours(
         quietHoursEnabled, quietStartMinuteOfDay, quietEndMinuteOfDay,
     )
     val valid: Boolean get() = appWidgetId >= 0 && savedPlace?.valid == true &&
-        backgroundOpacityPercent in 0..100 && (!quietHoursEnabled || quietHours.valid)
+        backgroundOpacityPercent in 0..100 &&
+        (!notificationsEnabled || !quietHoursEnabled || quietHours.valid)
 
-    fun requiresLightningDisplay(widthDp: Int? = null): Boolean = when (primaryContent) {
-        WidgetPrimaryContent.SMART, WidgetPrimaryContent.LIGHTNING -> true
-        WidgetPrimaryContent.RAIN, WidgetPrimaryContent.TEMPERATURE ->
-            widthDp == null || WidgetResponsivePolicy.sizeClass(widthDp) == WidgetSizeClass.EXPANDED
-    }
+    /** Lightning is visible only as secondary text on non-compact widgets. */
+    fun requiresLightningDisplay(widthDp: Int? = null): Boolean = widthDp == null ||
+        WidgetResponsivePolicy.sizeClass(widthDp) != WidgetSizeClass.COMPACT
+
+    /** Compact widgets fetch Lightning only when their own notification subscription asks for it. */
+    fun requiresLightningAcquisition(widthDp: Int? = null): Boolean =
+        requiresLightningDisplay(widthDp) ||
+            (notificationsEnabled && includeLightningNotifications)
 }
 
 @Serializable

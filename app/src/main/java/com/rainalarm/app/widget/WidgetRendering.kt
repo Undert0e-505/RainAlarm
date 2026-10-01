@@ -66,7 +66,7 @@ enum class WidgetCompassContentMode { COMPASS_ONLY, TEXT_BEARING }
 object WidgetCompassContentPolicy {
     fun presentation(
         mode: WidgetCompassContentMode,
-        selectedContent: WidgetPrimaryContent,
+        @Suppress("UNUSED_PARAMETER") selectedContent: WidgetPrimaryContent,
         rain: MiniCompassPresentation,
         primary: WidgetPrimaryPresentation,
     ): MiniCompassPresentation = when (mode) {
@@ -76,11 +76,8 @@ object WidgetCompassContentPolicy {
             neutralFace(rain, "—", null, unavailable = rain.kind == PrecipitationPresentationKind.UNKNOWN)
         }
 
-        WidgetCompassContentMode.COMPASS_ONLY -> when {
-            selectedContent == WidgetPrimaryContent.RAIN -> rain
-            selectedContent == WidgetPrimaryContent.SMART && rain.hasPrecipitation -> rain
-            else -> neutralFace(rain, primary.centre, primary.unit, primary.unavailable)
-        }
+        WidgetCompassContentMode.COMPASS_ONLY -> if (rain.hasPrecipitation) rain
+        else neutralFace(rain, primary.centre, primary.unit, primary.unavailable)
     }
 
     private fun neutralFace(
@@ -113,48 +110,27 @@ object WidgetPresentationPolicy {
         val series = snapshot.rainSeries()
         val rain = WidgetRainPresentationPolicy.from(snapshot, series)
         val lightningDetected = snapshot.lightning == WidgetLightningState.DETECTED
-        return when (config.primaryContent) {
-            WidgetPrimaryContent.SMART -> when {
-                rain.hasPrecipitation -> rainPresentation(context, rain, lightningDetected)
-                lightningDetected -> WidgetPrimaryPresentation(
-                    "⚡", null, context.getString(R.string.widget_lightning_nearby), lightningBadge = true,
-                )
-                rain.kind == PrecipitationPresentationKind.CLEAR ->
-                    snapshot.temperatureC?.takeIf(Double::isFinite)?.let {
-                        val temperature = "${it.roundToInt()}°"
-                        WidgetPrimaryPresentation(temperature, null, temperature)
-                    } ?: WidgetPrimaryPresentation(
-                        "—",
+        return when {
+            rain.hasPrecipitation -> rainPresentation(context, rain, lightningDetected)
+            rain.kind == PrecipitationPresentationKind.CLEAR ->
+                snapshot.temperatureC?.takeIf(Double::isFinite)?.let {
+                    val temperature = "${it.roundToInt()}°"
+                    WidgetPrimaryPresentation(
+                        temperature,
                         null,
-                        context.getString(
-                            if (rain.completeHour) R.string.widget_dry_next_hour
-                            else R.string.now_no_rain,
-                        ),
+                        temperature,
+                        lightningBadge = lightningDetected,
                     )
-                else -> unavailable(context, lightningDetected)
-            }
-            WidgetPrimaryContent.RAIN -> if (rain.kind == PrecipitationPresentationKind.UNKNOWN) {
-                unavailable(context, lightningDetected)
-            } else rainPresentation(context, rain, lightningDetected)
-            WidgetPrimaryContent.LIGHTNING -> when (snapshot.lightning) {
-                WidgetLightningState.DETECTED -> WidgetPrimaryPresentation(
-                    "⚡",
+                } ?: WidgetPrimaryPresentation(
+                    "—",
                     null,
-                    context.getString(R.string.widget_lightning_nearby),
-                    lightningBadge = true,
+                    context.getString(
+                        if (rain.completeHour) R.string.widget_dry_next_hour
+                        else R.string.now_no_rain,
+                    ),
+                    lightningBadge = lightningDetected,
                 )
-                WidgetLightningState.NO_DETECTION -> WidgetPrimaryPresentation(
-                    "✓", null, context.getString(R.string.widget_no_recent_lightning),
-                )
-                WidgetLightningState.UNAVAILABLE,
-                WidgetLightningState.NOT_REQUESTED,
-                -> unavailable(context)
-            }
-            WidgetPrimaryContent.TEMPERATURE -> snapshot.temperatureC?.takeIf(Double::isFinite)?.let {
-                WidgetPrimaryPresentation(
-                    "${it.roundToInt()}°", null, context.getString(R.string.metric_temperature),
-                )
-            } ?: unavailable(context, lightningDetected)
+            else -> unavailable(context, lightningDetected)
         }
     }
 

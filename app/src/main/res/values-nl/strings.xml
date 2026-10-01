@@ -18,6 +18,7 @@
     <string name="now_refresh">Radarnowcast vernieuwen</string><string name="now_next_hour">Volgend uur</string><string name="now_now">Nu</string><string name="now_no_rain">Geen regen</string><string name="now_from">Uit %1$s</string><string name="now_raining">Het regent nu</string><string name="now_snow_likely">Waarschijnlijk sneeuw</string><string name="now_rain_in">Regen begint over</string><string name="now_snow_in">Waarschijnlijk sneeuw over</string><string name="now_no_rain_yet">Nog geen regen gedetecteerd</string><string name="now_no_rain_hour">Geen regen verwacht in het komende uur</string><string name="now_sunrise">Zonsopkomst</string><string name="now_sunset">Zonsondergang</string><string name="now_severe">Zwaar</string><string name="now_medium">Matig</string><string name="now_light">Licht</string>
 <string name="notification_channel_name">Regen- en bliksemmeldingen</string><string name="notification_channel_description">Rustige meldingen voor naderende regen en waargenomen bliksemactiviteit in de buurt</string><string name="notification_rain_title">Regen op komst in %1$s</string><string name="notification_snow_title">Waarschijnlijk sneeuw op komst in %1$s</string><string name="notification_eta">Over %1$d min · rond %2$s</string><string name="notification_detail">%1$s · ongeveer %2$d min; piekintensiteit %3$d%%</string>
     <plurals name="notification_eta_plural"><item quantity="one">Over %1$d minuut · rond %2$s</item><item quantity="other">Over %1$d minuten · rond %2$s</item></plurals>
+    <plurals name="notification_starts_eta_plural"><item quantity="one">Begint om %1$s · over %2$d minuut</item><item quantity="other">Begint om %1$s · over %2$d minuten</item></plurals><string name="notification_bounded_detail">%1$s · duurt ongeveer %2$d min · piekintensiteit %3$d%%</string><string name="notification_duration_detail">%1$s · duurt ongeveer %2$d min</string><string name="notification_unbounded_detail">%1$s · minstens %2$d%%</string><string name="notification_rain_now_title">Nu regen in %1$s</string><string name="notification_snow_now_title">Nu waarschijnlijk sneeuw in %1$s</string><plurals name="notification_stops_remaining_plural"><item quantity="one">Stopt naar verwachting om %1$s · nog ongeveer %2$d minuut</item><item quantity="other">Stopt naar verwachting om %1$s · nog ongeveer %2$d minuten</item></plurals><string name="notification_intensity_at_least">Minstens %1$d%%</string><string name="notification_peak_detail">%1$s · piekintensiteit %2$d%%</string>
     <string name="places_switch_description">Plaats kiezen; geselecteerd: %1$s</string>
     <string name="common_expanded">Uitgevouwen</string><string name="common_collapsed">Ingevouwen</string><string name="common_active_label">Actief</string><string name="common_source_terms">Bron / voorwaarden</string>
     <string name="places_search_failed">Zoeken naar plaats mislukt</string><string name="places_permission_denied">Locatietoestemming is niet verleend. Je opgeslagen selectie blijft ongewijzigd.</string><string name="places_search_sources">Steden: Open-Meteo · Plaatsen: Photon/OSM + Wikipedia · Britse postcodes: postcodes.io</string>
@@ -97,7 +98,7 @@
     <string name="notification_lightning_detail">Bliksemactiviteit is binnen %1$d km gedetecteerd.</string>
     <string name="notification_combined_title">Regen nadert %1$s · bliksemactiviteit in de buurt</string>
     <string name="notification_combined_summary">%1$s · bliksemactiviteit gedetecteerd</string>
-    <string name="notification_combined_detail">%1$s. Bliksemactiviteit is binnen %2$d km gedetecteerd; dit is geen inslagvoorspelling.</string>
+    <string name="notification_combined_detail">%1$s · Bliksemactiviteit is binnen %2$d km gedetecteerd.</string>
     <string name="notification_rain_approaching">Regen nadert</string>
     <string name="widget_description">Weerwidget van Rain Alarm</string>
     <string name="widget_tap_to_configure">Tik om in te stellen</string>
@@ -131,6 +132,10 @@
     <string name="widget_preview_description">Widgetvoorbeeld met %1$d procent achtergronddekking</string>
     <string name="widget_preview_place">Voorbeeldplaats</string>
     <string name="widget_quiet_hours_heading">MELDINGEN</string>
+    <string name="widget_notifications">Widgetmeldingen</string>
+    <string name="widget_notifications_help">Meld nieuwe regenperiodes op de locatie van deze widget.</string>
+    <string name="widget_include_lightning">Bliksem opnemen</string>
+    <string name="widget_include_lightning_help">Meld ook bliksemactiviteit binnen 15 km.</string>
     <string name="widget_quiet_hours">Niet storen</string>
     <string name="widget_quiet_off">Niet storen · Uit</string>
     <string name="widget_quiet_summary">Niet storen · %1$s–%2$s</string>
@@ -147,4 +152,8 @@
     <string name="radar_travel_auto_badge">AUTO</string>
     <string name="radar_travel_auto_accessibility">Reistijd automatisch</string>
     <string name="radar_current_time_unavailable">Huidige radartijd niet beschikbaar</string>
+<string name="notification_rain_severity_title">%1$s regen op komst in %2$s</string>
+<string name="notification_snow_severity_title">%1$s sneeuw waarschijnlijk op komst in %2$s</string>
+<string name="notification_rain_now_severity_title">Nu %1$s regen in %2$s</string>
+<string name="notification_snow_now_severity_title">Nu %1$s sneeuw waarschijnlijk in %2$s</string>
 </resources>
