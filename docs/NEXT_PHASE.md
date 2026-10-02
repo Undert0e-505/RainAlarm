@@ -1,6 +1,6 @@
 # Road to 1.0
 
-Rain Alarm 0.9.1 is feature-complete for its intended scope: Now, multi-provider Radar, saved
+Rain Alarm 0.9.2 is feature-complete for its intended scope: Now, multi-provider Radar, saved
 places, independent home-screen widgets, foreground Travel, rain/Lightning alerts, appearance
 profiles, localization and contextual onboarding. Work toward 1.0 now prioritizes reliability and
 validation rather than additional features.
@@ -27,8 +27,9 @@ validation rather than additional features.
 4. **Provider validation**
    - Continue checking coverage, freshness, fallback and local-motion behavior across MeteoGroup,
      OPERA, RainViewer, Open-Meteo and EUMETSAT without forcing independent sources to agree.
-   - Reconfirm provider terms, attribution, capacity and store-distribution suitability before
-     wider distribution. Treat station comparisons, registered EUMETSAT per-flash data and any
+   - Reconfirm provider terms, attribution, relay capacity and store-distribution suitability
+     before wider distribution. Validate individual-flash publication lag and regional
+     availability independently of accumulated-area alerts. Treat station comparisons and any
      commercial strike source as separate future adapters requiring access, licence, latency,
      bandwidth and operating-cost review.
 5. **Accessibility and release QA**

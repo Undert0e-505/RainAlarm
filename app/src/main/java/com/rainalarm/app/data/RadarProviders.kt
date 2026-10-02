@@ -45,6 +45,20 @@ enum class RadarProviderKind {
     OPEN_RAINVIEWER,
 }
 
+/** Selects only the visual Lightning layer in Radar; alerts deliberately remain AFA-backed. */
+enum class LightningVisualProviderKind {
+    EUMETSAT_ACCUMULATED_FLASH_AREA,
+    EUMETSAT_INDIVIDUAL_FLASHES,
+}
+
+object LightningVisualProviderPreference {
+    fun encode(provider: LightningVisualProviderKind): String = provider.name
+
+    fun decode(stored: String?): LightningVisualProviderKind = stored?.let { value ->
+        LightningVisualProviderKind.entries.firstOrNull { it.name == value }
+    } ?: LightningVisualProviderKind.EUMETSAT_INDIVIDUAL_FLASHES
+}
+
 object RainViewerSnowPreference {
     fun decode(stored: Boolean?): Boolean = stored ?: false
 }
@@ -151,6 +165,7 @@ private val Context.radarSettingsDataStore by preferencesDataStore(name = "radar
 
 class RadarSettingsRepository(private val context: Context) {
     private val providerKey = stringPreferencesKey("radar_provider")
+    private val lightningVisualProviderKey = stringPreferencesKey("lightning_visual_provider")
     private val playbackSpeedKey = stringPreferencesKey("radar_playback_speed")
     private val appAppearanceKey = stringPreferencesKey("app_appearance")
     private val mapAppearanceKey = stringPreferencesKey("map_appearance")
@@ -176,6 +191,14 @@ class RadarSettingsRepository(private val context: Context) {
             if (failure is IOException) emit(emptyPreferences()) else throw failure
         }
         .map { preferences -> RadarProviderPreference.decode(preferences[providerKey]) }
+
+    val lightningVisualProvider: Flow<LightningVisualProviderKind> = context.radarSettingsDataStore.data
+        .catch { failure ->
+            if (failure is IOException) emit(emptyPreferences()) else throw failure
+        }
+        .map { preferences ->
+            LightningVisualProviderPreference.decode(preferences[lightningVisualProviderKey])
+        }
 
     val playbackSpeed: Flow<RadarPlaybackSpeed> = context.radarSettingsDataStore.data
         .catch { failure ->
@@ -246,10 +269,18 @@ class RadarSettingsRepository(private val context: Context) {
         .map { RainViewerSnowPreference.decode(it[showLikelySnowKey]) }
 
     suspend fun selectedProvider(): RadarProviderKind = provider.first()
+    suspend fun selectedLightningVisualProvider(): LightningVisualProviderKind =
+        lightningVisualProvider.first()
     suspend fun selectedShowLikelySnow(): Boolean = showLikelySnow.first()
 
     suspend fun setProvider(provider: RadarProviderKind) {
         context.radarSettingsDataStore.edit { it[providerKey] = RadarProviderPreference.encode(provider) }
+    }
+
+    suspend fun setLightningVisualProvider(provider: LightningVisualProviderKind) {
+        context.radarSettingsDataStore.edit {
+            it[lightningVisualProviderKey] = LightningVisualProviderPreference.encode(provider)
+        }
     }
 
     suspend fun setPlaybackSpeed(speed: RadarPlaybackSpeed) {

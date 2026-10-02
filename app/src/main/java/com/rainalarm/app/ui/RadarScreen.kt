@@ -148,6 +148,13 @@ import com.rainalarm.app.data.LocationCadenceDiagnostics
 import com.rainalarm.app.data.TravelDisplayTarget
 import com.rainalarm.app.data.RadarProviderKind
 import com.rainalarm.app.data.RadarProviderSelection
+import com.rainalarm.app.data.LightningVisualProviderKind
+import com.rainalarm.app.data.LflLightningFeed
+import com.rainalarm.app.data.LflLightningPresentation
+import com.rainalarm.app.data.LflLightningPresentationPolicy
+import com.rainalarm.app.data.LflLightningRepositoryProvider
+import com.rainalarm.app.data.LflRegionPolicy
+import com.rainalarm.app.data.LflLightningSource
 import com.rainalarm.app.data.forecastSelectionKey
 import com.rainalarm.app.domain.RadarResolutionTier
 import com.rainalarm.app.domain.RadarCameraMemory
@@ -182,10 +189,12 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.rememberUpdatedState
 
 private val Surface: Color @Composable get() = LocalRainAlarmPalette.current.surface
@@ -528,6 +537,7 @@ internal sealed interface AncillaryStatus {
         val metadata: EumetLayerMetadata,
         val catalog: List<EumetLayerMetadata> = listOf(metadata),
     ) : AncillaryStatus
+    data class IndividualFlashes(val feed: LflLightningFeed) : AncillaryStatus
     data class Unavailable(val message: String) : AncillaryStatus
 }
 
@@ -558,6 +568,7 @@ fun LiveRadarScreen(
     places: PlaceCollection,
     playbackSpeed: RadarPlaybackSpeed,
     requestedProvider: RadarProviderKind,
+    lightningVisualProvider: LightningVisualProviderKind,
     mapStyle: RadarMapStyle,
     coverageMaskDarkness: Float,
     saveAndSelect: (SavedPlace) -> Unit,
@@ -672,6 +683,7 @@ fun LiveRadarScreen(
         }
     }
     val loader = remember { RadarProviderCoordinator(RadarSettingsRepository(context)) }
+    val lflRepository = remember { LflLightningRepositoryProvider.get() }
     val windEnabled = RadarMapLayer.WIND in enabledMapLayers
     var session by remember { mutableStateOf<RadarSession?>(null) }
     val replaceOwnedRadarSession: (RadarSession?, String) -> Unit = { replacement, reason ->
@@ -1025,6 +1037,7 @@ fun LiveRadarScreen(
     val regionLatitude = place?.latitude?.times(10)?.toInt()
     val regionLongitude = place?.longitude?.times(10)?.toInt()
     val lightningEnabled = RadarMapLayer.LIGHTNING in enabledMapLayers
+    key(lightningVisualProvider) {
     LaunchedEffect(lightningEnabled, place?.id, regionLatitude, regionLongitude, lightningRefresh) {
         val requestGeneration = lightningRequestGate.begin()
         val requestStartedAt = OverlayAcquisitionDiagnostics.nowMillis()
@@ -1045,32 +1058,55 @@ fun LiveRadarScreen(
             return@LaunchedEffect
         }
         val resolvedPlace = requireNotNull(selected)
+        val individualFlashes = lightningVisualProvider ==
+            LightningVisualProviderKind.EUMETSAT_INDIVIDUAL_FLASHES
+        val lflRegion = if (individualFlashes) LflRegionPolicy.regionFor(resolvedPlace) else null
+        if (individualFlashes && lflRegion == null) {
+            lightningStatus = AncillaryStatus.Unavailable("Lightning unavailable")
+            lightningReplacementPhase = WeatherReplacementPhase.UNAVAILABLE
+            lightningVerifiedPlaceKey = null
+            return@LaunchedEffect
+        }
         val targetHash = OverlayAcquisitionDiagnostics.targetHash(
             resolvedPlace.id, resolvedPlace.latitude.toBits(), resolvedPlace.longitude.toBits(),
-            RadarMapLayer.LIGHTNING,
+            RadarMapLayer.LIGHTNING, lightningVisualProvider,
         )
-        val retained = (lightningStatus as? AncillaryStatus.Satellite)?.takeIf {
-            CloudsSwapPolicy.canRetainDuringReplacement(
-                it.metadata, lightningVerifiedPlaceKey, resolvedPlace,
-            )
+        val retained = when (val current = lightningStatus) {
+            is AncillaryStatus.Satellite -> current.takeIf {
+                !individualFlashes && CloudsSwapPolicy.canRetainDuringReplacement(
+                    it.metadata, lightningVerifiedPlaceKey, resolvedPlace,
+                )
+            }
+            is AncillaryStatus.IndividualFlashes -> current.takeIf {
+                individualFlashes && it.feed.regionId == lflRegion?.id && it.feed.isFreshAt(layerNow)
+            }
+            else -> null
         }
         val force = lightningRefresh != previousLightningRefresh
         previousLightningRefresh = lightningRefresh
         lightningReplacementPhase = WeatherReplacementPhase.LOADING
         if (retained == null) lightningStatus = AncillaryStatus.Loading
         OverlayAcquisitionDiagnostics.trace(
-            "lightning", "EUMETSAT", targetHash, requestGeneration,
+            "lightning", if (individualFlashes) "EUMETSAT-LFL" else "EUMETSAT-AFA",
+            targetHash, requestGeneration,
             if (force) "refresh" else "selection", OverlayAcquisitionPhase.REQUEST,
             requestStartedAt, cacheFallback = retained != null,
         )
         try {
-            val loaded = AncillaryStatus.Satellite(EumetViewRepository.metadata(
-                RadarMapLayer.LIGHTNING, resolvedPlace, force,
-            ))
+            val loaded = if (individualFlashes) {
+                AncillaryStatus.IndividualFlashes(
+                    lflRepository.feed(resolvedPlace, Instant.now().epochSecond, force),
+                )
+            } else {
+                AncillaryStatus.Satellite(EumetViewRepository.metadata(
+                    RadarMapLayer.LIGHTNING, resolvedPlace, force,
+                ))
+            }
             currentCoroutineContext().ensureActive()
             if (!lightningRequestGate.accepts(requestGeneration)) {
                 OverlayAcquisitionDiagnostics.trace(
-                    "lightning", "EUMETSAT", targetHash, requestGeneration,
+                    "lightning", if (individualFlashes) "EUMETSAT-LFL" else "EUMETSAT-AFA",
+                    targetHash, requestGeneration,
                     if (force) "refresh" else "selection", OverlayAcquisitionPhase.READY,
                     requestStartedAt, terminalResult = "stale_success",
                     cacheFallback = retained != null, accepted = false,
@@ -1081,14 +1117,16 @@ fun LiveRadarScreen(
             lightningVerifiedPlaceKey = CloudsSwapPolicy.placeKey(resolvedPlace)
             lightningReplacementPhase = WeatherReplacementPhase.IDLE
             OverlayAcquisitionDiagnostics.trace(
-                "lightning", "EUMETSAT", targetHash, requestGeneration,
+                "lightning", if (individualFlashes) "EUMETSAT-LFL" else "EUMETSAT-AFA",
+                targetHash, requestGeneration,
                 if (force) "refresh" else "selection", OverlayAcquisitionPhase.READY,
                 requestStartedAt, terminalResult = "catalog_ready",
                 cacheFallback = retained != null,
             )
         } catch (cancelled: CancellationException) {
             OverlayAcquisitionDiagnostics.trace(
-                "lightning", "EUMETSAT", targetHash, requestGeneration,
+                "lightning", if (individualFlashes) "EUMETSAT-LFL" else "EUMETSAT-AFA",
+                targetHash, requestGeneration,
                 if (force) "refresh" else "selection", OverlayAcquisitionPhase.CANCELLED,
                 requestStartedAt, terminalResult = "replaced", cacheFallback = retained != null,
                 accepted = lightningRequestGate.accepts(requestGeneration),
@@ -1105,7 +1143,8 @@ fun LiveRadarScreen(
                 } else WeatherReplacementPhase.IDLE
             }
             OverlayAcquisitionDiagnostics.trace(
-                "lightning", "EUMETSAT", targetHash, requestGeneration,
+                "lightning", if (individualFlashes) "EUMETSAT-LFL" else "EUMETSAT-AFA",
+                targetHash, requestGeneration,
                 if (force) "refresh" else "selection", OverlayAcquisitionPhase.FAILED,
                 requestStartedAt, terminalResult = failure.javaClass.simpleName,
                 cacheFallback = retained != null, accepted = accepted,
@@ -1115,6 +1154,7 @@ fun LiveRadarScreen(
                 completedLightningRefresh = requestRefresh
             }
         }
+    }
     }
     val cloudsEnabled = RadarMapLayer.FOG in enabledMapLayers
     val preferredCloudProduct = place?.let {
@@ -1321,9 +1361,15 @@ fun LiveRadarScreen(
     val staleWindIdentity = WeatherDataReplacementPolicy.staleWindIdentity(
         activeWind, viewportKey, windPresentationNow,
     )
-    val staleLightningIdentity = WeatherDataReplacementPolicy.staleSatelliteIdentity(
-        (lightningStatus as? AncillaryStatus.Satellite)?.metadata, layerNow,
-    )
+    val staleLightningIdentity = when (val lightning = lightningStatus) {
+        is AncillaryStatus.Satellite -> WeatherDataReplacementPolicy.staleSatelliteIdentity(
+            lightning.metadata, layerNow,
+        )
+        is AncillaryStatus.IndividualFlashes -> lightning.feed.takeUnless {
+            it.isFreshAt(layerNow)
+        }?.let { "${it.regionId}:${it.generationId}:${it.staleAfterEpochSeconds}" }
+        else -> null
+    }
     val staleCloudsIdentity = WeatherDataReplacementPolicy.staleSatelliteIdentity(
         (cloudsStatus as? AncillaryStatus.Satellite)?.metadata, layerNow,
     )
@@ -1417,9 +1463,12 @@ fun LiveRadarScreen(
         }
         if (lightningEnabled) {
             val metadata = (lightningStatus as? AncillaryStatus.Satellite)?.metadata
-            val cadence = metadata?.cadenceSeconds ?: EumetProduct.LIGHTNING.nominalCadenceSeconds
+            val lfl = (lightningStatus as? AncillaryStatus.IndividualFlashes)?.feed
+            val cadence = metadata?.cadenceSeconds ?: if (lfl != null) 10L * 60L
+                else EumetProduct.LIGHTNING.nominalCadenceSeconds
             put(FollowRefreshStream.LIGHTNING, ProviderPublicationClock(
-                metadata?.latestEpochSeconds ?: Math.floorDiv(layerNow, cadence) * cadence,
+                metadata?.latestEpochSeconds ?: lfl?.completeThroughEpochSeconds
+                    ?: Math.floorDiv(layerNow, cadence) * cadence,
                 cadence,
             ))
         }
@@ -1526,7 +1575,11 @@ fun LiveRadarScreen(
     LaunchedEffect(completedLightningRefresh, lightningStatus) {
         val pending = pendingLightningRefresh ?: return@LaunchedEffect
         if (completedLightningRefresh != pending.requestGeneration) return@LaunchedEffect
-        val latest = (lightningStatus as? AncillaryStatus.Satellite)?.metadata?.latestEpochSeconds
+        val latest = when (val lightning = lightningStatus) {
+            is AncillaryStatus.Satellite -> lightning.metadata.latestEpochSeconds
+            is AncillaryStatus.IndividualFlashes -> lightning.feed.completeThroughEpochSeconds
+            else -> null
+        }
         refreshCoordinator.complete(pending.ticket, latest, latest != null, Instant.now().epochSecond)
         pendingLightningRefresh = null
     }
@@ -2240,6 +2293,7 @@ private data class RadarNativeMapInputs(
     val onWindRendererReset: () -> Unit,
     val satelliteCatalogs: List<EumetLayerMetadata>,
     val enabledSatelliteLayers: Set<RadarMapLayer>,
+    val lflLightningPresentation: LflLightningPresentation?,
     val satelliteDisplayEpochSeconds: Long,
     val satelliteTimelineStartEpochSeconds: Long,
     val satelliteTimelineEndEpochSeconds: Long,
@@ -2284,6 +2338,7 @@ private fun RadarNativeMap(inputs: RadarNativeMapInputs) {
         onWindRendererReset = inputs.onWindRendererReset,
         satelliteCatalogs = inputs.satelliteCatalogs,
         enabledSatelliteLayers = inputs.enabledSatelliteLayers,
+        lflLightningPresentation = inputs.lflLightningPresentation,
         satelliteDisplayEpochSeconds = inputs.satelliteDisplayEpochSeconds,
         satelliteTimelineStartEpochSeconds = inputs.satelliteTimelineStartEpochSeconds,
         satelliteTimelineEndEpochSeconds = inputs.satelliteTimelineEndEpochSeconds,
@@ -2532,6 +2587,11 @@ private fun ColumnScope.RadarPlayer(
     var satellitePreparation by remember {
         mutableStateOf<Map<RadarMapLayer, SatellitePreparationStatus>>(emptyMap())
     }
+    LaunchedEffect(ancillaryStatuses[RadarMapLayer.LIGHTNING]) {
+        if (ancillaryStatuses[RadarMapLayer.LIGHTNING] is AncillaryStatus.IndividualFlashes) {
+            satellitePreparation = satellitePreparation - RadarMapLayer.LIGHTNING
+        }
+    }
     val travelAutoFrame = if (!travelTimeAutomatic) null else if (hasRealRadarSession) {
         RadarTravelAutoPolicy.frame(
             selectedEpochSeconds = travelWallClockEpochSeconds,
@@ -2620,6 +2680,38 @@ private fun ColumnScope.RadarPlayer(
     } else bracket?.let {
         timelineLabel(times, it, safeCursor, latestOffset, forecastAvailable)
     } ?: stringResource(R.string.radar_loading)
+    val weatherDisplayEpochSeconds = travelAutoFrame?.satelliteEpochSeconds
+        ?: chartApply?.selectedEpochSeconds?.toLong()
+        ?: (timelineStartEpochSeconds + safeCursor.toDouble()).toLong()
+    // Rain/satellite imagery selects discrete source frames. LFL style ageing deliberately uses
+    // the exact cursor so slow playback remains continuous between its 2.5-minute birth cohorts.
+    val lflDisplayEpochSeconds = travelAutoFrame?.satelliteEpochSeconds?.toDouble()
+        ?: chartApply?.selectedEpochSeconds
+        ?: timelineStartEpochSeconds.toDouble() + safeCursor.toDouble()
+    val lflFeed = (ancillaryStatuses[RadarMapLayer.LIGHTNING] as?
+        AncillaryStatus.IndividualFlashes)?.feed
+    var lflLightningSource by remember(
+        lflFeed?.generationId,
+        lflFeed?.regionId,
+    ) {
+        mutableStateOf<LflLightningSource?>(null)
+    }
+    LaunchedEffect(
+        lflFeed?.generationId,
+        lflFeed?.regionId,
+    ) {
+        lflLightningSource = lflFeed?.let { feed ->
+            withContext(Dispatchers.Default) {
+                val calculationContext = currentCoroutineContext()
+                LflLightningPresentationPolicy.source(feed) {
+                    calculationContext.ensureActive()
+                }
+            }
+        }
+    }
+    val lflLightningPresentation = lflLightningSource?.let { source ->
+        LflLightningPresentationPolicy.frame(source, lflDisplayEpochSeconds)
+    }
     val refreshOverlay = if (!hasRadarSession && refreshError.isNullOrBlank()) {
         RadarRefreshOverlayPolicy.initialLoading(
             refreshProgress.first, refreshProgress.second, refreshPreparing,
@@ -2633,11 +2725,20 @@ private fun ColumnScope.RadarPlayer(
         val preparing = WeatherDataStatusPolicy.preparing(WeatherDataKind.RADAR)
         RadarRefreshOverlay(preparing, preparing)
     } else null
-    val preparationEntries = RadarPreparationStackPolicy.entries(
+    val basePreparationEntries = RadarPreparationStackPolicy.entries(
         refreshOverlay, enabledMapLayers, weatherStatuses, satellitePreparation, locationStatus,
         information = null,
         rendering = mapRenderOverlay,
     )
+    val lflCoverageEntry = if (RadarMapLayer.LIGHTNING in enabledMapLayers &&
+        lflLightningPresentation?.covered == false
+    ) {
+        val unavailable = WeatherDataStatusPolicy.unavailable(WeatherDataKind.LIGHTNING)
+        RadarRefreshOverlay(unavailable, unavailable)
+    } else null
+    val preparationEntries = (listOfNotNull(lflCoverageEntry) + basePreparationEntries)
+        .distinctBy(RadarRefreshOverlay::label)
+        .take(RadarPreparationStackPolicy.maximumEntries)
     val automaticCurrentTimeUnavailable = travelTimeAutomatic &&
         travelAutoFrame?.wallClockCovered == false
     val requestedChartTimeUnavailable = chartApply?.covered == false
@@ -2696,11 +2797,11 @@ private fun ColumnScope.RadarPlayer(
             ancillaryStatuses[RadarMapLayer.LIGHTNING] as? AncillaryStatus.Satellite,
         ).flatMap(AncillaryStatus.Satellite::catalog),
         enabledSatelliteLayers = enabledMapLayers.filterTo(mutableSetOf()) {
-            it == RadarMapLayer.FOG || it == RadarMapLayer.LIGHTNING
+            it == RadarMapLayer.FOG || (it == RadarMapLayer.LIGHTNING &&
+                ancillaryStatuses[RadarMapLayer.LIGHTNING] is AncillaryStatus.Satellite)
         },
-        satelliteDisplayEpochSeconds = travelAutoFrame?.satelliteEpochSeconds
-            ?: chartApply?.selectedEpochSeconds?.toLong()
-            ?: (timelineStartEpochSeconds + safeCursor.toDouble()).toLong(),
+        lflLightningPresentation = lflLightningPresentation,
+        satelliteDisplayEpochSeconds = weatherDisplayEpochSeconds,
         satelliteTimelineStartEpochSeconds = timelineStartEpochSeconds,
         satelliteTimelineEndEpochSeconds = timelineStartEpochSeconds + endOffset.toLong(),
         satelliteWeather = currentWeather,

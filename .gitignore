@@ -16,3 +16,6 @@ captures/
 dist/
 .emulator-data/
 .release-signing.properties
+
+# Local LFL backend planning and development workspace (intentionally untracked).
+/lfl-backend/

@@ -1,8 +1,11 @@
 # Privacy
 
-Rain Alarm is designed without user accounts, advertising, analytics, billing or embedded provider credentials. It does not operate an application server: the app talks directly to the weather, map and search services needed for the feature the user requests.
+Rain Alarm is designed without user accounts, advertising, analytics, billing or embedded provider
+credentials. Most requests go directly to the weather, map and search service needed for the
+feature; the experimental individual-lightning Radar visual uses the read-only relay described
+below.
 
-This disclosure describes version 0.9.1. Provider services necessarily receive ordinary network metadata such as the connecting IP address; consult each provider's current terms and privacy policy for how it handles that traffic.
+This disclosure describes version 0.9.2. Provider services necessarily receive ordinary network metadata such as the connecting IP address; consult each provider's current terms and privacy policy for how it handles that traffic.
 
 ## Android permissions
 
@@ -37,10 +40,11 @@ Optional alert work uses Android WorkManager. It requests no exact-alarm permiss
 ## Network requests
 
 Requests are feature-driven. Leaving Wind and Clouds off makes no request for those Radar layers.
-Lightning Radar imagery remains independent: background Lightning observations are requested only
-when Lightning activity notification is enabled or a configured widget presentation needs its
-state. If neither applies and the Radar layer is off, no Lightning request is made. Search runs only
-after explicit submit, and disabled services or layers remain idle.
+The selected Radar Lightning visual is requested only while Lightning is enabled. Background
+Lightning observations are separate and are requested only when Lightning activity notification is
+enabled or a configured widget presentation needs its state. If neither applies and the Radar layer
+is off, no Lightning request is made. Search runs only after explicit submit, and disabled services
+or layers remain idle.
 
 ### Radar and precipitation
 
@@ -59,9 +63,24 @@ The point result is cached for 15 minutes. Wind grids are cached by quantized vi
 
 ### Satellite layers
 
-Enabling Lightning or Clouds accesses EUMETSAT's public HTTPS WMS at `view.eumetsat.int`. Rain Alarm first reads bounded capability metadata and probes the selected product, then downloads the finite set of regional PNG images needed for the observed Radar window.
+The default experimental individual-flash Radar visual sends an ordinary HTTPS `GET` or conditional
+request to `rain-alarm-lfl-feed.aaronjoakley55.workers.dev`. The URL contains only one fixed regional
+path (`uk`, `de`, `nl`, `ch` or `fr`) chosen from the selected place's code-owned radar region. It
+does not contain an account credential, place name or selected latitude/longitude, and panning the
+map does not change it. Cloudflare receives normal network metadata such as the connecting IP. The
+response is gzip JSON containing recent EUMETSAT satellite-observed flash-centroid coordinates,
+exact observation times, status/provenance and attribution for that whole region. Rain Alarm
+validates it and keeps only a bounded process-scoped verified response/cache state.
 
-The request contains the chosen product, advertised observation time, image dimensions and a bounded regional map extent. The selected place chooses a code-owned British Isles, Europe, North America East/West or local fallback region with roughly 200 km of margin; panning does not turn this into a new request. Leaving both satellite controls off sends no EUMETSAT request.
+Selecting accumulated flash areas for Radar, enabling Clouds, or running background Lightning
+detection accesses EUMETSAT's public HTTPS WMS at `view.eumetsat.int`. For Radar imagery Rain Alarm
+first reads bounded capability metadata and probes the selected product, then downloads the finite
+set of regional PNG images needed for the observed Radar window.
+
+The WMS request contains the chosen product, advertised observation time, image dimensions and a
+bounded regional map extent. The selected place chooses a code-owned British Isles, Europe, North
+America East/West or local fallback region with roughly 200 km of margin; panning does not turn this
+into a new request. Leaving both satellite controls off sends no visual-layer request.
 
 Verified satellite PNGs are stored in an app-owned atomic least-recently-used cache capped at 128 MiB. MapLibre separately keeps up to 64 MiB of basemap cache, for an intended map/satellite disk budget of about 192 MiB. Files are keyed by product, time, bounds and region rather than a user identity.
 
@@ -101,7 +120,7 @@ The following can be stored locally on the device:
 
 - saved places and their manual order;
 - the active selected place and saved startup place;
-- preferred radar provider and provider-specific options;
+- preferred radar and Radar Lightning visual providers, plus provider-specific options;
 - app, map, Compass and Graph appearance choices, including day/night profiles;
 - playback speed, visible Now metrics, layer toggles, wind-arrow size and coverage-mask darkness;
 - rain and lightning notification choices, per-target observation checkpoints and per-subscription

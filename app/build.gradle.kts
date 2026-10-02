@@ -12,8 +12,8 @@ android {
         applicationId = "com.rainalarm.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 21
-        versionName = "0.9.1"
+        versionCode = 22
+        versionName = "0.9.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -160,5 +160,6 @@ tasks.register<JavaExec>("directDebugUnitTest") {
         "com.rainalarm.app.alerts.RadarLightningControlPolicyTest",
         "com.rainalarm.app.widget.WidgetPoliciesTest",
         "com.rainalarm.app.widget.WidgetInitialRefreshPolicyTest",
+        "com.rainalarm.app.data.LflLightningFeedTest",
     )
 }

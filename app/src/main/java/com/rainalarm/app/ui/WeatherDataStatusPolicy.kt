@@ -516,6 +516,9 @@ internal object WindGridAcquisitionReducer {
 internal enum class WeatherReplacementPhase { IDLE, LOADING, UNAVAILABLE }
 
 internal object WeatherReplacementPresentationPolicy {
+    private fun AncillaryStatus.isRenderable(): Boolean =
+        this is AncillaryStatus.Satellite || this is AncillaryStatus.IndividualFlashes
+
     fun status(
         kind: WeatherDataKind,
         source: AncillaryStatus,
@@ -524,13 +527,13 @@ internal object WeatherReplacementPresentationPolicy {
         lastRequestedIdentity: String?,
     ): AncillaryStatus = when {
         phase == WeatherReplacementPhase.LOADING -> AncillaryStatus.Loading
-        phase == WeatherReplacementPhase.UNAVAILABLE && source !is AncillaryStatus.Satellite ->
+        phase == WeatherReplacementPhase.UNAVAILABLE && !source.isRenderable() ->
             AncillaryStatus.Unavailable(WeatherDataStatusPolicy.unavailable(kind))
         // A failed replacement is not evidence that a verified, already-renderable catalog
         // disappeared. Keep the last good imagery instead of flashing an unavailable status.
         phase == WeatherReplacementPhase.UNAVAILABLE -> source
         staleIdentity != null && staleIdentity == lastRequestedIdentity ->
-            source.takeIf { it is AncillaryStatus.Satellite }
+            source.takeIf { it.isRenderable() }
                 ?: AncillaryStatus.Unavailable(WeatherDataStatusPolicy.unavailable(kind))
         staleIdentity != null -> AncillaryStatus.Loading
         else -> source

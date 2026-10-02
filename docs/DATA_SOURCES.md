@@ -407,11 +407,34 @@ References:
 
 ## Optional EUMETSAT satellite layers
 
-- Public WMS: `https://view.eumetsat.int/geoserver/wms`.
-- **Lightning** uses `mtg_fd:li_afa`: accumulated satellite optical **flash
-  areas**, not individual lightning locations or verified cloud-to-ground
-  strikes. Its advertised start, latest time and 5-minute cadence are parsed
-  from GetCapabilities.
+- Radar offers two independently persisted Lightning visual providers. An unset or unrecognized
+  preference selects **EUMETSAT individual flashes (experimental)**; any explicit valid selection
+  is retained across upgrades. The visual choice does not change rain-provider selection,
+  Lightning control state or background detection.
+- **Individual flashes** are MTG LI-2-LFL satellite-observed total-lightning flash centroids, not
+  guaranteed ground strikes. Rain Alarm reads a compact gzip JSON relay at
+  `https://rain-alarm-lfl-feed.aaronjoakley55.workers.dev/v1/regions/{region}`. It sends only the
+  fixed place-owned region ID (`uk`, `de`, `nl`, `ch` or `fr`), uses ETag/304, validates the exact
+  v1 schema and retains a verified last-good generation through transient replacement failure.
+  Valid empty frames mean known quiet data; partial, unknown, stale or malformed data never do.
+- Each relay generation contains 18 contiguous five-minute frames covering 90 minutes and exact
+  per-flash millisecond timestamps. EUMETSAT's completed upstream products cover about ten minutes,
+  so two transport frames normally arrive together. The client introduces a flash at the end of
+  its UTC-aligned 150-second visual cohort, then continuously reduces opacity, warms yellow through
+  amber/orange/red and softens the edge until removal at 20 minutes. The centroid stays at its
+  observed coordinate; no motion or future flash is invented. Visual ageing can continue beyond
+  the feed's latest completed time while acquisition freshness remains governed separately by the
+  feed's `staleAfter` value.
+- The relay regions use the exact existing regional radar rectangles. They are selected from the
+  active place, never the panned camera, and intentionally overlap. The point layers stay fixed to
+  geographic coordinates, scale continuously with map zoom, keep map labels readable and are
+  composed beneath the separate rain overlay.
+- The public EUMETSAT WMS is `https://view.eumetsat.int/geoserver/wms`.
+- **Accumulated flash area** uses `mtg_fd:li_afa`: accumulated satellite optical flash **areas**,
+  not individual lightning locations or verified cloud-to-ground strikes. Its advertised start,
+  latest time and five-minute cadence are parsed from GetCapabilities.
+- App and widget Lightning detection always use accumulated flash areas, irrespective of the Radar
+  visual preference. The setting is visual-only.
 - Background Lightning activity checks use that same observed product through a separate bounded
   target-centred WMS request. `LightningDetectionPolicy.defaultRadiusKilometres` is 15 km; the
   request adds a 2 km sampling margin and renders a validated 160×160 transparent PNG. Detection
@@ -431,19 +454,21 @@ References:
   tried. The imagery shows cloud structures or fog **or low cloud** and is not
   a confirmed surface-fog diagnosis.
 - Lightning and Clouds are independent persistent toggles and may be rendered
-  together; Clouds is added below Lightning so flash areas remain legible. A
+  together. In accumulated-area mode Clouds is added below Lightning so flash areas remain legible;
+  individual-flash points use their separate native point-layer composition. A
   previously verified, fresh Clouds product remains rendered while a day/night
   replacement is checked, then swaps in place. Activation feedback stays
   visible through loading, holds its terminal state for one second and then
   fades independently; selected-place Wind remains visible while enabled.
-- The radar cursor's absolute epoch selects the most recent advertised
-  satellite observation at or before it: Lightning advances on its 5-minute
-  WMS cadence and Clouds on their 10-minute cadence. Cursor positions after the
-  latest satellite time hold the latest observation; the app does not
-  extrapolate clouds or claim an EUMETSAT forecast. Cursor positions before the
-  advertised product range show no future observation. Cloud day/night product
-  choice uses the effective satellite-frame time, so a timeline crossing
-  dawn/dusk can change products when both catalogues cover it.
+- The radar cursor's absolute epoch selects satellite presentation. Accumulated flash areas advance
+  on their five-minute WMS cadence and Clouds on ten minutes. Individual flashes use their exact
+  observation timestamps, a 150-second birth cohort and continuous age thereafter; moving the
+  cursor back reconstructs the matching history, while future cursor time only ages known flashes
+  and never creates new ones. Clouds and accumulated areas hold their latest real observation
+  through forecast time; the app does not claim an EUMETSAT forecast. Cursor positions before the
+  available range show no future observation. Cloud day/night product choice uses the effective
+  satellite-frame time, so a timeline crossing dawn/dusk can change products when both catalogues
+  cover it.
 - Capabilities XML is bounded to 1 MiB and decoded as strict UTF-8. Parsing uses
   Android-compatible DOM configuration while explicitly rejecting document-type
   and entity declarations, disabling entity expansion and installing a resolver
@@ -474,7 +499,7 @@ References:
   that the other provider omitted frames.
 - A small selected-place image probe checks the latest product's content type
   and PNG signature before its advertised time range is accepted;
-  cadence-derived historical frames do not add a blocking HTTP probe. For each
+  cadence-derived historical frames do not add a blocking HTTP probe. For each WMS-backed
   enabled overlay, the app derives all unique observed product/time frames that
   intersect the radar observation window and deduplicates the latest observation
   held through forecast time. Two explicit PNG downloads are allowed at once
@@ -484,7 +509,7 @@ References:
   `<Data> loading n/N` feedback reports verified-file progress without moving
   the layout. Temporary, partial, malformed, wrong-content and wrong-dimension files
   never count as ready.
-- Satellite PNGs use an app-owned, atomic, least-recently-used disk cache capped
+- WMS satellite PNGs use an app-owned, atomic, least-recently-used disk cache capped
   at 128 MiB. MapLibre's separate supported ambient database is capped at
   64 MiB for the base map, for an intended total map/satellite disk budget of
   about 192 MiB. Historical regional product/time URLs are immutable within a session; exact
@@ -523,7 +548,7 @@ References:
   internal diagnostics. Location acquisition and failure use the same queue;
   map-style, renderer, compatibility and chart notices remain in the separate
   bottom-left system rail.
-- After the full set unlocks, only the active image and one progressive
+- After a WMS set unlocks, only the active image and one progressive
   replacement normally remain decoded/live. A retiring predecessor exists briefly
   during handoff; the full set remains compressed on disk, so decoded/GPU state
   stays bounded. Bitmap decoding runs off the UI thread and MapLibre mutation
@@ -542,10 +567,10 @@ References:
   selected place is outside the reported coverage bounds. Empty transparent
   flash imagery is **not** evidence that no lightning occurred.
 - EUMETSAT attribution is listed in Settings > About the data; core product data
-  are subject to CC BY 4.0. Bitmap-backed ImageSource rendering on Android still
-  needs a physical-device visual check on each supported MapLibre/API
-  combination. This implementation does **not** ingest the separate per-flash
-  NetCDF collection, which requires registered access/token and parsing.
+  are subject to CC BY 4.0. Bitmap-backed ImageSource and native point-layer rendering on Android
+  still need physical-device checks on supported MapLibre/API combinations. Registered LFL
+  acquisition credentials and netCDF parsing stay on the private relay publisher, never in the
+  app. See the public [clean-room backend and feed guide](INDIVIDUAL_LIGHTNING_BACKEND.md).
 
 References:
 

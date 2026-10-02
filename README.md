@@ -7,7 +7,7 @@ animated multi-provider Radar and a foreground Travel mode. It has no accounts, 
 analytics.
 
 [Download the latest release](https://github.com/Undert0e-505/RainAlarm/releases/latest) ·
-[What’s new in v0.9.0](docs/releases/v0.9.0.md) · [User guide](docs/USER_GUIDE.md)
+[What’s new in v0.9.2](docs/releases/v0.9.2.md) · [User guide](docs/USER_GUIDE.md)
 
 ## See Radar in motion
 
@@ -24,13 +24,23 @@ pressing Play hands timeline control back to the user without silently changing 
 Location delivery and visual smoothness remain dependent on Android, the phone and its GNSS
 hardware.
 
-## Lightning activity at a glance
+## Individual lightning in Radar
 
-An optional alert monitors EUMETSAT observed accumulated flash areas within 15 km. Lightning can
-appear in widgets, combine with a newly eligible rain alert, and open the exact monitored place in
-Radar with Lightning temporarily visible. It is observed satellite activity—not a strike forecast
-or safety warning. See [Lightning alert behavior](docs/LIGHTNING_ALERT_REQUIREMENTS.md) and
-[data-source constraints](docs/DATA_SOURCES.md#optional-eumetsat-satellite-layers).
+<p align="center">
+  <img src="docs/screenshots/radar-individual-lightning-parla.png" width="336" alt="Radar over Parla showing rain together with fresh yellow-white and older orange individual lightning-flash centroids">
+</p>
+
+The experimental default Lightning view puts recent EUMETSAT satellite-observed flash centroids
+beside the rain timeline:
+
+- Fresh flashes have a bright white centre and yellow glow. Older flashes soften through amber,
+  orange and red, then disappear at 20 minutes.
+- Points stay at their observed coordinates while Radar rain and forecast imagery follows its own
+  timeline.
+- They are total-lightning observations—not guaranteed ground strikes or a safety warning.
+
+Accumulated flash areas remain selectable under **Preferred Lightning Provider**. Notifications
+and widgets continue to use accumulated flash-area detection, independently of the Radar visual.
 
 ## What else is included
 
@@ -85,15 +95,16 @@ opening Rain Alarm, subject to Android's inexact background scheduling and devic
 - [Data sources, coverage and constraints](docs/DATA_SOURCES.md)
 - [Privacy](docs/PRIVACY.md)
 - [Development and build](docs/DEVELOPMENT.md)
+- [Self-hosting the individual-lightning feed](docs/INDIVIDUAL_LIGHTNING_BACKEND.md)
 - [Widget behavior](docs/WIDGET_REQUIREMENTS.md)
 - [Lightning alert behavior](docs/LIGHTNING_ALERT_REQUIREMENTS.md)
 - [Feature tour](docs/FEATURE_TOUR.md) and [localization](docs/LOCALIZATION.md)
-- [v0.9.0 release notes](docs/releases/v0.9.0.md) and [road to 1.0](docs/NEXT_PHASE.md)
+- [v0.9.2 release notes](docs/releases/v0.9.2.md) and [road to 1.0](docs/NEXT_PHASE.md)
 
 ## Privacy and safety
 
-Rain Alarm requests only foreground location and optional notification permission. It talks
-directly to the map, weather, radar, satellite and search providers described in the
+Rain Alarm requests only foreground location and optional notification permission. It connects
+only to the map, weather, radar, satellite, relay and search services described in the
 [privacy disclosure](docs/PRIVACY.md); no provider credentials are embedded in the app.
 
 > [!WARNING]
@@ -103,7 +114,7 @@ directly to the map, weather, radar, satellite and search providers described in
 
 ## Build from source
 
-Rain Alarm 0.9.0 (version code 20) supports Android 8.0 and later. With JDK 21, Android SDK Platform
+Rain Alarm 0.9.2 (version code 22) supports Android 8.0 and later. With JDK 21, Android SDK Platform
 37 and Build Tools 36.0.0 installed, run on Windows:
 
 ```powershell

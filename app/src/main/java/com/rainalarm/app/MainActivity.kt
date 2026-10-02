@@ -161,6 +161,7 @@ import com.rainalarm.app.data.AutomaticAppearancePolicy
 import com.rainalarm.app.data.AutomaticAppearancePreferences
 import com.rainalarm.app.data.ResolvedAppearance
 import com.rainalarm.app.data.RadarProviderKind
+import com.rainalarm.app.data.LightningVisualProviderKind
 import com.rainalarm.app.data.RadarProviderSelection
 import com.rainalarm.app.data.RadarProviderCoverageState
 import com.rainalarm.app.data.RadarProviderCapabilityResolver
@@ -564,6 +565,11 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     val radarProvider = combine(persistedRadarProvider, pendingRadarProvider) { persisted, pending ->
         RadarProviderSwitchPolicy.effective(persisted, pending)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, RadarProviderKind.METEOGROUP_REGIONAL)
+    val lightningVisualProvider = radarSettings.lightningVisualProvider.stateIn(
+        viewModelScope,
+        SharingStarted.Eagerly,
+        LightningVisualProviderKind.EUMETSAT_INDIVIDUAL_FLASHES,
+    )
     /**
      * Provider-driven Now analysis changes only after the final choice has settled and persisted.
      * While a choice is pending, retain the previous value so intermediate DataStore emissions
@@ -1514,6 +1520,14 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun setLightningVisualProvider(provider: LightningVisualProviderKind) {
+        viewModelScope.launch {
+            runCatching { radarSettings.setLightningVisualProvider(provider) }
+                .onSuccess { _settingsMessage.value = null }
+                .onFailure { _settingsMessage.value = uiString(R.string.settings_save_failed) }
+        }
+    }
+
     fun setRadarPlaybackSpeed(speed: RadarPlaybackSpeed) {
         viewModelScope.launch {
             runCatching { radarSettings.setPlaybackSpeed(speed) }
@@ -1884,6 +1898,7 @@ private fun RainAlarmApp(
     val alertState by viewModel.alertState.collectAsStateWithLifecycle()
     val lightningAlertState by viewModel.lightningAlertState.collectAsStateWithLifecycle()
     val radarProvider by viewModel.radarProvider.collectAsStateWithLifecycle()
+    val lightningVisualProvider by viewModel.lightningVisualProvider.collectAsStateWithLifecycle()
     val activeRadarSelection by viewModel.activeRadarSelection.collectAsStateWithLifecycle()
     val providerMapNotice by viewModel.providerMapNotice.collectAsStateWithLifecycle()
     val showLikelySnow by viewModel.showLikelySnow.collectAsStateWithLifecycle()
@@ -2241,6 +2256,7 @@ private fun RainAlarmApp(
                             places = placesState,
                             playbackSpeed = radarPlaybackSpeed,
                             requestedProvider = radarProvider,
+                            lightningVisualProvider = lightningVisualProvider,
                             mapStyle = resolvedAppearance.map.resolveMapStyle(systemDark),
                             coverageMaskDarkness = coverageMaskDarkness,
                             saveAndSelect = viewModel::saveAndSelect,
@@ -2316,6 +2332,8 @@ private fun RainAlarmApp(
                         Destination.SETTINGS -> SettingsScreen(
                             selectedProvider = radarProvider,
                             selectProvider = viewModel::setRadarProvider,
+                            selectedLightningProvider = lightningVisualProvider,
+                            selectLightningProvider = viewModel::setLightningVisualProvider,
                             showLikelySnow = showLikelySnow,
                             setShowLikelySnow = viewModel::setShowLikelySnow,
                             playbackSpeed = radarPlaybackSpeed,

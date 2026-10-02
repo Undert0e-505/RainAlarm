@@ -18,6 +18,7 @@ import android.widget.FrameLayout
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -76,6 +77,7 @@ import com.rainalarm.app.domain.RadarEntryFocusCompletionPolicy
 import com.rainalarm.app.domain.WebMercator
 import com.rainalarm.app.domain.RadarTimelineBracket
 import com.rainalarm.app.data.LocationCadenceDiagnostics
+import com.rainalarm.app.data.LflLightningPresentation
 import com.rainalarm.app.data.TravelModeDiagnostics
 import com.rainalarm.app.domain.RadarEntryFocusPolicy
 import com.rainalarm.app.domain.EntryTransitionPhase
@@ -999,6 +1001,7 @@ private class SatelliteLayerBuffers(
             if (metadata.choice == RadarMapLayer.FOG) {
                 val lightningLayer = choices[RadarMapLayer.LIGHTNING]?.let(::allSlots)
                     ?.firstOrNull { style.getLayer(it.layerId) != null }?.layerId
+                    ?: LflLightningMapLayerIds.halo.takeIf { style.getLayer(it) != null }
                 if (lightningLayer != null) style.addLayerBelow(layer, lightningLayer)
                 else style.addLayer(layer)
             } else style.addLayer(layer)
@@ -1949,6 +1952,7 @@ internal fun RadarImageMap(
     onWindRendererReset: () -> Unit = {},
     satelliteCatalogs: List<EumetLayerMetadata> = emptyList(),
     enabledSatelliteLayers: Set<RadarMapLayer> = emptySet(),
+    lflLightningPresentation: LflLightningPresentation? = null,
     satelliteDisplayEpochSeconds: Long,
     satelliteTimelineStartEpochSeconds: Long,
     satelliteTimelineEndEpochSeconds: Long,
@@ -2008,6 +2012,7 @@ internal fun RadarImageMap(
         onWindRendererReset,
         satelliteCatalogs,
         enabledSatelliteLayers,
+        lflLightningPresentation,
         satelliteDisplayEpochSeconds,
         satelliteTimelineStartEpochSeconds,
         satelliteTimelineEndEpochSeconds,
@@ -2057,6 +2062,7 @@ private fun RadarImageMapInstance(
     onWindRendererReset: () -> Unit,
     satelliteCatalogs: List<EumetLayerMetadata>,
     enabledSatelliteLayers: Set<RadarMapLayer>,
+    lflLightningPresentation: LflLightningPresentation?,
     satelliteDisplayEpochSeconds: Long,
     satelliteTimelineStartEpochSeconds: Long,
     satelliteTimelineEndEpochSeconds: Long,
@@ -2126,6 +2132,7 @@ private fun RadarImageMapInstance(
     val currentWindViewportCallback by rememberUpdatedState(onWindViewportChanged)
     val currentRadarTierCallback by rememberUpdatedState(onRadarTierChanged)
     val latestRadarSession by rememberUpdatedState(session)
+    val latestLflLightningPresentation by rememberUpdatedState(lflLightningPresentation)
     val currentWindRenderObservation by rememberUpdatedState(onWindRenderObservation)
     val currentWindRendererReset by rememberUpdatedState(onWindRendererReset)
     val satellitePlaceKey = "${mapPlace.id}:${(mapPlace.latitude * 10).toInt()}:" +
@@ -2524,6 +2531,11 @@ private fun RadarImageMapInstance(
             },
         )
     }
+    val lflLightningLayer = remember(mapView, density) {
+        LflLightningMapLayerController(density) { message ->
+            currentLayerError(RadarMapLayer.LIGHTNING, message)
+        }
+    }
     fun saveCamera(ready: MapLibreMap, place: SavedPlace) {
         val position = ready.cameraPosition
         val center = position.target ?: return
@@ -2580,6 +2592,7 @@ private fun RadarImageMapInstance(
             stopOverlay = {
                 travelCameraFollower.stop()
                 satelliteBuffers.clear()
+                lflLightningLayer.clear()
                 coverageMask.clear()
                 windView.setRenderEligible(false)
                 currentWindRendererReset()
@@ -2997,6 +3010,7 @@ private fun RadarImageMapInstance(
                         it, latestSatelliteRequests, latestEnabledSatelliteLayers,
                         latestSatellitePlayback, latestSatelliteCacheContext,
                     )
+                    lflLightningLayer.onStyleLoaded(it, latestLflLightningPresentation)
                     activeRadarSlot?.onCameraMoved()
                     pendingRadarSlot?.onCameraMoved()
                     baseMarkerView.onCameraMoved()
@@ -3069,6 +3083,21 @@ private fun RadarImageMapInstance(
             )
         }
         onDispose { active = false }
+    }
+
+    // Cursor-only LFL changes arrive at animation-frame cadence. SideEffect avoids creating and
+    // cancelling a coroutine/effect for every frame; the controller keeps GeoJSON stable and
+    // updates only native paint/filter expressions unless feed identity actually changes.
+    SideEffect {
+        val ready = map
+        if (ready != null && !teardown.isClosed) {
+            ready.getStyle { style ->
+                if (!teardown.isClosed) {
+                    lflLightningLayer.reconcile(style, latestLflLightningPresentation)
+                    ready.triggerRepaint()
+                }
+            }
+        }
     }
 
     DisposableEffect(map, onLongPress) {

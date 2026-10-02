@@ -77,6 +77,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rainalarm.app.data.RadarProviderKind
+import com.rainalarm.app.data.LightningVisualProviderKind
 import com.rainalarm.app.data.RadarProviderCapabilityResolver
 import com.rainalarm.app.data.RadarProviderCoverageState
 import com.rainalarm.app.data.SavedPlace
@@ -182,6 +183,8 @@ internal fun RainAlarmSwitch(
 fun SettingsScreen(
     selectedProvider: RadarProviderKind,
     selectProvider: (RadarProviderKind) -> Unit,
+    selectedLightningProvider: LightningVisualProviderKind,
+    selectLightningProvider: (LightningVisualProviderKind) -> Unit,
     showLikelySnow: Boolean,
     setShowLikelySnow: (Boolean) -> Unit,
     playbackSpeed: RadarPlaybackSpeed,
@@ -360,6 +363,41 @@ fun SettingsScreen(
                     RainAlarmSwitch(checked = showLikelySnow, onCheckedChange = setShowLikelySnow)
                 }
             }
+        }
+        Spacer(Modifier.height(24.dp))
+        Text(
+            stringResource(R.string.settings_lightning_provider_heading),
+            color = SettingsAccent,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+        )
+        Spacer(Modifier.height(10.dp))
+        Card(
+            colors = CardDefaults.cardColors(containerColor = SettingsSurface),
+            shape = RoundedCornerShape(22.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            LightningProviderPinChoice(
+                title = stringResource(R.string.settings_lightning_provider_afa),
+                description = stringResource(R.string.settings_lightning_provider_afa_description),
+                pinned = selectedLightningProvider ==
+                    LightningVisualProviderKind.EUMETSAT_ACCUMULATED_FLASH_AREA,
+                onClick = {
+                    selectLightningProvider(
+                        LightningVisualProviderKind.EUMETSAT_ACCUMULATED_FLASH_AREA,
+                    )
+                },
+            )
+            HorizontalDivider(color = SettingsBorder)
+            LightningProviderPinChoice(
+                title = stringResource(R.string.settings_lightning_provider_lfl),
+                description = stringResource(R.string.settings_lightning_provider_lfl_description),
+                pinned = selectedLightningProvider ==
+                    LightningVisualProviderKind.EUMETSAT_INDIVIDUAL_FLASHES,
+                onClick = {
+                    selectLightningProvider(LightningVisualProviderKind.EUMETSAT_INDIVIDUAL_FLASHES)
+                },
+            )
         }
         Spacer(Modifier.height(24.dp))
         Text(stringResource(R.string.settings_indicators_heading), color = SettingsAccent, fontSize = 12.sp,
@@ -1013,6 +1051,48 @@ private fun ProviderPinChoice(
             Text(title, fontWeight = FontWeight.SemiBold)
             if (detail.isNotBlank()) Text(
                 detail,
+                color = SettingsSecondary,
+                fontSize = 12.sp,
+                lineHeight = 17.sp,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+        Icon(
+            if (pinned) Icons.Filled.PushPin else Icons.Outlined.PushPin,
+            contentDescription = null,
+            tint = if (pinned) SettingsAccent else SettingsSecondary,
+        )
+    }
+}
+
+@Composable
+private fun LightningProviderPinChoice(
+    title: String,
+    description: String,
+    pinned: Boolean,
+    onClick: () -> Unit,
+) {
+    val resources = LocalResources.current
+    Row(
+        Modifier.fillMaxWidth()
+            .clickable(role = Role.Button, onClick = { if (!pinned) onClick() })
+            .semantics {
+                selected = pinned
+                contentDescription = buildString {
+                    append(title).append(", ").append(description).append(", ")
+                    append(resources.getString(
+                        if (pinned) R.string.settings_provider_pinned_description
+                        else R.string.settings_provider_set_description,
+                    ))
+                }
+            }
+            .padding(horizontal = 14.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f).padding(end = 8.dp)) {
+            Text(title, fontWeight = FontWeight.SemiBold)
+            Text(
+                description,
                 color = SettingsSecondary,
                 fontSize = 12.sp,
                 lineHeight = 17.sp,

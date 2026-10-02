@@ -1,6 +1,6 @@
 # Rain Alarm user guide
 
-Rain Alarm answers a place-specific question: when will rain reach me? **Now** summarises the next hour, while **Radar** lets you inspect the available observations, forecasts or local motion estimates. This guide describes version 0.9.1 (version code 21).
+Rain Alarm answers a place-specific question: when will rain reach me? **Now** summarises the next hour, while **Radar** lets you inspect the available observations, forecasts or local motion estimates. This guide describes version 0.9.2 (version code 22).
 
 ## First launch and installation
 
@@ -29,6 +29,8 @@ Unset settings use these defaults:
 - All five Now weather indicators are visible.
 - Radar playback speed is 2×, but playback starts paused.
 - MeteoGroup is the pinned preferred radar provider.
+- EUMETSAT individual flashes (experimental) is the preferred Radar Lightning visual; accumulated
+  flash areas remain selectable.
 - App and map appearance are Dark; automatic day/night mode is off.
 - Coverage mask darkness is 50%.
 - Wind, Lightning and Clouds layers are all off.
@@ -134,7 +136,7 @@ Travel is not persisted. It keeps the screen on only while Radar is visible, Cur
 
 ### Automatic updates in Travel
 
-While visible Travel is active, a cadence-aware coordinator checks each source near its expected next publication instead of using unrelated fixed timers. Radar cadence is inferred from recent observations with provider-specific fallback. EUMETSAT Clouds and Lightning use their advertised cadences; Wind and point weather align to 15-minute model steps.
+While visible Travel is active, a cadence-aware coordinator checks each source near its expected next publication instead of using unrelated fixed timers. Radar cadence is inferred from recent observations with provider-specific fallback. EUMETSAT Clouds and the chosen Lightning visual use their source cadence; Wind and point weather align to 15-minute model steps.
 
 Checks wait a 45-second publication grace. Unchanged or failed results retry after one minute, two minutes and then at most five minutes, with one request in flight per stream. Only enabled map layers poll. A same-place automatic radar refresh keeps active playback running through the handoff.
 
@@ -164,7 +166,20 @@ Settings includes a persistent Wind-only arrow-size slider with live preview whe
 
 #### Lightning and Clouds
 
-Lightning shows EUMETSAT accumulated satellite flash **areas**, not individual ground strikes. Clouds chooses MTG Cloud Type RGB during daylight and Fog / Low Clouds RGB at night, using a deterministic coordinate/time fallback when daylight facts are stale or missing. The satellite image reveals cloud structures or fog/low cloud; it does not prove fog at the surface.
+**Preferred Lightning Provider** in Settings changes only the Radar visual. The experimental default
+shows EUMETSAT satellite-observed individual total-lightning flash centroids. Fresh flashes have a
+bright white centre and yellow glow; as they age, they soften and deepen through amber, orange and
+red before disappearing at 20 minutes. They enter the view in UTC-aligned 2.5-minute cohorts, then
+age continuously. A centroid stays at its observed coordinate: it is not advected with rain and is
+not guaranteed to be a ground strike.
+
+The alternative accumulated-flash-area view shows EUMETSAT optical flash **areas** on its
+advertised five-minute WMS frames. App and widget Lightning detection always uses these accumulated
+areas, regardless of the Radar visual selected here.
+
+Clouds chooses MTG Cloud Type RGB during daylight and Fog / Low Clouds RGB at night, using a
+deterministic coordinate/time fallback when daylight facts are stale or missing. The satellite
+image reveals cloud structures or fog/low cloud; it does not prove fog at the surface.
 
 Lightning normally follows its persistent Radar toggle. Opening a rain/lightning notification or a
 widget that currently reports nearby activity gives the control a distinct temporary clock state for
@@ -172,13 +187,38 @@ ten minutes at that exact place. The bottom information rail says **Lightning sh
 tap to keep on** for two seconds. Navigation and backgrounding do not cancel the timer. Tapping the
 temporary control makes Lightning persistently on; tapping a persistent on state turns it off.
 
-Within the observed Radar window, Lightning advances on its advertised five-minute cadence and Clouds on ten minutes. Each chooses the latest real observation at or before the cursor and holds its latest observation through forecast time rather than inventing satellite forecasts.
+Within the observed Radar window, accumulated areas advance on their advertised five-minute cadence
+and Clouds on ten minutes. Individual flashes reconstruct the history from exact observation times;
+after the latest completed feed frame, known flashes continue to age and disappear, but no future
+flash is invented. Clouds and accumulated areas hold their latest real observation through forecast
+time rather than inventing satellite forecasts.
 
-An enabled satellite layer downloads and validates its complete finite set of unique observed regional PNG frames before displaying that set. The `n/N` counter counts provider-independent unique satellite frames. `N` may differ by radar provider because observed Radar windows have different start times and lengths, not because Clouds fetches a duplicate provider-specific set. Clouds and Lightning complete independently, with two requests shared concurrently and a hard maximum of three. A complete old set remains visible while replacement loads.
+The individual-flash feed contains 18 five-minute transport frames covering 90 minutes and is
+requested for the selected place's fixed `uk`, `de`, `nl`, `ch` or `fr` radar region. Panning and
+zooming do not change or reload that region. Valid-empty data is ready with no points; partial,
+unknown, stale or malformed data is never presented as clear. Conditional requests and a verified
+last-good generation avoid needless downloads and blank replacement frames.
 
-Exact product/time/region images reuse an atomic 128 MiB compressed-image LRU cache. MapLibre has a separate 64 MiB base-map ambient cache, for an intended total disk budget of about 192 MiB. Only an active bitmap, pending replacement and brief retiring source are decoded at once. Frame changes overlap until MapLibre confirms the new image was composed. Changing Clouds does not rebuild Lightning or vice versa, and the alternate cloud product is tried if the preferred product fails. Clouds renders below Lightning.
+A WMS satellite layer downloads and validates its complete finite set of unique observed regional
+PNG frames before displaying that set. The `n/N` counter counts provider-independent unique
+satellite frames. `N` may differ by radar provider because observed Radar windows have different
+start times and lengths, not because Clouds fetches a duplicate provider-specific set. Clouds and
+accumulated Lightning complete independently, with two requests shared concurrently and a hard
+maximum of three. A complete old set remains visible while replacement loads.
 
-Satellite frames use a place-owned operating region: British Isles first, then Europe, overlapping North America East/West regions, then a bounded local fallback. Each adds about 200 km around its inner selection footprint and stays fixed as the map pans. EUMETSAT bounds are intersected with that outer footprint. Frames are transparent, aspect-preserving regional WMS images no larger than 1024px, georeferenced consistently at every map zoom. A world view never requests a global satellite disk; close zoom deliberately overscales the fixed regional image. Panning outside the region reveals no satellite pixels rather than fetching a new region.
+Exact WMS product/time/region images reuse an atomic 128 MiB compressed-image LRU cache. MapLibre
+has a separate 64 MiB base-map ambient cache, for an intended total disk budget of about 192 MiB.
+Only an active bitmap, pending replacement and brief retiring source are decoded at once. Frame
+changes overlap until MapLibre confirms the new image was composed. Changing Clouds does not rebuild
+Lightning or vice versa, and the alternate cloud product is tried if the preferred product fails.
+
+WMS satellite frames use a place-owned operating region: British Isles first, then Europe,
+overlapping North America East/West regions, then a bounded local fallback. Each adds about 200 km
+around its inner selection footprint and stays fixed as the map pans. EUMETSAT bounds are
+intersected with that outer footprint. Frames are transparent, aspect-preserving regional WMS
+images no larger than 1024px, georeferenced consistently at every map zoom. A world view never
+requests a global satellite disk; close zoom deliberately overscales the fixed regional image.
+Panning outside the region reveals no satellite pixels rather than fetching a new region.
 
 Cloud Refresh bypasses the five-minute EUMETSAT metadata/probe cache and discovers both daytime and nighttime products again, but it does not purge valid downloaded frames. Each missing, corrupt or evicted image gets up to three attempts with a five-second connection and twenty-second read timeout. Clouds accepts provider metadata up to one hour old and performs no acquisition while disabled.
 

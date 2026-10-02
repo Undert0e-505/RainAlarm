@@ -65,6 +65,11 @@
     <string name="settings_rain_notification">Rain notification</string>
     <string name="settings_lightning_notification">Lightning activity notification</string>
     <string name="settings_provider_heading">PREFERRED RADAR PROVIDER</string>
+    <string name="settings_lightning_provider_heading">PREFERRED LIGHTNING PROVIDER</string>
+    <string name="settings_lightning_provider_afa">EUMETSAT accumulated flash area</string>
+    <string name="settings_lightning_provider_afa_description">Existing satellite area overlay</string>
+    <string name="settings_lightning_provider_lfl">EUMETSAT individual flashes (experimental)</string>
+    <string name="settings_lightning_provider_lfl_description">Recent satellite flash locations</string>
     <string name="settings_show_snow">Show likely snow</string>
     <string name="settings_indicators_heading">NOW INDICATORS</string>
     <string name="settings_animation_heading">ANIMATION</string>
@@ -181,7 +186,7 @@
     <string name="settings_about_radar_body">MeteoGroup/DTN regional composites use nominal network reach from the Met Office, Met Éireann, KNMI, RMI, DWD, Météo-France and MeteoSwiss, cross-checked with EUMETNET; these are not DTN-published live validity masks. Contains public sector information licensed under the Open Government Licence v3.0; Met Éireann radar open data and EUMETNET OPERA Open Radar Data are CC BY 4.0. RainViewer supplies worldwide open radar. OPERA and RainViewer future frames are Rain Alarm motion estimates.</string>
     <string name="settings_about_map_body">© OpenStreetMap contributors, rendered through OpenFreeMap/OpenMapTiles. Required compact map attribution remains on the map.</string>
     <string name="settings_about_model_body">Open-Meteo model/current weather and Wind are provided under CC BY 4.0.</string>
-    <string name="settings_about_satellite_body">© EUMETSAT (CC BY 4.0). Clouds show cloud structures or fog/low cloud, not confirmed surface fog; Lightning shows accumulated flash areas.</string>
+    <string name="settings_about_satellite_body">© EUMETSAT (CC BY 4.0). Clouds show cloud structures or fog/low cloud, not confirmed surface fog. Radar Lightning can show satellite-observed individual flash centroids or accumulated flash areas; alerts and widgets use accumulated areas.</string>
     <string name="settings_about_background_monitoring_body">Lightning is a five-minute accumulated optical flash-area observation, not a strike forecast. When an alert or widget needs it, Rain Alarm checks a bounded area within 15 km of the monitored place during the approximately 15-minute background update.</string>
     <string name="settings_about_search_body">Towns use Open-Meteo/GeoNames; named places use Photon with © OpenStreetMap data and a Wikipedia/Wikimedia fallback. UK postcodes use postcodes.io. Contains Ordnance Survey, Crown, Royal Mail and National Statistics database rights.</string>
     <string name="settings_about_privacy_body">No accounts, ads or analytics. Requests expose ordinary network metadata to the selected map, weather and search services.</string>
