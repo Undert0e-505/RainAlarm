@@ -1,6 +1,6 @@
 # Road to 1.0
 
-Rain Alarm 0.9.2 is feature-complete for its intended scope: Now, multi-provider Radar, saved
+Rain Alarm 0.9.3 is feature-complete for its intended scope: Now, multi-provider Radar, saved
 places, independent home-screen widgets, foreground Travel, rain/Lightning alerts, appearance
 profiles, localization and contextual onboarding. Work toward 1.0 now prioritizes reliability and
 validation rather than additional features.

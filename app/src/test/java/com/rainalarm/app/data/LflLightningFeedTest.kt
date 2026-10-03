@@ -1,5 +1,7 @@
 package com.rainalarm.app.data
 
+import com.rainalarm.app.domain.GeoPoint
+import com.rainalarm.app.domain.MeteoNominalCoverage
 import java.io.File
 import java.io.IOException
 import java.time.Instant
@@ -53,6 +55,83 @@ class LflLightningFeedTest {
         assertEquals(null, LflRegionPolicy.regionFor(SavedPlace(
             name = "Tokyo", latitude = 35.0, longitude = 139.0, id = "jp",
         )))
+    }
+
+    @Test fun meteoLflSourceUsesActiveFranceNominalCoverageNotFeedRectangleOrFeedId() {
+        val insideFrance = LflFlashPoint(
+            "000000000000000000000101", observedThrough * 1_000L - 1L, 48.8566, 2.3522,
+        )
+        // Inside the broad France feed rectangle, but outside MeteoGroup's nominal France reach.
+        val outsideInSpain = LflFlashPoint(
+            "000000000000000000000102", observedThrough * 1_000L - 1L, 40.0, -7.0,
+        )
+        assertEquals(true, MeteoNominalCoverage.covers("fr", GeoPoint(
+            insideFrance.latitude, insideFrance.longitude,
+        )))
+        assertEquals(false, MeteoNominalCoverage.covers("fr", GeoPoint(
+            outsideInSpain.latitude, outsideInSpain.longitude,
+        )))
+
+        // Deliberately retain the helper's UK feed id: the active radar area must be authoritative.
+        val source = LflLightningPresentationPolicy.source(
+            feed(listOf(insideFrance, outsideInSpain)),
+            LflLightningCoverageContext(RadarProviderKind.METEOGROUP_REGIONAL, "fr"),
+        )
+        assertEquals(listOf(insideFrance.id), source.flashes.map { it.point.id })
+    }
+
+    @Test fun nonMeteoAndUnknownCoverageRemainFailOpen() {
+        val outsideFrance = LflFlashPoint(
+            "000000000000000000000103", observedThrough * 1_000L - 1L, 40.0, -7.0,
+        )
+        val sourceFeed = feed(listOf(outsideFrance)).copy(regionId = "fr")
+        listOf(RadarProviderKind.EUMETNET_OPERA, RadarProviderKind.OPEN_RAINVIEWER).forEach {
+            val source = LflLightningPresentationPolicy.source(
+                sourceFeed, LflLightningCoverageContext(it, "fr"),
+            )
+            assertEquals(listOf(outsideFrance.id), source.flashes.map { flash -> flash.point.id })
+        }
+        listOf(null, "unsupported").forEach { areaId ->
+            val source = LflLightningPresentationPolicy.source(
+                sourceFeed,
+                LflLightningCoverageContext(RadarProviderKind.METEOGROUP_REGIONAL, areaId),
+            )
+            assertEquals(listOf(outsideFrance.id), source.flashes.map { it.point.id })
+        }
+    }
+
+    @Test fun providerAndActiveAreaChangesInvalidateStableLflSourceIndependentOfMaskDarkness() {
+        val sourceFeed = feed(listOf(point(
+            "000000000000000000000104", observedThrough * 1_000L - 1L,
+        ))).copy(regionId = "fr")
+        val meteoFrance = LflLightningPresentationPolicy.source(
+            sourceFeed,
+            LflLightningCoverageContext(RadarProviderKind.METEOGROUP_REGIONAL, "fr"),
+        )
+        val meteoGermany = LflLightningPresentationPolicy.source(
+            sourceFeed,
+            LflLightningCoverageContext(RadarProviderKind.METEOGROUP_REGIONAL, "de"),
+        )
+        val operaFrance = LflLightningPresentationPolicy.source(
+            sourceFeed,
+            LflLightningCoverageContext(RadarProviderKind.EUMETNET_OPERA, "fr"),
+        )
+        val rainViewerFrance = LflLightningPresentationPolicy.source(
+            sourceFeed,
+            LflLightningCoverageContext(RadarProviderKind.OPEN_RAINVIEWER, "fr"),
+        )
+        assertTrue(setOf(
+            meteoFrance.identity,
+            meteoGermany.identity,
+            operaFrance.identity,
+            rainViewerFrance.identity,
+        ).size == 4)
+        assertTrue(meteoFrance.coverageIdentity.contains(MeteoNominalCoverage.GEOMETRY_VERSION))
+
+        // Visibility is source-data policy and has no dependency on the optional visual scrim.
+        val policySource = source("data/LflLightningFeed.kt")
+        assertFalse(policySource.contains("CoverageMaskDarknessPreference"))
+        assertFalse(policySource.contains("coverageMaskDarkness"))
     }
 
     @Test fun parserAcceptsExactSchemaValidEmptyAndDeduplicatesStableIdentities() {

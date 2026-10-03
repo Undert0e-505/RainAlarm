@@ -150,6 +150,7 @@ import com.rainalarm.app.data.RadarProviderKind
 import com.rainalarm.app.data.RadarProviderSelection
 import com.rainalarm.app.data.LightningVisualProviderKind
 import com.rainalarm.app.data.LflLightningFeed
+import com.rainalarm.app.data.LflLightningCoverageContext
 import com.rainalarm.app.data.LflLightningPresentation
 import com.rainalarm.app.data.LflLightningPresentationPolicy
 import com.rainalarm.app.data.LflLightningRepositoryProvider
@@ -2690,20 +2691,26 @@ private fun ColumnScope.RadarPlayer(
         ?: timelineStartEpochSeconds.toDouble() + safeCursor.toDouble()
     val lflFeed = (ancillaryStatuses[RadarMapLayer.LIGHTNING] as?
         AncillaryStatus.IndividualFlashes)?.feed
+    val lflCoverageContext = LflLightningCoverageContext(
+        radarProvider = session?.providerSelection?.active,
+        activeRadarAreaId = session?.region?.id,
+    )
     var lflLightningSource by remember(
         lflFeed?.generationId,
         lflFeed?.regionId,
+        lflCoverageContext.identity,
     ) {
         mutableStateOf<LflLightningSource?>(null)
     }
     LaunchedEffect(
         lflFeed?.generationId,
         lflFeed?.regionId,
+        lflCoverageContext.identity,
     ) {
         lflLightningSource = lflFeed?.let { feed ->
             withContext(Dispatchers.Default) {
                 val calculationContext = currentCoroutineContext()
-                LflLightningPresentationPolicy.source(feed) {
+                LflLightningPresentationPolicy.source(feed, lflCoverageContext) {
                     calculationContext.ensureActive()
                 }
             }

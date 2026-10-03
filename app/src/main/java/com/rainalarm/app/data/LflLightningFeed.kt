@@ -1,5 +1,7 @@
 package com.rainalarm.app.data
 
+import com.rainalarm.app.domain.GeoPoint
+import com.rainalarm.app.domain.MeteoNominalCoverage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -584,15 +586,57 @@ data class LflLightningSourceFlash(
     val birthOffsetSeconds: Double,
 )
 
+/**
+ * The active radar renderer context that constrains individual-flash visibility.
+ *
+ * The context intentionally contains no coverage-mask appearance setting: a disabled visual
+ * scrim must not make flashes outside MeteoGroup's nominal radar footprint visible again.
+ */
+data class LflLightningCoverageContext(
+    val radarProvider: RadarProviderKind?,
+    val activeRadarAreaId: String?,
+) {
+    val identity: String = buildString {
+        append(radarProvider?.name ?: "NO_RADAR_PROVIDER")
+        append(':')
+        append(activeRadarAreaId ?: "NO_RADAR_AREA")
+        append(':')
+        append(
+            if (radarProvider == RadarProviderKind.METEOGROUP_REGIONAL) {
+                MeteoNominalCoverage.GEOMETRY_VERSION
+            } else {
+                "UNRESTRICTED"
+            },
+        )
+    }
+
+    companion object {
+        val UNRESTRICTED = LflLightningCoverageContext(null, null)
+    }
+}
+
+/** Uses the same nominal geometry as the MeteoGroup map scrim, but as real data filtering. */
+object LflLightningCoveragePolicy {
+    fun includes(context: LflLightningCoverageContext, point: LflFlashPoint): Boolean {
+        if (context.radarProvider != RadarProviderKind.METEOGROUP_REGIONAL) return true
+        val areaId = context.activeRadarAreaId ?: return true
+        return MeteoNominalCoverage.covers(
+            areaId,
+            GeoPoint(point.latitude, point.longitude),
+        ) ?: true
+    }
+}
+
 /** Stable GeoJSON payload for one feed generation; selected time never changes this object. */
 data class LflLightningSource(
     val generationId: String,
     val regionId: String,
+    val coverageIdentity: String,
     val baselineEpochSeconds: Long,
     val observedFromEpochSeconds: Long,
     val flashes: List<LflLightningSourceFlash>,
 ) {
-    val identity: String = "$generationId:$regionId:$baselineEpochSeconds"
+    val identity: String = "$generationId:$regionId:$coverageIdentity:$baselineEpochSeconds"
 }
 
 data class LflLightningPresentation(
@@ -610,12 +654,16 @@ object LflLightningPresentationPolicy {
 
     fun source(
         feed: LflLightningFeed,
+        coverageContext: LflLightningCoverageContext = LflLightningCoverageContext.UNRESTRICTED,
         cancellationCheck: () -> Unit = {},
     ): LflLightningSource {
         val intervalMs = LflLightningVisualStyle.visualIntervalSeconds * 1_000L
         val baseline = feed.observedFromEpochSeconds
-        val flashes = feed.points.mapIndexed { index, point ->
+        val flashes = feed.points.mapIndexedNotNull { index, point ->
             if (index % 128 == 0) cancellationCheck()
+            if (!LflLightningCoveragePolicy.includes(coverageContext, point)) {
+                return@mapIndexedNotNull null
+            }
             val birthEpochMs = Math.floorDiv(
                 point.observedAtEpochMs + intervalMs - 1L,
                 intervalMs,
@@ -628,6 +676,7 @@ object LflLightningPresentationPolicy {
         return LflLightningSource(
             feed.generationId,
             feed.regionId,
+            coverageContext.identity,
             baseline,
             feed.observedFromEpochSeconds,
             flashes,

@@ -5,7 +5,7 @@ credentials. Most requests go directly to the weather, map and search service ne
 feature; the experimental individual-lightning Radar visual uses the read-only relay described
 below.
 
-This disclosure describes version 0.9.2. Provider services necessarily receive ordinary network metadata such as the connecting IP address; consult each provider's current terms and privacy policy for how it handles that traffic.
+This disclosure describes version 0.9.3. Provider services necessarily receive ordinary network metadata such as the connecting IP address; consult each provider's current terms and privacy policy for how it handles that traffic.
 
 ## Android permissions
 
