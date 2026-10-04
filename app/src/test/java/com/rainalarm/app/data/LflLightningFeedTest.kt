@@ -278,9 +278,45 @@ class LflLightningFeedTest {
         assertTrue(afterLifetime.covered)
         assertTrue(LflLightningPresentationPolicy.renderedFlashes(afterLifetime).isEmpty())
 
-        val uncovered = LflLightningPresentationPolicy.at(feed, observedFrom + 19 * 60L)
-        assertFalse(uncovered.covered)
-        assertTrue(LflLightningPresentationPolicy.renderedFlashes(uncovered).isEmpty())
+    }
+
+    @Test fun partialOldestHistoryIsCoveredFromItsExactStartWithoutChangingFlashAges() {
+        val partialPoint = point(
+            "000000000000000000000201",
+            (observedFrom + 5 * 60L) * 1_000L,
+        )
+        val futurePoint = point(
+            "000000000000000000000202",
+            (observedFrom + 15 * 60L + 1L) * 1_000L,
+        )
+        val sourceFeed = feed(listOf(partialPoint, futurePoint))
+
+        val beforeStart = LflLightningPresentationPolicy.at(sourceFeed, observedFrom - 1L)
+        assertFalse(beforeStart.covered)
+        assertTrue(LflLightningPresentationPolicy.renderedFlashes(beforeStart).isEmpty())
+
+        val atStart = LflLightningPresentationPolicy.at(sourceFeed, observedFrom)
+        assertTrue(atStart.covered)
+        assertTrue(LflLightningPresentationPolicy.renderedFlashes(atStart).isEmpty())
+
+        val fifteenMinutesIn = LflLightningPresentationPolicy.at(
+            sourceFeed,
+            observedFrom + 15 * 60L,
+        )
+        assertTrue(fifteenMinutesIn.covered)
+        val partialTrail = LflLightningPresentationPolicy.renderedFlashes(fifteenMinutesIn)
+        assertEquals(listOf(partialPoint.id), partialTrail.map { it.point.id })
+        assertEquals(10 * 60.0, partialTrail.single().ageSeconds, 0.0)
+        assertEquals(0.5f, partialTrail.single().opacity, 0f)
+
+        val atExpiry = LflLightningPresentationPolicy.at(
+            sourceFeed,
+            observedFrom + 25 * 60L,
+        )
+        assertTrue(atExpiry.covered)
+        assertFalse(LflLightningPresentationPolicy.renderedFlashes(atExpiry).any {
+            it.point.id == partialPoint.id
+        })
     }
 
     @Test fun opacityColourEdgeSofteningAndZoomAreContinuousCentralizedAndMonotonic() {

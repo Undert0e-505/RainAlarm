@@ -1,6 +1,6 @@
 # Rain Alarm user guide
 
-Rain Alarm answers a place-specific question: when will rain reach me? **Now** summarises the next hour, while **Radar** lets you inspect the available observations, forecasts or local motion estimates. This guide describes version 0.9.3 (version code 23).
+Rain Alarm answers a place-specific question: when will rain reach me? **Now** summarises the next hour, while **Radar** lets you inspect the available observations, forecasts or local motion estimates. This guide describes version 0.9.4 (version code 24).
 
 ## First launch and installation
 

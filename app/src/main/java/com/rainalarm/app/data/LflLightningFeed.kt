@@ -692,8 +692,10 @@ object LflLightningPresentationPolicy {
             source = source,
             referenceEpochSeconds = reference,
             referenceOffsetSeconds = reference - source.baselineEpochSeconds,
-            covered = reference - LflLightningVisualStyle.lifetimeSeconds >=
-                source.observedFromEpochSeconds,
+            // Coverage starts as soon as the feed's represented history starts. The oldest
+            // Radar frames may have less than a full 20-minute trail, but that partial trail
+            // is still valid; per-flash birth and lifetime rules decide what is visible.
+            covered = reference >= source.observedFromEpochSeconds.toDouble(),
         )
     }
 
