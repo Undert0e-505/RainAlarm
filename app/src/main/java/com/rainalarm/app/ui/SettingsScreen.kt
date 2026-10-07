@@ -2,18 +2,28 @@ package com.rainalarm.app.ui
 
 import android.Manifest
 import android.content.Intent
+import android.database.ContentObserver
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.core.content.ContextCompat
@@ -27,6 +37,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -35,10 +46,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.dropShadow
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -55,6 +72,8 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.runtime.Composable
@@ -92,6 +111,8 @@ import com.rainalarm.app.data.CURRENT_LOCATION_ID
 import com.rainalarm.app.data.AppearanceMode
 import com.rainalarm.app.data.AppearancePhase
 import com.rainalarm.app.data.AppearanceProfile
+import com.rainalarm.app.data.AppUpdateRepository
+import com.rainalarm.app.data.AvailableAppUpdate
 import com.rainalarm.app.data.AutomaticAppearancePreferences
 import com.rainalarm.app.data.ProfileMapAppearance
 import com.rainalarm.app.data.NowWeatherMetric
@@ -112,9 +133,66 @@ internal object RainAlarmSwitchColorPolicy {
 }
 
 private val SettingsSurface: Color @Composable get() = LocalRainAlarmPalette.current.surface
+private val SettingsBackground: Color @Composable get() = LocalRainAlarmPalette.current.background
 private val SettingsSecondary: Color @Composable get() = LocalRainAlarmPalette.current.muted
 private val SettingsAccent: Color @Composable get() = LocalRainAlarmPalette.current.accent
 private val SettingsBorder: Color @Composable get() = LocalRainAlarmPalette.current.border
+
+internal object SettingsUpdateIndicatorLayoutPolicy {
+    const val minimumSideBySideWidthDp = 300f
+    const val maximumSideBySideFontScale = 1.15f
+
+    fun placeBesideTitle(availableWidthDp: Float, fontScale: Float): Boolean =
+        availableWidthDp >= minimumSideBySideWidthDp &&
+            fontScale <= maximumSideBySideFontScale
+}
+
+internal object SettingsUpdateIndicatorEntrancePolicy {
+    const val noVisitId = -1
+    const val bloomDurationMillis = 420
+    const val settleDurationMillis = 630
+    const val totalDurationMillis = bloomDurationMillis + settleDurationMillis
+    const val lowStrength = 0f
+    const val peakStrength = 1f
+    const val settledStrength = 0.1465f
+    const val coreOutlineAlpha = 0.78f
+    const val haloRadiusDp = 12f
+    const val haloSpreadDp = 2.5f
+    const val ringStrokeWidthDp = 2f
+    private const val minimumHaloAlpha = 0.06f
+    private const val maximumHaloAlpha = 0.64f
+    private const val minimumRingAlpha = 0.14f
+    private const val maximumRingAlpha = 0.96f
+
+    fun nextVisitId(currentVisitId: Int): Int =
+        if (currentVisitId == Int.MAX_VALUE) 1 else currentVisitId + 1
+
+    fun shouldFlash(
+        indicatorVisible: Boolean,
+        settingsSettled: Boolean,
+        visitId: Int,
+        lastFlashedVisitId: Int,
+    ): Boolean = indicatorVisible && settingsSettled && visitId > 0 &&
+        visitId != lastFlashedVisitId
+
+    fun animationsEnabled(animatorDurationScale: Float): Boolean =
+        animatorDurationScale.isFinite() && animatorDurationScale > 0f
+
+    fun haloAlpha(strength: Float): Float = interpolate(
+        minimumHaloAlpha,
+        maximumHaloAlpha,
+        strength,
+    )
+
+    fun ringAlpha(strength: Float): Float = interpolate(
+        minimumRingAlpha,
+        maximumRingAlpha,
+        strength,
+    )
+
+    private fun interpolate(start: Float, end: Float, strength: Float): Float =
+        start + (end - start) * strength.coerceIn(lowStrength, peakStrength)
+}
 
 internal object AppearanceGridPolicy {
     const val columnCount = 4
@@ -223,12 +301,34 @@ fun SettingsScreen(
     activeLanguageName: String,
     openLanguageSelector: () -> Unit,
     showAppTour: () -> Unit,
+    screenActive: Boolean,
+    settingsSettled: Boolean,
+    settingsVisitId: Int,
 ) {
     val context = LocalContext.current
     val resources = LocalResources.current
     val locale = LocalConfiguration.current.locales[0]
     var permissionMessage by remember { mutableStateOf<String?>(null) }
     var pendingNotificationSetting by remember { mutableStateOf("rain") }
+    val updateRepository = remember(context.applicationContext) {
+        AppUpdateRepository(context.applicationContext)
+    }
+    var availableAppUpdate by remember { mutableStateOf<AvailableAppUpdate?>(null) }
+    LaunchedEffect(screenActive, updateRepository) {
+        if (!screenActive) {
+            availableAppUpdate = null
+            return@LaunchedEffect
+        }
+        if (BuildConfig.UPDATE_INDICATOR_DEMO) {
+            availableAppUpdate = updateRepository.demoAvailableUpdate(
+                BuildConfig.VERSION_NAME,
+                BuildConfig.UPDATE_INDICATOR_DEMO_TAG,
+            )
+            return@LaunchedEffect
+        }
+        availableAppUpdate = updateRepository.cachedAvailableUpdate(BuildConfig.VERSION_NAME)
+        availableAppUpdate = updateRepository.refreshIfNeeded(BuildConfig.VERSION_NAME)
+    }
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) {
             permissionMessage = null
@@ -242,10 +342,19 @@ fun SettingsScreen(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 18.dp),
     ) {
-        Text(stringResource(R.string.settings_title), style = MaterialTheme.typography.headlineMedium,
-            modifier = Modifier.semantics { heading() })
-        Text(stringResource(R.string.settings_subtitle), color = SettingsSecondary,
-            modifier = Modifier.padding(top = 4.dp))
+        SettingsHeader(
+            update = availableAppUpdate,
+            settingsSettled = settingsSettled,
+            settingsVisitId = settingsVisitId,
+            onOpenUpdate = { update ->
+                // A tap acknowledges this exact release before handing off to the browser.
+                updateRepository.dismiss(update, demo = BuildConfig.UPDATE_INDICATOR_DEMO)
+                availableAppUpdate = null
+                if (!openExternalUrl(context, update.releaseUrl)) {
+                    permissionMessage = resources.getString(R.string.settings_no_browser)
+                }
+            },
+        )
         message?.let {
             Text(
                 it,
@@ -680,6 +789,215 @@ fun SettingsScreen(
             }
         }
     }
+}
+
+@Composable
+private fun SettingsHeader(
+    update: AvailableAppUpdate?,
+    settingsSettled: Boolean,
+    settingsVisitId: Int,
+    onOpenUpdate: (AvailableAppUpdate) -> Unit,
+) {
+    val animatorDurationScale = rememberAnimatorDurationScale()
+    val outlineStrength = remember {
+        Animatable(SettingsUpdateIndicatorEntrancePolicy.settledStrength)
+    }
+    var lastFlashedVisitId by rememberSaveable {
+        mutableIntStateOf(SettingsUpdateIndicatorEntrancePolicy.noVisitId)
+    }
+    LaunchedEffect(
+        update != null,
+        settingsSettled,
+        settingsVisitId,
+        animatorDurationScale,
+    ) {
+        if (!SettingsUpdateIndicatorEntrancePolicy.shouldFlash(
+                indicatorVisible = update != null,
+                settingsSettled = settingsSettled,
+                visitId = settingsVisitId,
+                lastFlashedVisitId = lastFlashedVisitId,
+            )
+        ) {
+            outlineStrength.snapTo(SettingsUpdateIndicatorEntrancePolicy.settledStrength)
+            return@LaunchedEffect
+        }
+
+        lastFlashedVisitId = settingsVisitId
+        if (!SettingsUpdateIndicatorEntrancePolicy.animationsEnabled(animatorDurationScale)) {
+            outlineStrength.snapTo(SettingsUpdateIndicatorEntrancePolicy.settledStrength)
+            return@LaunchedEffect
+        }
+        outlineStrength.snapTo(SettingsUpdateIndicatorEntrancePolicy.lowStrength)
+        // Publish the low halo after the pager has settled before beginning the bloom.
+        withFrameNanos { }
+        outlineStrength.animateTo(
+            SettingsUpdateIndicatorEntrancePolicy.peakStrength,
+            animationSpec = tween(
+                durationMillis = SettingsUpdateIndicatorEntrancePolicy.bloomDurationMillis,
+                easing = CubicBezierEasing(0.33f, 0f, 0.2f, 1f),
+            ),
+        )
+        outlineStrength.animateTo(
+            SettingsUpdateIndicatorEntrancePolicy.settledStrength,
+            animationSpec = tween(
+                durationMillis = SettingsUpdateIndicatorEntrancePolicy.settleDurationMillis,
+                easing = CubicBezierEasing(0.4f, 0f, 0.2f, 1f),
+            ),
+        )
+    }
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val placeBesideTitle = update != null &&
+            SettingsUpdateIndicatorLayoutPolicy.placeBesideTitle(
+                availableWidthDp = maxWidth.value,
+                fontScale = LocalDensity.current.fontScale,
+            )
+        when {
+            update == null -> SettingsTitleBlock(Modifier.fillMaxWidth())
+            placeBesideTitle -> Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                SettingsTitleBlock(Modifier.weight(1f))
+                Spacer(Modifier.width(12.dp))
+                SettingsUpdatePill(
+                    update = update,
+                    haloStrength = { outlineStrength.value },
+                    onClick = { onOpenUpdate(update) },
+                )
+            }
+            else -> Column(Modifier.fillMaxWidth()) {
+                SettingsTitleBlock(Modifier.fillMaxWidth())
+                Box(Modifier.fillMaxWidth().padding(top = 6.dp)) {
+                    SettingsUpdatePill(
+                        update = update,
+                        haloStrength = { outlineStrength.value },
+                        onClick = { onOpenUpdate(update) },
+                        modifier = Modifier.align(Alignment.CenterEnd),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsTitleBlock(modifier: Modifier = Modifier) {
+    Column(modifier) {
+        Text(
+            stringResource(R.string.settings_title),
+            style = MaterialTheme.typography.headlineMedium,
+            modifier = Modifier.semantics { heading() },
+        )
+        Text(
+            stringResource(R.string.settings_subtitle),
+            color = SettingsSecondary,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+    }
+}
+
+@Composable
+private fun SettingsUpdatePill(
+    update: AvailableAppUpdate,
+    haloStrength: () -> Float,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val shape = RoundedCornerShape(50)
+    val accent = SettingsAccent
+    // Make the existing translucent accent fill opaque-equivalent so the halo behind it cannot
+    // alter the fill or text area as its alpha changes.
+    val pillFill = accent.copy(alpha = 0.14f).compositeOver(SettingsBackground)
+    val description = stringResource(
+        R.string.settings_update_available_description,
+        update.version.toString(),
+    )
+    Box(
+        modifier = modifier
+            .sizeIn(minHeight = 48.dp)
+            .semantics { contentDescription = description }
+            .clickable(
+                role = Role.Button,
+                onClick = onClick,
+            )
+            .padding(horizontal = 4.dp, vertical = 6.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier
+                .dropShadow(shape) {
+                    radius = SettingsUpdateIndicatorEntrancePolicy.haloRadiusDp.dp.toPx()
+                    spread = SettingsUpdateIndicatorEntrancePolicy.haloSpreadDp.dp.toPx()
+                    color = accent
+                    alpha = SettingsUpdateIndicatorEntrancePolicy.haloAlpha(haloStrength())
+                }
+                .clip(shape)
+                .background(pillFill)
+                .drawWithContent {
+                    drawContent()
+                    val strokeWidth = SettingsUpdateIndicatorEntrancePolicy
+                        .ringStrokeWidthDp.dp.toPx()
+                    val inset = strokeWidth / 2f
+                    drawRoundRect(
+                        color = accent,
+                        topLeft = Offset(inset, inset),
+                        size = Size(size.width - strokeWidth, size.height - strokeWidth),
+                        cornerRadius = CornerRadius((size.height - strokeWidth) / 2f),
+                        alpha = SettingsUpdateIndicatorEntrancePolicy.ringAlpha(haloStrength()),
+                        style = Stroke(width = strokeWidth),
+                    )
+                }
+                .border(
+                    1.dp,
+                    accent.copy(alpha = SettingsUpdateIndicatorEntrancePolicy.coreOutlineAlpha),
+                    shape,
+                )
+                .padding(horizontal = 11.dp, vertical = 6.dp),
+        ) {
+            Text(
+                text = stringResource(R.string.settings_update_available),
+                color = accent,
+                fontSize = 12.sp,
+                lineHeight = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+@Composable
+private fun rememberAnimatorDurationScale(): Float {
+    val context = LocalContext.current.applicationContext
+    fun currentScale(): Float = runCatching {
+        Settings.Global.getFloat(
+            context.contentResolver,
+            Settings.Global.ANIMATOR_DURATION_SCALE,
+            1f,
+        )
+    }.getOrDefault(1f)
+
+    var scale by remember(context) { mutableFloatStateOf(currentScale()) }
+    DisposableEffect(context) {
+        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                scale = currentScale()
+            }
+        }
+        val registered = runCatching {
+            context.contentResolver.registerContentObserver(
+                Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE),
+                false,
+                observer,
+            )
+        }.isSuccess
+        onDispose {
+            if (registered) runCatching {
+                context.contentResolver.unregisterContentObserver(observer)
+            }
+        }
+    }
+    return scale
 }
 
 private fun openExternalUrl(context: android.content.Context, url: String): Boolean {

@@ -1746,6 +1746,9 @@ private fun RainAlarmApp(
         }
     }
     var destination by rememberSaveable { mutableStateOf(initialDestination) }
+    var settingsVisitId by rememberSaveable {
+        mutableIntStateOf(if (initialDestination == Destination.SETTINGS) 1 else 0)
+    }
     var featureTourStageName by rememberSaveable { mutableStateOf<String?>(null) }
     var featureTourStepIndex by rememberSaveable { mutableIntStateOf(0) }
     var featureTourScenario by remember { mutableStateOf<FeatureTourScenario?>(null) }
@@ -1817,6 +1820,10 @@ private fun RainAlarmApp(
                 previous == Destination.RADAR && next != Destination.RADAR)) pendingChartTime = null
         val requiresPagerMove = pagerState.settledPage != next.ordinal || pagerState.isScrollInProgress
         if (requiresPagerMove) prepareEntry(next) else requestEntryPlayback(next)
+        if (next == Destination.SETTINGS) {
+            settingsVisitId = com.rainalarm.app.ui.SettingsUpdateIndicatorEntrancePolicy
+                .nextVisitId(settingsVisitId)
+        }
         destination = next
         if (requiresPagerMove) {
             pagerNavigationJob = navigationScope.launch {
@@ -2384,6 +2391,11 @@ private fun RainAlarmApp(
                                 startFeatureTour()
                                 navigateTo(Destination.NOW)
                             },
+                            screenActive = destination == Destination.SETTINGS && appForeground,
+                            settingsSettled = destination == Destination.SETTINGS &&
+                                pagerState.settledPage == Destination.SETTINGS.ordinal &&
+                                !pagerState.isScrollInProgress && appForeground,
+                            settingsVisitId = settingsVisitId,
                         )
                     }
                 }

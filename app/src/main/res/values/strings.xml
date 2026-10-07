@@ -62,6 +62,8 @@
     <string name="picker_resolving_name">Finding place name…</string>
     <string name="settings_title">Settings</string>
     <string name="settings_subtitle">Make the radar yours</string>
+    <string name="settings_update_available">Update available</string>
+    <string name="settings_update_available_description">Update Rain Alarm to version %1$s. Opens the GitHub release page.</string>
     <string name="settings_rain_notification">Rain notification</string>
     <string name="settings_lightning_notification">Lightning activity notification</string>
     <string name="settings_provider_heading">PREFERRED RADAR PROVIDER</string>

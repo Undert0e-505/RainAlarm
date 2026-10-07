@@ -4,6 +4,20 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
+val updateIndicatorDemoEnabled = providers.gradleProperty("rainAlarmUpdateIndicatorDemo")
+    .orNull
+    ?.toBooleanStrictOrNull()
+    ?: false
+val updateIndicatorDemoTag = providers.gradleProperty("rainAlarmUpdateIndicatorDemoTag")
+    .orNull
+    ?.trim()
+    .orEmpty()
+require(
+    updateIndicatorDemoTag.isEmpty() ||
+        Regex("^v?(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")
+            .matches(updateIndicatorDemoTag),
+) { "rainAlarmUpdateIndicatorDemoTag must be an empty value or a stable semantic version tag." }
+
 android {
     namespace = "com.rainalarm.app"
     compileSdk = 37
@@ -14,6 +28,16 @@ android {
         targetSdk = 37
         versionCode = 24
         versionName = "0.9.4"
+        buildConfigField(
+            "boolean",
+            "UPDATE_INDICATOR_DEMO",
+            updateIndicatorDemoEnabled.toString(),
+        )
+        buildConfigField(
+            "String",
+            "UPDATE_INDICATOR_DEMO_TAG",
+            "\"$updateIndicatorDemoTag\"",
+        )
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -161,5 +185,6 @@ tasks.register<JavaExec>("directDebugUnitTest") {
         "com.rainalarm.app.widget.WidgetPoliciesTest",
         "com.rainalarm.app.widget.WidgetInitialRefreshPolicyTest",
         "com.rainalarm.app.data.LflLightningFeedTest",
+        "com.rainalarm.app.data.AppUpdateCheckerTest",
     )
 }
