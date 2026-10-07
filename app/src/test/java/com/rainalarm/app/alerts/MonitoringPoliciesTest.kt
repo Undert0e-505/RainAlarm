@@ -9,6 +9,116 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MonitoringPoliciesTest {
+    @Test fun `Travel delivery bridge defaults to normal mode and tracks the authoritative flow`() {
+        assertFalse(TravelNotificationDeliveryState.isActive)
+        try {
+            TravelNotificationDeliveryState.update(true)
+            assertTrue(TravelNotificationDeliveryState.isActive)
+            TravelNotificationDeliveryState.update(false)
+            assertFalse(TravelNotificationDeliveryState.isActive)
+        } finally {
+            TravelNotificationDeliveryState.update(false)
+        }
+    }
+
+    @Test fun `normal mode leaves app delivery unchanged`() {
+        val resolution = MonitoringDeliveryResolution(
+            deliverRainEvent = "rain:1",
+            deliverLightningEvent = "lightning:1",
+        )
+        assertEquals(
+            resolution,
+            TravelNotificationDeliveryPolicy.apply(
+                NotificationSourceClass.APP,
+                travelActive = false,
+                resolution = resolution,
+            ),
+        )
+    }
+
+    @Test fun `Travel silently consumes app rain lightning and combined candidates`() {
+        listOf(
+            MonitoringDeliveryResolution(deliverRainEvent = "rain:1") to
+                MonitoringDeliveryResolution(consumeRainEvent = "rain:1"),
+            MonitoringDeliveryResolution(deliverLightningEvent = "lightning:1") to
+                MonitoringDeliveryResolution(consumeLightningEvent = "lightning:1"),
+            MonitoringDeliveryResolution(
+                deliverRainEvent = "rain:1",
+                deliverLightningEvent = "lightning:1",
+            ) to MonitoringDeliveryResolution(
+                consumeRainEvent = "rain:1",
+                consumeLightningEvent = "lightning:1",
+            ),
+        ).forEach { (candidate, expected) ->
+            val suppressed = TravelNotificationDeliveryPolicy.apply(
+                NotificationSourceClass.APP,
+                travelActive = true,
+                resolution = candidate,
+            )
+            assertEquals(expected, suppressed)
+            assertEquals(CombinedAlertPolicy.Kind.NONE, suppressed.kind)
+        }
+    }
+
+    @Test fun `Travel leaves widget delivery and claims independently eligible`() {
+        val widget = MonitoringDeliveryResolution(
+            deliverRainEvent = "rain:1",
+            deliverLightningEvent = "lightning:1",
+        )
+        val app = TravelNotificationDeliveryPolicy.apply(
+            NotificationSourceClass.APP,
+            travelActive = true,
+            resolution = widget,
+        )
+        val unchangedWidget = TravelNotificationDeliveryPolicy.apply(
+            NotificationSourceClass.WIDGET,
+            travelActive = true,
+            resolution = widget,
+        )
+
+        assertEquals(CombinedAlertPolicy.Kind.NONE, app.kind)
+        assertEquals(CombinedAlertPolicy.Kind.COMBINED, unchangedWidget.kind)
+        assertEquals(widget, unchangedWidget)
+    }
+
+    @Test fun `Travel consumption prevents catch-up but a new episode remains eligible`() {
+        val suppressed = TravelNotificationDeliveryPolicy.apply(
+            NotificationSourceClass.APP,
+            travelActive = true,
+            resolution = MonitoringDeliveryResolution(
+                deliverRainEvent = "rain:1",
+                deliverLightningEvent = "lightning:1",
+            ),
+        )
+        val consumed = SubscriptionDeliveryState(
+            consumedRainEvent = suppressed.consumeRainEvent,
+            consumedLightningEvent = suppressed.consumeLightningEvent,
+        )
+        val sameEpisode = SubscriptionDeliveryPolicy.decide(
+            listOf(DeliveryCandidate(
+                subscriptionId = "app",
+                state = consumed,
+                rainEvent = "rain:1",
+                lightningEvent = "lightning:1",
+            )),
+            Instant.parse("2026-10-07T12:00:00Z"),
+            ZoneId.of("UTC"),
+        )
+        val rearmedEpisodes = SubscriptionDeliveryPolicy.decide(
+            listOf(DeliveryCandidate(
+                subscriptionId = "app",
+                state = consumed,
+                rainEvent = "rain:2",
+                lightningEvent = "lightning:2",
+            )),
+            Instant.parse("2026-10-07T12:10:00Z"),
+            ZoneId.of("UTC"),
+        )
+
+        assertFalse(sameEpisode.shouldNotify)
+        assertTrue(rearmedEpisodes.shouldNotify)
+    }
+
     @Test fun `standalone lightning is compact while rain-bearing alerts retain detail`() {
         assertFalse(MonitorNotificationPresentationPolicy.usesExpandedStyle(
             CombinedAlertPolicy.Kind.LIGHTNING,

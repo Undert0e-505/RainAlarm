@@ -404,7 +404,7 @@ class WeatherMonitoringCoordinator(
                     candidate,
                     evaluatedAt,
                 )
-                val resolution = if (candidate.sourceClass == NotificationSourceClass.APP) {
+                val settingsResolution = if (candidate.sourceClass == NotificationSourceClass.APP) {
                     storedResolution.copy(
                         deliverRainEvent = storedResolution.deliverRainEvent
                             .takeIf { latestAppRainEnabled },
@@ -412,6 +412,11 @@ class WeatherMonitoringCoordinator(
                             .takeIf { latestAppLightningEnabled },
                     )
                 } else storedResolution
+                val resolution = TravelNotificationDeliveryPolicy.apply(
+                    sourceClass = candidate.sourceClass,
+                    travelActive = TravelNotificationDeliveryState.isActive,
+                    resolution = settingsResolution,
+                )
                 if (resolution.consumeRainEvent != null ||
                     resolution.consumeLightningEvent != null
                 ) monitoringStore.consumeWithoutDelivery(

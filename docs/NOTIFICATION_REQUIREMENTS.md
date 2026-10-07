@@ -146,6 +146,29 @@ Example correlation: the app reports `starts at 08:15 · in 15 minutes · lastin
 intensity 62%`. A widget later sees 08:12–08:38 at 70%, then `Rain now`. These are the same active
 episode, so that widget suppresses rain. After a complete clear, a later rain band is a new episode.
 
+## Travel-mode app delivery suppression
+
+Active Travel mode deliberately mutes every main-app rain and Lightning delivery component. The
+authoritative state is the app's in-process Travel/follow request; it is not app visibility and it
+is not persisted across process death. Every deliberate exit, map-gesture exit, permission-loss
+exit and ViewModel teardown clears the delivery bridge.
+
+- Suppression occurs only at the final app-subscription delivery gate. Weather and Lightning
+  acquisition, episode reduction, widget work, app status and settings continue unchanged.
+- An app rain-only, Lightning-only or combined candidate is consumed silently for the app
+  subscription. Leaving Travel during the same active episode must not create a catch-up alert.
+- No delivered claim is written for a Travel-suppressed app component. Silent app consumption
+  therefore cannot suppress an eligible widget component for the same target and episode.
+- Widget subscriptions are unaffected. A widget may deliver and write its normal claim in the same
+  monitoring transaction in which Travel silently consumes the app candidate.
+- A later rain episode after a successful complete clear, or a later Lightning episode after a
+  successful no-detection evaluation, has a new identity and remains eligible after Travel.
+
+Live coordinates naturally produce new coordinate-based monitoring keys and notification IDs as a
+device moves. Travel does not attempt to correlate or predict those future positions: a forecast at
+one position is not a useful prediction for a fast-moving user's later position. It instead applies
+the explicit app-delivery mute above while preserving independent widgets.
+
 ## Notification content
 
 Every notification includes the monitored place in its title. Times use the device's localized
@@ -319,6 +342,12 @@ lightning is off, DND is off, and a complete-clear poll occurred at 08:00.
 | EX-62 | App and any widget evaluate identical series/event | Identical severity and localized title |
 | EX-63 | Open-ended Medium event reaches the known graph edge | Use the event maximum through that edge; no invented stop; after a confirmed stop/clear, do not retitle the closed event |
 | EX-64 | Active event severity changes Light→Severe after delivery | No duplicate; suppression and claims remain tied to the same episode |
+| EX-65 | Travel active; app rain-only candidate | Consume the app rain component silently; no notification and no delivered claim |
+| EX-66 | Travel active; app Lightning-only candidate | Consume the app Lightning component silently; no notification and no delivered claim |
+| EX-67 | Travel active; app rain + Lightning newly qualify together | Consume both app components silently; no combined notification and no delivered claim for either component |
+| EX-68 | Travel active; app and Widget A qualify for the same rain/Lightning components in one transaction | App components are consumed silently without claims; Widget A remains eligible, may notify, and writes its normal successful-delivery claims |
+| EX-69 | EX-65/66/67 is consumed, then Travel exits while the same episode remains active | No app catch-up; that app subscription has already consumed the episode components |
+| EX-70 | After EX-69, rain reaches complete clear and/or Lightning reaches successful no-detection, then a later episode begins | The newly identified component is eligible under normal non-Travel rules |
 
 ## Acceptance criteria and verification map
 
@@ -332,6 +361,7 @@ lightning is off, DND is off, and a complete-clear poll occurred at 08:00.
 | Bounded/unbounded content/intensity | notification-text tests (`NOTIFY TEXT`) | Inspect localized Android notification |
 | Event-scoped title severity and app/widget parity | notification severity tests (`NOTIFY SEVERITY`) | Compare app and widget alerts for one event |
 | DND/permission/failure/restart | policy and persistence-source tests (`NOTIFY DEL`) | Toggle permission and cross-midnight DND |
+| Travel app suppression and widget independence | policy, transition and coordinator wiring tests (`NOTIFY TRAVEL`) | In Travel, co-monitor an app target and widget target; only the widget may notify |
 | Target-isolated taps | deep-link and coalescing tests (`NOTIFY TAP`) | Tap rain and Lightning notifications |
 | Locale completeness | resource test (`NOTIFY I18N`) | Spot-check chosen language |
 

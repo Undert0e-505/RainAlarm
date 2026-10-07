@@ -95,6 +95,34 @@ class RadarLiveMapWiringTest {
         ))
     }
 
+    @Test fun `Travel notification bridge follows the sole transition path and clears on teardown`() {
+        val activity = appSource("MainActivity.kt")
+        val transition = activity.substringAfter(
+            "private fun applyTravelTransition(reason: RadarTravelTransitionReason): Boolean {",
+        ).substringBefore("private fun recordTravelNoChange")
+        val initialization = activity.substringAfter("    init {")
+            .substringBefore("_temporaryLightningLease.value")
+        val teardown = activity.substringAfter("override fun onCleared() {")
+            .substringBefore("super.onCleared()")
+
+        assertTrue(initialization.contains(
+            "TravelNotificationDeliveryState.update(_followRequested.value)",
+        ))
+        assertTrue(transition.contains("_followRequested.value = next"))
+        assertTrue(transition.contains("TravelNotificationDeliveryState.update(next)"))
+        assertTrue(
+            transition.indexOf("_followRequested.value = next") <
+                transition.indexOf("TravelNotificationDeliveryState.update(next)"),
+        )
+        assertTrue(Regex("""_followRequested\.value\s*=""").findAll(activity).count() == 1)
+        listOf("USER_EXIT", "USER_MAP_GESTURE", "PERMISSION_LOST").forEach { reason ->
+            assertTrue(activity.contains(
+                "applyTravelTransition(RadarTravelTransitionReason.$reason)",
+            ))
+        }
+        assertTrue(teardown.contains("TravelNotificationDeliveryState.update(false)"))
+    }
+
     @Test fun liveMarkerUsesLightweightProjectionWithoutReplanningRasterMesh() {
         val map = source("RadarImageMap.kt")
         val gl = source("LegacyRadarGlOverlayView.kt")

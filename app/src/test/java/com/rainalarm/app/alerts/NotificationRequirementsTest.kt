@@ -471,6 +471,31 @@ class NotificationRequirementsTest {
         assertFalse(source.contains("delay("))
     }
 
+    @Test fun `NOTIFY TRAVEL 01 app suppression is the final gate and cannot record a claim`() {
+        val source = sourceFile("app/src/main/java/com/rainalarm/app/alerts/WeatherMonitoringCoordinator.kt")
+        val delivery = source.substringAfter("val orderedCandidates =")
+            .substringBefore("if (work.appSubscription) updateSettingsStatus")
+        val travelGate = delivery.indexOf("TravelNotificationDeliveryPolicy.apply(")
+        val consume = delivery.indexOf("monitoringStore.consumeWithoutDelivery(")
+        val publish = delivery.indexOf("publisher.publish(")
+        val claim = delivery.indexOf("monitoringStore.recordSuccessfulDelivery(")
+
+        assertTrue(travelGate >= 0)
+        assertTrue(travelGate < consume)
+        assertTrue(consume < publish)
+        assertTrue(publish < claim)
+        assertTrue(delivery.contains("travelActive = TravelNotificationDeliveryState.isActive"))
+        assertTrue(delivery.contains("if (resolution.kind != CombinedAlertPolicy.Kind.NONE)"))
+    }
+
+    @Test fun `NOTIFY TRAVEL 02 normative contract keeps widgets independent`() {
+        val requirements = sourceFile("docs/NOTIFICATION_REQUIREMENTS.md")
+        assertTrue(requirements.contains("## Travel-mode app delivery suppression"))
+        assertTrue(requirements.contains("No delivered claim is written for a Travel-suppressed app component"))
+        assertTrue(requirements.contains("Widget subscriptions are unaffected"))
+        assertTrue(requirements.contains("EX-68"))
+    }
+
     @Test fun `NOTIFY LTG 01 display-only evidence and setting toggles do not consume an episode`() {
         val source = sourceFile("app/src/main/java/com/rainalarm/app/alerts/MonitoringStateStore.kt")
         val reset = source.substringAfter("fun resetLightningEligibility")

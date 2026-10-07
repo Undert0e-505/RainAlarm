@@ -203,6 +203,7 @@ import com.rainalarm.app.alerts.AlertSnapshot
 import com.rainalarm.app.alerts.RainAlertPreferences
 import com.rainalarm.app.alerts.RainAlertScheduler
 import com.rainalarm.app.alerts.LightningAlertPreferences
+import com.rainalarm.app.alerts.TravelNotificationDeliveryState
 import com.rainalarm.app.alerts.MonitoringStateStore
 import com.rainalarm.app.alerts.WeatherMonitoringCoordinator
 import com.rainalarm.app.alerts.AppVisibilityState
@@ -631,6 +632,9 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     val settingsMessage: StateFlow<String?> = _settingsMessage.asStateFlow()
 
     init {
+        // A new process/ViewModel starts outside Travel. The in-process delivery bridge is never
+        // persisted, while configuration changes retain this ViewModel and its authoritative flow.
+        TravelNotificationDeliveryState.update(_followRequested.value)
         _temporaryLightningLease.value = temporaryLightningLeaseStore.current()
         viewModelScope.launch {
             while (true) {
@@ -1246,6 +1250,7 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         val old = _followRequested.value
         val next = RadarTravelModePolicy.next(old, reason)
         _followRequested.value = next
+        TravelNotificationDeliveryState.update(next)
         TravelModeDiagnostics.record(old, next, reason)
         return next
     }
@@ -1630,6 +1635,11 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setWeatherMetricVisible(metric: NowWeatherMetric, visible: Boolean) {
         viewModelScope.launch { radarSettings.setNowMetricVisible(metric, visible) }
+    }
+
+    override fun onCleared() {
+        TravelNotificationDeliveryState.update(false)
+        super.onCleared()
     }
 }
 
