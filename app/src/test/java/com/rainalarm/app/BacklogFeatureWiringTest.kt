@@ -74,6 +74,34 @@ class BacklogFeatureWiringTest {
         assertFalse(settings.contains("defaultStartupId"))
     }
 
+    @Test fun `Places search fits Material input type and remains explicit submit`() {
+        val places = source("app/src/main/java/com/rainalarm/app/ui/PlacesScreen.kt")
+        val searchField = places.substringAfter("OutlinedTextField(\n            value = searchQuery,")
+            .substringBefore("if (searchDuplicateToken != 0)")
+        val editHandler = searchField.substringAfter("onValueChange = {")
+            .substringBefore("label =")
+
+        assertTrue(places.contains("val searchBaseTextStyle = MaterialTheme.typography.bodyLarge"))
+        assertTrue(places.contains("val searchTextMeasurer = rememberTextMeasurer()"))
+        assertTrue(places.contains("val searchFloatingLabelStyle = MaterialTheme.typography.bodySmall"))
+        assertTrue(places.contains("searchFloatingLabelStyle.lineHeight.toDp().value / 2f"))
+        assertTrue(places.contains("PlacesSearchFieldFitPolicy.availableTextHeightPx("))
+        assertTrue(places.contains("PlacesSearchFieldFitPolicy.fit("))
+        assertTrue(places.contains("PlacesSearchFieldFitPolicy.representativeGlyphSample"))
+        assertTrue(places.contains("measureNaturalHeightPx = { candidateFontSizeSp ->"))
+        assertTrue(places.contains("lineHeight = TextUnit.Unspecified"))
+        assertTrue(searchField.contains("textStyle = searchTextStyle"))
+        assertFalse(places.contains("searchAvailableLineHeightDp.dp.toSp()"))
+        assertFalse(places.contains("searchTextMetrics"))
+        assertFalse(searchField.contains("fontSize = 14.sp"))
+        assertFalse(searchField.contains("lineHeight = 18.sp"))
+        assertTrue(searchField.contains(".height(searchLayoutHeightDp.dp)"))
+        assertTrue(searchField.contains("keyboardActions = KeyboardActions(onSearch = { submitSearch() })"))
+        assertTrue(searchField.contains("onClick = submitSearch"))
+        assertFalse(editHandler.contains("submittedQuery"))
+        assertFalse(editHandler.contains("searchRequest++"))
+    }
+
     @Test fun `automatic appearance and About stay local and preserve visible version and source`() {
         val main = source("app/src/main/java/com/rainalarm/app/MainActivity.kt")
         val settings = source("app/src/main/java/com/rainalarm/app/ui/SettingsScreen.kt")

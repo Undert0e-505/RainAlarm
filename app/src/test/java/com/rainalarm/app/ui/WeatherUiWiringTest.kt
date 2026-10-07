@@ -184,7 +184,7 @@ class WeatherUiWiringTest {
         assertTrue(radar.contains("refreshForecastForFollow()"))
         assertTrue(radar.contains("refreshPointWeather()"))
         assertTrue(radar.contains("cameraMemory = cameraMemory"))
-        assertTrue(radar.contains("LaunchedEffect(lightningEnabled"))
+        assertTrue(radar.contains("appForeground, screenActive, lightningEnabled, place?.id,"))
         assertTrue(radar.contains("cloudsEnabled, place?.id"))
         assertTrue(radar.contains("LaunchedEffect(windEnabled"))
         assertTrue(radar.contains("if (!lightningEnabled)"))
@@ -670,23 +670,28 @@ class WeatherUiWiringTest {
     @Test fun `Radar reentry alone does not invalidate retained weather streams`() {
         val radar = source("RadarScreen.kt")
         val rain = radar.substringAfter(
-            "LaunchedEffect(screenActive, requestedRadarIdentity, radarSelectionCoordinates, reload)",
+            "appForeground, screenActive, requestedRadarIdentity, radarAcquisitionLocationKey, reload,",
         ).substringBefore("LaunchedEffect(place?.latitude, place?.longitude, session)")
         assertTrue(rain.contains("RadarRainSessionLoadPolicy.shouldLoad("))
         assertTrue(rain.contains("installedRadarRefresh"))
         assertTrue(rain.contains("installedRadarIdentity"))
 
         val lightning = radar.substringAfter(
-            "LaunchedEffect(lightningEnabled, place?.id, regionLatitude, regionLongitude, lightningRefresh)",
+            "appForeground, screenActive, lightningEnabled, place?.id,",
         ).substringBefore("val cloudsEnabled")
-        assertFalse(lightning.contains("screenActive"))
-        val clouds = radar.substringAfter("LaunchedEffect(\n        cloudsEnabled")
+        assertTrue(lightning.contains("if (!appForeground || !screenActive) return@LaunchedEffect"))
+        assertTrue(lightning.contains("if (!refreshRequested && alreadyInstalled) return@LaunchedEffect"))
+        val clouds = radar.substringAfter(
+            "appForeground, screenActive, cloudsEnabled, place?.id,",
+        )
             .substringBefore("val viewportKey")
-        assertFalse(clouds.contains("screenActive"))
+        assertTrue(clouds.contains("if (!appForeground || !screenActive) return@LaunchedEffect"))
+        assertTrue(clouds.contains("if (!refreshRequested && alreadyInstalled) return@LaunchedEffect"))
         val wind = radar.substringAfter(
             "LaunchedEffect(windEnabled, viewportKey, windTimelineWindow.cacheKey)",
-        ).substringBefore("val activeWind")
+        ).substringBefore("val windLoading")
         assertFalse(wind.contains("screenActive"))
+        assertTrue(radar.contains("LaunchedEffect(appForeground, screenActive, windLoadingRequest)"))
 
         // Their existing place/region/product/viewport/manual-generation keys remain the only
         // acquisition triggers; independent stale/publication effects remain below them.
@@ -694,9 +699,32 @@ class WeatherUiWiringTest {
         assertTrue(radar.contains("regionLatitude, regionLongitude, cloudsRefresh"))
         assertTrue(radar.contains("preferredCloudProduct"))
         assertTrue(radar.contains("windTimelineWindow.cacheKey"))
-        assertTrue(radar.contains("LaunchedEffect(windEnabled, staleWindIdentity, viewportKey)"))
-        assertTrue(radar.contains("LaunchedEffect(lightningEnabled, staleLightningIdentity)"))
-        assertTrue(radar.contains("LaunchedEffect(cloudsEnabled, staleCloudsIdentity)"))
+        assertTrue(radar.contains("windEnabled, staleWindIdentity, viewportKey,"))
+        assertTrue(radar.contains("lightningEnabled, staleLightningIdentity,"))
+        assertTrue(radar.contains("cloudsEnabled, staleCloudsIdentity,"))
+        assertTrue(radar.contains("!appForeground || !screenActive || pendingForegroundTransition != null"))
+    }
+
+    @Test fun `foreground resume refresh is one shot provider paced and preserves retained data`() {
+        val radar = source("RadarScreen.kt")
+        val policy = source("RadarForegroundResumeRefreshPolicy.kt")
+        assertTrue(policy.contains("ProviderCadencePolicy.publicationGraceSeconds"))
+        assertTrue(policy.contains("freshnessAnchorElapsedMillis"))
+        assertTrue(policy.contains("pendingTransition = null"))
+        assertTrue(radar.contains("RadarForegroundResumeRefreshPolicy.observeForeground("))
+        assertTrue(radar.contains("RadarForegroundResumeRefreshPolicy.consumeWhenRadarActive("))
+        assertTrue(radar.contains("radarAcquiredAtElapsedMillis"))
+        assertTrue(radar.contains("lightningAcquiredAtElapsedMillis"))
+        assertTrue(radar.contains("cloudsAcquiredAtElapsedMillis"))
+        assertTrue(radar.contains("windAcquiredAtElapsedMillis"))
+        assertTrue(radar.contains("is WindGridAcquisitionState.Unavailable -> active.request"))
+        assertTrue(radar.contains("screenActive && selectedPlaceId == CURRENT_LOCATION_ID"))
+        assertTrue(radar.contains("radarReloadReason = \"foreground_resume\""))
+        assertTrue(radar.contains("cacheFallback = keepVisible"))
+        assertTrue(radar.contains("replaceOwnedRadarSession(null, \"load-failed\")"))
+        assertTrue(radar.contains("installedRadarRefresh = requestReload"))
+        assertTrue(radar.contains("var cursor by remember(session)"))
+        assertTrue(radar.contains("var travelTimeAutomatic by remember"))
     }
 
     @Test fun `clouds have no daylight gate and concurrent satellite ordering is stable`() {
@@ -1062,7 +1090,7 @@ class WeatherUiWiringTest {
         assertTrue(settings.contains("Switch(checked = showLikelySnow"))
         assertTrue(main.contains("showLikelySnow = showLikelySnow"))
         assertTrue(radar.contains(
-            "LaunchedEffect(screenActive, requestedRadarIdentity, radarAcquisitionLocationKey, reload)",
+            "appForeground, screenActive, requestedRadarIdentity, radarAcquisitionLocationKey, reload,",
         ))
         assertFalse(radar.contains(
             "LaunchedEffect(screenActive, requestedRadarIdentity, radarSelectionCoordinates, reload)",

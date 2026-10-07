@@ -81,10 +81,14 @@ import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.zIndex
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -216,6 +220,7 @@ fun PlacesScreen(
     var editedName by remember { mutableStateOf("") }
     var savingCurrent by remember { mutableStateOf<SavedPlace?>(null) }
     val density = LocalDensity.current
+    val searchTextMeasurer = rememberTextMeasurer()
     val currentSelected = collection.selectedId == CURRENT_LOCATION_ID
     val currentSelectionActive = currentSelected || currentChoicePending
     val liveSnapshot = if (currentSelectionActive) {
@@ -346,6 +351,58 @@ fun PlacesScreen(
                 searchRequest++
             }
         }
+        val searchBaseTextStyle = MaterialTheme.typography.bodyLarge
+        val searchFloatingLabelStyle = MaterialTheme.typography.bodySmall
+        val searchFloatingLabelHalfHeightDp = with(density) {
+            searchFloatingLabelStyle.lineHeight.toDp().value / 2f
+        }
+        val searchLayoutHeightDp = PlacesSearchFieldFitPolicy.layoutHeightDp(
+            outlinedContainerHeightDp = PlacesTopControlGeometry.heightDp.toFloat(),
+            floatingLabelHalfHeightDp = searchFloatingLabelHalfHeightDp,
+        )
+        val searchTextStyle = remember(
+            searchBaseTextStyle,
+            searchFloatingLabelStyle,
+            density,
+            searchTextMeasurer,
+        ) {
+            fun measuredHeightPx(style: TextStyle): Int {
+                return searchTextMeasurer.measure(
+                    text = AnnotatedString(PlacesSearchFieldFitPolicy.representativeGlyphSample),
+                    style = style,
+                    maxLines = 1,
+                    softWrap = false,
+                ).size.height
+            }
+            val availableHeightPx = PlacesSearchFieldFitPolicy.availableTextHeightPx(
+                outlinedContainerHeightPx = with(density) {
+                    PlacesTopControlGeometry.heightDp.dp.roundToPx()
+                },
+                verticalContentPaddingPx = with(density) {
+                    PlacesSearchFieldFitPolicy.outlinedContentPaddingDp.dp.roundToPx()
+                },
+                floatingLabelHeightPx = measuredHeightPx(searchFloatingLabelStyle),
+                minimumSafeTextSlotPx = with(density) {
+                    PlacesSearchFieldFitPolicy.minimumSafeTextSlotDp.dp.roundToPx()
+                },
+            )
+            val fit = PlacesSearchFieldFitPolicy.fit(
+                availableHeightPx = availableHeightPx,
+                baseFontSizeSp = searchBaseTextStyle.fontSize.value,
+                measuredBaseStyleHeightPx = measuredHeightPx(searchBaseTextStyle),
+                measureNaturalHeightPx = { candidateFontSizeSp ->
+                    measuredHeightPx(searchBaseTextStyle.copy(
+                        fontSize = candidateFontSizeSp.sp,
+                        lineHeight = TextUnit.Unspecified,
+                    ))
+                },
+            )
+            if (fit.useBaseLineHeight) searchBaseTextStyle
+            else searchBaseTextStyle.copy(
+                fontSize = fit.fontSizeSp.sp,
+                lineHeight = TextUnit.Unspecified,
+            )
+        }
         OutlinedTextField(
             value = searchQuery,
             onValueChange = {
@@ -354,6 +411,7 @@ fun PlacesScreen(
             },
             label = { Text(stringResource(R.string.places_search_hint)) },
             singleLine = true,
+            textStyle = searchTextStyle,
             shape = RoundedCornerShape(PlacesTopControlGeometry.cornerRadiusDp.dp),
             colors = OutlinedTextFieldDefaults.colors(
                 unfocusedBorderColor = LocalRainAlarmPalette.current.border,
@@ -371,7 +429,7 @@ fun PlacesScreen(
                     contentDescription = stringResource(R.string.places_search_description)) }
             },
             modifier = Modifier.fillMaxWidth()
-                .height(PlacesTopControlGeometry.heightDp.dp)
+                .height(searchLayoutHeightDp.dp)
                 .onGloballyPositioned { searchBounds = it.boundsInRoot() },
         )
         if (searchDuplicateToken != 0) {

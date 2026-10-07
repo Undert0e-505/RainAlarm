@@ -158,6 +158,8 @@ tasks.register<JavaExec>("directDebugUnitTest") {
         "com.rainalarm.app.ui.RadarLiveMapWiringTest",
         "com.rainalarm.app.ui.RadarTravelCameraFollowerTest",
         "com.rainalarm.app.ui.RadarRefreshOverlayPolicyTest",
+        "com.rainalarm.app.ui.RadarForegroundResumeRefreshPolicyTest",
+        "com.rainalarm.app.ui.PlacesSearchFieldFitPolicyTest",
         "com.rainalarm.app.ui.WeatherDataStatusPolicyTest",
         "com.rainalarm.app.ui.RadarMapRevealGateTest",
         "com.rainalarm.app.data.LiveLocationPolicyTest",
