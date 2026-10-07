@@ -26,8 +26,8 @@ android {
         applicationId = "com.rainalarm.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 25
-        versionName = "0.9.5"
+        versionCode = 26
+        versionName = "0.9.6"
         buildConfigField(
             "boolean",
             "UPDATE_INDICATOR_DEMO",
