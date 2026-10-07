@@ -5,13 +5,15 @@ credentials. Most requests go directly to the weather, map and search service ne
 feature; the experimental individual-lightning Radar visual uses the read-only relay described
 below.
 
-This disclosure describes version 0.9.4. Provider services necessarily receive ordinary network metadata such as the connecting IP address; consult each provider's current terms and privacy policy for how it handles that traffic.
+This disclosure describes version 0.9.5. Provider services necessarily receive ordinary network metadata such as the connecting IP address; consult each provider's current terms and privacy policy for how it handles that traffic.
 
 ## Android permissions
 
 ### Internet
 
-`INTERNET` is used to load maps, radar, submitted place searches, model weather and optional satellite imagery. Rain Alarm does not upload an address book, advertising identifier, account identifier or analytics events.
+`INTERNET` is used to check public app releases and to load maps, radar, submitted place searches,
+model weather and optional satellite imagery. Rain Alarm does not upload an address book,
+advertising identifier, account identifier or analytics events.
 
 ### Foreground location
 
@@ -45,6 +47,19 @@ Lightning observations are separate and are requested only when Lightning activi
 enabled or a configured widget presentation needs its state. If neither applies and the Radar layer
 is off, no Lightning request is made. Search runs only after explicit submit, and disabled services
 or layers remain idle.
+
+### App update check
+
+While Settings is active, Rain Alarm may make one unauthenticated HTTPS request to GitHub's public
+latest-release API when its local result is at least 12 hours old. Conditional requests may include
+the previously returned ETag. GitHub receives ordinary network metadata and the Rain Alarm
+User-Agent, but the request contains no account, token, analytics identifier, saved place or device
+location. The latest stable tag, its exact validated GitHub release URL, the ETag, check time and any
+dismissed version are cached locally.
+
+Rain Alarm does not download or install an APK automatically. Tapping a newer-version indicator
+acknowledges that exact version locally and opens its validated GitHub release page in the device's
+browser.
 
 ### Radar and precipitation
 

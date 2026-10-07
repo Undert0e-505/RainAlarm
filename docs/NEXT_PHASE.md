@@ -1,6 +1,6 @@
 # Road to 1.0
 
-Rain Alarm 0.9.4 is feature-complete for its intended scope: Now, multi-provider Radar, saved
+Rain Alarm 0.9.5 is feature-complete for its intended scope: Now, multi-provider Radar, saved
 places, independent home-screen widgets, foreground Travel, rain/Lightning alerts, appearance
 profiles, localization and contextual onboarding. Work toward 1.0 now prioritizes reliability and
 validation rather than additional features.
@@ -15,7 +15,7 @@ validation rather than additional features.
 2. **Travel follow validation**
    - Validate the 0.9.1 display-frame position/camera follower across different GNSS cadences,
      prolonged journeys and devices with aggressive foreground throttling.
-   - Verify that finger pan/pinch always suspends follow, Travel/recenter resumes from the newest
+   - Verify that finger pan/pinch always exits Travel, Travel/recenter resumes from the newest
      cached fix, and AUTO/manual timeline ownership remains independent of camera ownership.
    - Preserve bounded weather anchors and the rule that only real accepted fixes may affect
      weather, alerts, places or persistence; display-only smoothing must remain presentation-only.

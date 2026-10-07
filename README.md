@@ -7,7 +7,7 @@ animated multi-provider Radar and a foreground Travel mode. It has no accounts, 
 analytics.
 
 [Download the latest release](https://github.com/Undert0e-505/RainAlarm/releases/latest) ·
-[What’s new in v0.9.4](docs/releases/v0.9.4.md) · [User guide](docs/USER_GUIDE.md)
+[What’s new in v0.9.5](docs/releases/v0.9.5.md) · [User guide](docs/USER_GUIDE.md)
 
 ## See Radar in motion
 
@@ -99,12 +99,12 @@ opening Rain Alarm, subject to Android's inexact background scheduling and devic
 - [Widget behavior](docs/WIDGET_REQUIREMENTS.md)
 - [Lightning alert behavior](docs/LIGHTNING_ALERT_REQUIREMENTS.md)
 - [Feature tour](docs/FEATURE_TOUR.md) and [localization](docs/LOCALIZATION.md)
-- [v0.9.4 release notes](docs/releases/v0.9.4.md) and [road to 1.0](docs/NEXT_PHASE.md)
+- [v0.9.5 release notes](docs/releases/v0.9.5.md) and [road to 1.0](docs/NEXT_PHASE.md)
 
 ## Privacy and safety
 
 Rain Alarm requests only foreground location and optional notification permission. It connects
-only to the map, weather, radar, satellite, relay and search services described in the
+only to the update, map, weather, radar, satellite, relay and search services described in the
 [privacy disclosure](docs/PRIVACY.md); no provider credentials are embedded in the app.
 
 > [!WARNING]
@@ -114,7 +114,7 @@ only to the map, weather, radar, satellite, relay and search services described 
 
 ## Build from source
 
-Rain Alarm 0.9.4 (version code 24) supports Android 8.0 and later. With JDK 21, Android SDK Platform
+Rain Alarm 0.9.5 (version code 25) supports Android 8.0 and later. With JDK 21, Android SDK Platform
 37 and Build Tools 36.0.0 installed, run on Windows:
 
 ```powershell

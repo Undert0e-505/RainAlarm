@@ -1,6 +1,6 @@
 # Rain Alarm user guide
 
-Rain Alarm answers a place-specific question: when will rain reach me? **Now** summarises the next hour, while **Radar** lets you inspect the available observations, forecasts or local motion estimates. This guide describes version 0.9.4 (version code 24).
+Rain Alarm answers a place-specific question: when will rain reach me? **Now** summarises the next hour, while **Radar** lets you inspect the available observations, forecasts or local motion estimates. This guide describes version 0.9.5 (version code 25).
 
 ## First launch and installation
 
@@ -39,6 +39,14 @@ Unset settings use these defaults:
 At the default mask setting, effective opacity is 45% on Dark maps, 42% on Slate and 40% on Light. At the maximum it is 90%, 84% and 80% respectively; **No mask** is fully transparent. The control changes only the unknown or outside-coverage scrim for every provider and retains map context below it.
 
 Places keeps **Selected now** and **Opens on startup** as separate choices. Settings keeps the installed version and source-code link visible; the longer **About the data** sections stay collapsed until requested.
+
+### App updates
+
+When Settings is active and its cached check is at least 12 hours old, Rain Alarm quietly asks
+GitHub for the latest stable release over unauthenticated HTTPS. If that version is newer, a glowing
+**Update available** indicator appears beside the Settings title. Tapping it dismisses the indicator
+for that exact version and opens its validated GitHub release page in the device browser. Rain Alarm
+does not download or install APKs automatically and uses no GitHub account, token or analytics.
 
 ## Now
 
@@ -94,7 +102,7 @@ The regional GLES renderer uploads radar and velocity data lazily, keeping at mo
 
 ### Travel mode
 
-The Travel arrow is always available. From a saved place, pressing it atomically selects virtual Current location, obtains or reuses a precise foreground fix, recentres and starts Travel without changing the startup place. A label in the bottom information rail confirms **Travel mode** for two seconds. Pressing the arrow again reasserts Travel, recentres to the latest accepted fix and restores automatic current-time control.
+The Travel arrow is always available. From a saved place, pressing it atomically selects virtual Current location, obtains or reuses a precise foreground fix, recentres and starts Travel without changing the startup place. A label in the bottom information rail confirms **Travel mode** for two seconds. Pressing the highlighted arrow stops Travel explicitly while preserving the current camera and displayed radar time. Pressing it again recentres to the latest accepted fix and restores automatic current-time control.
 
 One foreground location engine uses Google Play services fused high-accuracy fixes where available,
 with Android GPS fallback. Ordinary Current uses a battery-conscious request profile; Travel asks
@@ -103,8 +111,8 @@ are controlled by Android, the phone and its GNSS hardware, and can look roughly
 second on some devices. A tightly bounded presentation-only tracker may smooth movement between
 trustworthy fixes, but it is best effort and freezes when motion becomes stale or uncertain.
 
-A genuine finger pan or pinch suspends camera follow immediately while Travel time automation,
-location acquisition and weather updates continue. Entry focus, recentering, accepted fixes,
+A genuine finger pan or pinch exits Travel immediately, preserving the resulting manual camera and
+displayed radar time. Entry focus, recentering, accepted fixes,
 map-style or provider refreshes, navigation and other programmatic camera movement do not count as
 user gestures. A transient missing, stale or weak fix leaves the user's Travel intent active and
 shows the existing locating state so it can resume automatically. Pressing Travel or recenter again
@@ -127,8 +135,8 @@ Provider frames may bracket or interpolate that exact time internally; their tim
 replace the displayed clock time. A provider publication replaces the session without drift or a
 jump back to the latest observation. Scrubbing takes manual timeline control. Pressing Play first
 hands off from the exact AUTO instant and then advances normally, so playback does not jump to an
-older retained cursor. Neither action turns off location-follow Travel; pressing Travel again
-recentres and restores AUTO. If a provider cannot currently cover wall-clock now, Radar clamps only
+older retained cursor. Neither action turns off location-follow Travel; after an explicit icon or
+map-gesture exit, pressing Travel again recentres and restores AUTO. If a provider cannot currently cover wall-clock now, Radar clamps only
 to its nearest honest usable data and reports that current Radar time is unavailable rather than
 labelling a stale observation as current.
 
