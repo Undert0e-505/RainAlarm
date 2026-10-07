@@ -22,9 +22,13 @@ class RadarLiveMapWiringTest {
         ).substringBefore("RadarLayerSegments(")
         assertTrue(!topRow.contains("if (selectedPlaceId == CURRENT_LOCATION_ID)"))
         assertTrue(screen.contains("IconButton(onClick = onTravelMode"))
-        assertTrue(topRow.contains("IconButton(onClick = { onFollowLiveChange(true) }"))
-        assertTrue(screen.contains("if (enabled) requestTravelMode() else onFollowLiveChange(false)"))
+        assertTrue(topRow.contains("IconButton(onClick = { onFollowLiveChange(!followLive) }"))
+        assertTrue(screen.contains("if (enabled) requestTravelMode() else exitTravelMode()"))
+        assertTrue(screen.contains("if (followLive) exitTravelMode() else requestTravelMode()"))
+        assertTrue(topRow.contains(".semantics { selected = followLive }"))
+        assertTrue(screen.contains(".semantics { selected = travelMode }"))
         assertTrue(screen.contains("R.string.radar_follow_start"))
+        assertTrue(screen.contains("R.string.radar_follow_stop"))
         assertTrue(screen.contains("R.string.radar_travel_mode"))
         assertTrue(screen.contains("travelNoticeActivationToken++"))
         assertTrue(screen.contains("delay(TravelActivationNoticePolicy.DURATION_MILLIS)"))
@@ -33,6 +37,62 @@ class RadarLiveMapWiringTest {
         assertTrue(!screen.contains("if (followLive && !RadarLiveMapPolicy.canFollow"))
         assertTrue(!screen.contains("if (followLive) Text("))
         assertTrue(!topRow.contains("RadarLayerSegments"))
+    }
+
+    @Test fun `Travel icon exit cancels pending activation without permission or recenter work`() {
+        val screen = source("RadarScreen.kt")
+        val exit = screen.substringAfter("val exitTravelMode: () -> Unit = {")
+            .substringBefore("val requestTravelMode: () -> Unit = {")
+        val activation = screen.substringAfter("val requestTravelMode: () -> Unit = {")
+            .substringBefore("// Live fixes move the marker immediately")
+
+        assertTrue(exit.contains("if (pendingTravelActivation)"))
+        assertTrue(exit.contains("locationOperationGeneration++"))
+        assertTrue(exit.contains("permissionOperationGeneration = null"))
+        assertTrue(exit.contains("pendingTravelActivation = false"))
+        assertTrue(exit.contains("pendingMapRecenter = false"))
+        assertTrue(exit.contains("locationRequestPending = false"))
+        assertTrue(exit.contains("travelNoticeVisible = false"))
+        assertTrue(exit.contains("onFollowLiveChange(false)"))
+        assertTrue(!exit.contains("permissionLauncher.launch"))
+        assertTrue(!exit.contains("activateTravelMode()"))
+        assertTrue(!exit.contains("recenterToCurrentLocation()"))
+        assertTrue(activation.contains("permissionLauncher.launch"))
+        assertTrue(activation.contains("activateTravelMode()"))
+    }
+
+    @Test fun `leaving Travel freezes AUTO cursor and reentry restores automatic time`() {
+        val screen = source("RadarScreen.kt")
+        val timelineEffect = screen.substringAfter(
+            "LaunchedEffect(\n        followLive,\n        travelTimelineActivationToken,",
+        ).substringBefore("val activeCursor =")
+        val exit = timelineEffect.substringAfter("} else {\n            // AUTO owns")
+        val freeze = exit.indexOf("RadarPlaybackHandoffPolicy.startingCursorSeconds(")
+        val leaveAuto = exit.indexOf("travelTimeAutomatic = false")
+
+        assertTrue(timelineEffect.contains("RadarTimelineActivationPolicy.automaticOnActivation("))
+        assertTrue(timelineEffect.contains("travelTimeAutomatic = true"))
+        assertTrue(timelineEffect.contains("travelWallClockEpochSeconds = Instant.now().epochSecond"))
+        assertTrue(exit.contains("if (travelTimeAutomatic && travelAutoFrame != null)"))
+        assertTrue(exit.contains("autoFrame = travelAutoFrame"))
+        assertTrue(exit.contains("endOffsetSeconds = realEndOffset"))
+        assertTrue(freeze >= 0)
+        assertTrue(freeze < leaveAuto)
+    }
+
+    @Test fun `map gesture still exits Travel through its dedicated transition`() {
+        val screen = source("RadarScreen.kt")
+        val activity = appSource("MainActivity.kt")
+        val gestureExit = activity.substringAfter("fun exitTravelForMapGesture() {")
+            .substringBefore("fun activateTravelMode(): Boolean {")
+
+        assertTrue(screen.contains(
+            "onManualCameraGesture = { if (followLive) onTravelMapGesture() }",
+        ))
+        assertTrue(gestureExit.contains("travelActivationPending = false"))
+        assertTrue(gestureExit.contains(
+            "applyTravelTransition(RadarTravelTransitionReason.USER_MAP_GESTURE)",
+        ))
     }
 
     @Test fun liveMarkerUsesLightweightProjectionWithoutReplanningRasterMesh() {

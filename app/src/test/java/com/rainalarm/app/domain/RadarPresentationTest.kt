@@ -54,6 +54,7 @@ class RadarPresentationTest {
     }
 
     @Test fun `travel follow changes only for deliberate exit reasons`() {
+        assertFalse(RadarTravelModePolicy.next(false, RadarTravelTransitionReason.USER_EXIT))
         assertTrue(RadarTravelModePolicy.next(false, RadarTravelTransitionReason.USER_ENTER))
         assertFalse(RadarTravelModePolicy.next(true, RadarTravelTransitionReason.USER_EXIT))
         assertFalse(RadarTravelModePolicy.next(true, RadarTravelTransitionReason.USER_MAP_GESTURE))

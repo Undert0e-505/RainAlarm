@@ -101,6 +101,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -811,6 +812,19 @@ fun LiveRadarScreen(
                 arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
             )
         }
+    }
+    val exitTravelMode: () -> Unit = {
+        // A permission result can arrive after the user has explicitly left Travel. Invalidate
+        // only a Travel-owned request so it cannot reactivate or recenter after this tap.
+        if (pendingTravelActivation) {
+            locationOperationGeneration++
+            permissionOperationGeneration = null
+            pendingTravelActivation = false
+            pendingMapRecenter = false
+            locationRequestPending = false
+        }
+        travelNoticeVisible = false
+        onFollowLiveChange(false)
     }
     val requestTravelMode: () -> Unit = {
         // Explicit Travel is the one action allowed to supersede a sticky graph-time intent.
@@ -1832,7 +1846,7 @@ fun LiveRadarScreen(
                     ?: liveFixElapsedRealtimeNanos,
                 liveTargetProjected = followLive && travelDisplayTarget?.projected == true,
                 onFollowLiveChange = { enabled ->
-                    if (enabled) requestTravelMode() else onFollowLiveChange(false)
+                    if (enabled) requestTravelMode() else exitTravelMode()
                 },
                 onTravelMapGesture = onTravelMapGesture,
                 selectedPlaceId = selectedPlaceId,
@@ -1961,7 +1975,9 @@ fun LiveRadarScreen(
                     }
                     else -> null
                 },
-                onTravelMode = requestTravelMode,
+                onTravelMode = {
+                    if (followLive) exitTravelMode() else requestTravelMode()
+                },
                 onMapBoundsChanged = { radarMapBounds = it },
             )
         }
@@ -2104,7 +2120,8 @@ private fun ColumnScope.RadarLoadingShell(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 IconButton(onClick = onTravelMode,
-                    modifier = Modifier.size(RadarTopControlsPolicy.controlSizeDp.dp)) {
+                    modifier = Modifier.size(RadarTopControlsPolicy.controlSizeDp.dp)
+                        .semantics { selected = travelMode }) {
                     Icon(
                         Icons.Default.Navigation,
                         contentDescription = stringResource(
@@ -2533,33 +2550,6 @@ private fun ColumnScope.RadarPlayer(
             else -> Unit
         }
     }
-    LaunchedEffect(
-        followLive,
-        travelTimelineActivationToken,
-        explicitTravelTimelineActivationToken,
-    ) {
-        val explicitActivation =
-            explicitTravelTimelineActivationToken != observedExplicitTravelActivation
-        observedExplicitTravelActivation = explicitTravelTimelineActivationToken
-        if (followLive) {
-            if (RadarTimelineActivationPolicy.automaticOnActivation(
-                    following = true,
-                    chartIntentPending = chartTimeRequest != null,
-                    explicitTravelRequest = explicitActivation,
-                )
-            ) {
-                travelTimeAutomatic = true
-                playing = false
-                travelWallClockEpochSeconds = Instant.now().epochSecond
-            } else {
-                // A Now-chart request controls time independently of location following.
-                travelTimeAutomatic = false
-                playing = false
-            }
-        } else {
-            travelTimeAutomatic = false
-        }
-    }
     LaunchedEffect(travelTimeAutomatic) {
         while (travelTimeAutomatic) {
             travelWallClockEpochSeconds = Instant.now().epochSecond
@@ -2612,6 +2602,42 @@ private fun ColumnScope.RadarPlayer(
             use24Hour = use24Hour,
             locale = locale,
         )
+    }
+    LaunchedEffect(
+        followLive,
+        travelTimelineActivationToken,
+        explicitTravelTimelineActivationToken,
+    ) {
+        val explicitActivation =
+            explicitTravelTimelineActivationToken != observedExplicitTravelActivation
+        observedExplicitTravelActivation = explicitTravelTimelineActivationToken
+        if (followLive) {
+            if (RadarTimelineActivationPolicy.automaticOnActivation(
+                    following = true,
+                    chartIntentPending = chartTimeRequest != null,
+                    explicitTravelRequest = explicitActivation,
+                )
+            ) {
+                travelTimeAutomatic = true
+                playing = false
+                travelWallClockEpochSeconds = Instant.now().epochSecond
+            } else {
+                // A Now-chart request controls time independently of location following.
+                travelTimeAutomatic = false
+                playing = false
+            }
+        } else {
+            // AUTO owns the visible cursor while Travel is active. Publish that cursor before
+            // removing AUTO so an icon tap or map gesture cannot reveal stale manual state.
+            if (travelTimeAutomatic && travelAutoFrame != null) {
+                cursor = RadarPlaybackHandoffPolicy.startingCursorSeconds(
+                    currentCursorSeconds = cursor,
+                    autoFrame = travelAutoFrame,
+                    endOffsetSeconds = realEndOffset,
+                )
+            }
+            travelTimeAutomatic = false
+        }
     }
     val activeCursor = if (featureTourScenario != null) tourCursor
         else travelAutoFrame?.timeline?.dataCursorSeconds ?: cursor
@@ -2871,8 +2897,9 @@ private fun ColumnScope.RadarPlayer(
                     .padding(horizontal = 4.dp),
             )
             Row(Modifier.align(Alignment.TopEnd).padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { onFollowLiveChange(true) },
+                IconButton(onClick = { onFollowLiveChange(!followLive) },
                     modifier = Modifier.size(RadarTopControlsPolicy.controlSizeDp.dp)
+                        .semantics { selected = followLive }
                         .featureTourTarget(
                             FeatureTourTarget.RADAR_TRAVEL,
                             enabled = featureTourScenario != null,
@@ -2882,7 +2909,7 @@ private fun ColumnScope.RadarPlayer(
                         )) {
                     Icon(Icons.Default.Navigation,
                         contentDescription = stringResource(
-                            R.string.radar_follow_start,
+                            if (followLive) R.string.radar_follow_stop else R.string.radar_follow_start,
                         ),
                         tint = if (followLive) Accent.copy(alpha = 0.85f)
                             else if (darkMap) Color.White else Color.Black)
