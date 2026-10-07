@@ -11,6 +11,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RadarMapRevealGateTest {
+    private fun File.readNormalizedText(): String = readText().replace("\r\n", "\n")
+
     @Test fun partialAndPreStyleFramesCannotRevealTheCover() {
         val gate = RadarMapRevealGate()
         val generation = gate.styleRequested()
@@ -129,7 +131,7 @@ class RadarMapRevealGateTest {
         val source = listOf(
             File("src/main/java/com/rainalarm/app/ui/RadarImageMap.kt"),
             File("app/src/main/java/com/rainalarm/app/ui/RadarImageMap.kt"),
-        ).first(File::isFile).readText()
+        ).first(File::isFile).readNormalizedText()
         assertFalse(source.contains("key(session)"))
         assertTrue(source.contains("session: RadarSession?"))
         assertTrue(source.contains("val mapView = remember(\n        density,\n        rendererRecoveryGeneration,"))
@@ -176,11 +178,11 @@ class RadarMapRevealGateTest {
         val mapSource = listOf(
             File("src/main/java/com/rainalarm/app/ui/RadarImageMap.kt"),
             File("app/src/main/java/com/rainalarm/app/ui/RadarImageMap.kt"),
-        ).first(File::isFile).readText()
+        ).first(File::isFile).readNormalizedText()
         val screenSource = listOf(
             File("src/main/java/com/rainalarm/app/ui/RadarScreen.kt"),
             File("app/src/main/java/com/rainalarm/app/ui/RadarScreen.kt"),
-        ).first(File::isFile).readText()
+        ).first(File::isFile).readNormalizedText()
         assertFalse(mapSource.contains("key(session)"))
         assertFalse(mapSource.contains("key(session, mapStyle)"))
         assertTrue(mapSource.contains("DisposableEffect(map, mapStyle)"))
@@ -226,7 +228,7 @@ class RadarMapRevealGateTest {
         val source = listOf(
             File("src/main/java/com/rainalarm/app/ui/RadarImageMap.kt"),
             File("app/src/main/java/com/rainalarm/app/ui/RadarImageMap.kt"),
-        ).first(File::isFile).readText()
+        ).first(File::isFile).readNormalizedText()
         val callback = source.substring(source.indexOf("ready.setStyle(RadarMapAppearance.styleUrl(mapStyle))"))
         assertTrue(callback.contains("if (RadarMapLabelContrastPolicy.paletteFor(mapStyle) != null)"))
         assertTrue(callback.contains("applyMapLabelContrast(it, mapStyle)"))

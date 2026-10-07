@@ -23,7 +23,7 @@ class WeatherUiWiringTest {
     private fun source(name: String) = listOf(
         File("src/main/java/com/rainalarm/app/ui/$name"),
         File("app/src/main/java/com/rainalarm/app/ui/$name"),
-    ).first(File::isFile).readText()
+    ).first(File::isFile).readText().replace("\r\n", "\n")
 
     private fun cachedSatellite(product: EumetProduct, time: Long): SatelliteCachedFrame {
         val metadata = EumetLayerMetadata(
@@ -91,7 +91,8 @@ class WeatherUiWiringTest {
         assertFalse(placesUi.contains("Snackbar"))
         assertTrue(placesUi.contains("detectDragGesturesAfterLongPress("))
         val main = listOf(File("src/main/java/com/rainalarm/app/MainActivity.kt"),
-            File("app/src/main/java/com/rainalarm/app/MainActivity.kt")).first(File::isFile).readText()
+            File("app/src/main/java/com/rainalarm/app/MainActivity.kt")).first(File::isFile)
+            .readText().replace("\r\n", "\n")
         assertTrue(main.contains("places.delete(id)\n                alertPreferences.clearDeletedSavedPlace(id)"))
     }
 

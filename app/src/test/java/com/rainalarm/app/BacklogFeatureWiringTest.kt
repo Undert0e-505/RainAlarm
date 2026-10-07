@@ -13,7 +13,8 @@ class BacklogFeatureWiringTest {
             .first { Files.isDirectory(it.resolve("app/src/main/java")) }
     }
 
-    private fun source(relative: String): String = Files.readString(root.resolve(relative))
+    private fun source(relative: String): String =
+        Files.readString(root.resolve(relative)).replace("\r\n", "\n")
 
     @Test fun `phone destinations have one retained non-wrapping pager with accessible actions`() {
         assertEquals(
