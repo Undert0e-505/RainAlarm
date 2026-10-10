@@ -27,6 +27,17 @@ internal object RadarTimelineActivationPolicy {
 }
 
 internal object RadarChartTimeLink {
+    /**
+     * A reusable raster can be adopted by a different logical place without rebuilding the
+     * immutable radar session that originally acquired it. Chart intents must follow that
+     * validated adoption, while an incompatible or not-yet-adopted session remains unavailable.
+     */
+    fun effectiveLoadedPlaceId(
+        sessionOriginPlaceId: String?,
+        adoptedPlaceId: String?,
+        reusableForSelectedPlace: Boolean,
+    ): String? = if (reusableForSelectedPlace) adoptedPlaceId ?: sessionOriginPlaceId else null
+
     fun shouldDiscard(request: RadarChartTimeRequest?, selectedPlaceId: String, leavingRadar: Boolean): Boolean =
         request != null && (leavingRadar || request.selectedPlaceId != selectedPlaceId)
 

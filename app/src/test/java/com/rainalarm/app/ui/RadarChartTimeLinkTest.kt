@@ -51,6 +51,74 @@ class RadarChartTimeLinkTest {
         assertTrue(!RadarChartTimeLink.shouldDiscard(null, "saved-place", true))
     }
 
+    @Test fun `compatible session reuse follows its adopted logical place`() {
+        val request = RadarChartTimeRequest(8, "current-location", 2_500.0)
+        val savedOrigin = "saved-home"
+        val adoptedCurrent = RadarChartTimeLink.effectiveLoadedPlaceId(
+            sessionOriginPlaceId = savedOrigin,
+            adoptedPlaceId = "current-location",
+            reusableForSelectedPlace = true,
+        )
+        assertEquals("current-location", adoptedCurrent)
+        assertEquals(
+            RadarChartTimeDecision.Apply(1_500f, 2_500.0, true),
+            RadarChartTimeLink.decide(
+                request, "current-location", adoptedCurrent, 1_000, 4_000.0,
+            ),
+        )
+
+        val adoptedSaved = RadarChartTimeLink.effectiveLoadedPlaceId(
+            sessionOriginPlaceId = savedOrigin,
+            adoptedPlaceId = "saved-work",
+            reusableForSelectedPlace = true,
+        )
+        assertEquals("saved-work", adoptedSaved)
+        assertEquals(
+            RadarChartTimeDecision.Apply(1_500f, 2_500.0, true),
+            RadarChartTimeLink.decide(
+                request.copy(selectedPlaceId = "saved-work"),
+                "saved-work",
+                adoptedSaved,
+                1_000,
+                4_000.0,
+            ),
+        )
+    }
+
+    @Test fun `wrong incompatible or not-yet-adopted session keeps graph intent waiting`() {
+        val request = RadarChartTimeRequest(9, "current-location", 2_500.0)
+        val incompatible = RadarChartTimeLink.effectiveLoadedPlaceId(
+            sessionOriginPlaceId = "saved-home",
+            adoptedPlaceId = "saved-home",
+            reusableForSelectedPlace = false,
+        )
+        assertNull(incompatible)
+        assertEquals(
+            RadarChartTimeDecision.Waiting,
+            RadarChartTimeLink.decide(request, "current-location", incompatible, 1_000, 4_000.0),
+        )
+
+        val notYetAdopted = RadarChartTimeLink.effectiveLoadedPlaceId(
+            sessionOriginPlaceId = "saved-home",
+            adoptedPlaceId = "saved-home",
+            reusableForSelectedPlace = true,
+        )
+        assertEquals(
+            RadarChartTimeDecision.Waiting,
+            RadarChartTimeLink.decide(request, "current-location", notYetAdopted, 1_000, 4_000.0),
+        )
+
+        val ordinaryMatch = RadarChartTimeLink.effectiveLoadedPlaceId(
+            sessionOriginPlaceId = "current-location",
+            adoptedPlaceId = null,
+            reusableForSelectedPlace = true,
+        )
+        assertEquals(
+            RadarChartTimeDecision.Apply(1_500f, 2_500.0, true),
+            RadarChartTimeLink.decide(request, "current-location", ordinaryMatch, 1_000, 4_000.0),
+        )
+    }
+
     @Test fun `graph time intent stays sticky across session promotion until play or scrub`() {
         val request = RadarChartTimeRequest(9, "place", 2_500.0)
         assertEquals(RadarChartTimeDecision.Waiting,

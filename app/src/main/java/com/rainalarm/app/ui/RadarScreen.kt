@@ -2100,6 +2100,11 @@ private fun LiveRadarScreenContent(inputs: LiveRadarScreenInputs) = with(inputs)
         )
         else -> currentSelected
     }
+    val chartSessionPlaceId = RadarChartTimeLink.effectiveLoadedPlaceId(
+        sessionOriginPlaceId = session?.place?.id,
+        adoptedPlaceId = installedRadarAnchor?.id,
+        reusableForSelectedPlace = sessionReusable,
+    )
     val showInteractiveMap = featureTourScenario != null || RadarBaseMapPresentationPolicy.showInteractiveMap(
         hasResolvedPlace = place != null,
         hasRetainedCurrentCoordinates = place == null && currentSelected && displayedMapPlace != null,
@@ -2305,6 +2310,7 @@ private fun LiveRadarScreenContent(inputs: LiveRadarScreenInputs) = with(inputs)
                 },
                 onTravelMapGesture = onTravelMapGesture,
                 selectedPlaceId = selectedPlaceId,
+                chartSessionPlaceId = chartSessionPlaceId,
                 chartTimeRequest = chartTimeRequest,
                 onChartTimeConsumed = onChartTimeConsumed,
                 playbackSpeed = playbackSpeed,
@@ -2846,6 +2852,7 @@ private fun ColumnScope.RadarPlayer(
     onFollowLiveChange: (Boolean) -> Unit,
     onTravelMapGesture: () -> Unit,
     selectedPlaceId: String,
+    chartSessionPlaceId: String?,
     chartTimeRequest: RadarChartTimeRequest?,
     onChartTimeConsumed: (Int) -> Unit,
     playbackSpeed: RadarPlaybackSpeed,
@@ -2968,7 +2975,7 @@ private fun ColumnScope.RadarPlayer(
         )
     }
     val chartDecision = if (!hasRealRadarSession) null else chartTimeRequest?.let {
-        RadarChartTimeLink.decide(it, selectedPlaceId, requireNotNull(session).place.id, sessionTimes.first(),
+        RadarChartTimeLink.decide(it, selectedPlaceId, chartSessionPlaceId, sessionTimes.first(),
             sessionTimes.first() + realEndOffset.toDouble())
     }
     val chartApply = chartDecision as? RadarChartTimeDecision.Apply
