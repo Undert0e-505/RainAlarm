@@ -272,7 +272,6 @@ class RadarSettingsRepository(private val context: Context) {
     suspend fun selectedLightningVisualProvider(): LightningVisualProviderKind =
         lightningVisualProvider.first()
     suspend fun selectedShowLikelySnow(): Boolean = showLikelySnow.first()
-
     suspend fun setProvider(provider: RadarProviderKind) {
         context.radarSettingsDataStore.edit { it[providerKey] = RadarProviderPreference.encode(provider) }
     }
@@ -897,7 +896,12 @@ class RadarProviderCoordinator(
                     RadarProviderKind.METEOGROUP_REGIONAL ->
                         regional.load(place, maxFrames, mode, onProgress)
                     RadarProviderKind.EUMETNET_OPERA ->
-                        opera.load(place, maxFrames, mode, onProgress)
+                        opera.load(
+                            place,
+                            maxFrames,
+                            mode,
+                            onProgress,
+                        )
                     RadarProviderKind.OPEN_RAINVIEWER -> open.load(
                         place,
                         maxFrames,

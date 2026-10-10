@@ -18,6 +18,8 @@ import com.rainalarm.app.domain.WebMercator
 import com.rainalarm.app.domain.DenseRadarMotionEstimator
 import com.rainalarm.app.domain.DenseVelocitySet
 import com.rainalarm.app.domain.RadarVelocityField
+import com.rainalarm.app.domain.OpenRadarFutureFieldSelector
+import com.rainalarm.app.domain.OpenCvSparseRadarTracker
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -44,6 +46,8 @@ const val RADAR_IMAGE_ZOOM = 7
 const val RADAR_IMAGE_SIZE = 512
 private const val MAX_IMAGE_BYTES = 3 * 1024 * 1024
 private const val MOTION_ANALYSIS_SIZE = 64
+private const val NATIVE_MOTION_ANALYSIS_SIZE = 256
+private const val NATIVE_MOTION_HISTORY_FRAMES = 3
 
 data class RainViewerRasterPlacement(
     val left: Double,
@@ -711,6 +715,7 @@ class RadarSessionLoader(
             }
             fun dense(download: DownloadedTier?): DenseVelocitySet? {
                 download ?: return null
+                val denseStarted = System.nanoTime()
                 val fields: List<RadarVelocityField?> =
                     (0 until download.analyses.lastIndex).map { index ->
                         preparationContext.ensureActive()
@@ -720,7 +725,29 @@ class RadarSessionLoader(
                             download.tierFrames.frames[index].bitmap.height,
                         )
                     }
-                return DenseVelocitySet(fields, DenseRadarMotionEstimator.aggregate(fields))
+                val legacyDone = System.nanoTime()
+                val expectedCadence = download.analyses.zipWithNext { before, after ->
+                    after.epochSeconds - before.epochSeconds
+                }.sorted().let { intervals -> intervals.getOrNull(intervals.size / 2) }
+                val velocity = OpenRadarFutureFieldSelector.select(
+                    legacyPairFields = fields,
+                    nativeFrames = download.nativeAnalyses,
+                    sourceWidth = download.tierFrames.frames.last().bitmap.width,
+                    sourceHeight = download.tierFrames.frames.last().bitmap.height,
+                    expectedCadenceSeconds = expectedCadence,
+                    trackerFactory = { OpenCvSparseRadarTracker() },
+                    beforePair = preparationContext::ensureActive,
+                )
+                val denseDone = System.nanoTime()
+                android.util.Log.i(
+                    "RainRadarRainViewer",
+                    "RainViewer motion tier=${download.tierFrames.tier} " +
+                        "method=${velocity.diagnostics?.activeLabel} " +
+                        "legacyMs=${(legacyDone - denseStarted) / 1_000_000L} " +
+                        "selectedMs=${(denseDone - legacyDone) / 1_000_000L} " +
+                        "totalMs=${(denseDone - denseStarted) / 1_000_000L}",
+                )
+                return velocity
             }
             MotionPreparation(
                 regionalAggregate = regionalAggregate,
@@ -754,6 +781,7 @@ class RadarSessionLoader(
     private data class DownloadedFrame(
         val bitmapFrame: RadarBitmapFrame,
         val analysis: TimedIntensityGrid,
+        val nativeAnalysis: TimedIntensityGrid?,
         val samplingGrid: IntensityGrid?,
         val snowGrid: IntensityGrid?,
     )
@@ -761,6 +789,7 @@ class RadarSessionLoader(
     private data class DownloadedTier(
         val tierFrames: RadarTierFrames,
         val analyses: List<TimedIntensityGrid>,
+        val nativeAnalyses: List<TimedIntensityGrid>,
         val latestSamplingGrid: IntensityGrid?,
         val latestSnowGrid: IntensityGrid?,
     )
@@ -779,7 +808,9 @@ class RadarSessionLoader(
         val allocated = Collections.synchronizedList(mutableListOf<Bitmap>())
         val dispatcher = Dispatchers.IO.limitedParallelism(3)
         val images = try {
-            frames.map { frame ->
+            val nativeAnalysisStartIndex = (frames.size - NATIVE_MOTION_HISTORY_FRAMES)
+                .coerceAtLeast(0)
+            frames.mapIndexed { frameIndex, frame ->
                 async(dispatcher) {
                     val sourceBitmaps = ArrayList<Bitmap>(rasterPlan.segments.size)
                     val bitmap = try {
@@ -808,6 +839,9 @@ class RadarSessionLoader(
                     allocated += bitmap
                     currentCoroutineContext().ensureActive()
                     val motionGrid = bitmap.toAnalysisGrid(MOTION_ANALYSIS_SIZE)
+                    val nativeMotionGrid = if (frameIndex >= nativeAnalysisStartIndex) {
+                        bitmap.toAnalysisGrid(NATIVE_MOTION_ANALYSIS_SIZE)
+                    } else null
                     val decoded = bitmap.encodeOpenForRendering(
                         showLikelySnow,
                         keepLatestSamplingGrid && frame == frames.last(),
@@ -815,6 +849,7 @@ class RadarSessionLoader(
                     val result = DownloadedFrame(
                         bitmapFrame = RadarBitmapFrame(frame, bitmap),
                         analysis = TimedIntensityGrid(frame.time, motionGrid),
+                        nativeAnalysis = nativeMotionGrid?.let { TimedIntensityGrid(frame.time, it) },
                         samplingGrid = decoded?.severity,
                         snowGrid = decoded?.snow,
                     )
@@ -832,6 +867,7 @@ class RadarSessionLoader(
                 frames = images.map { it.bitmapFrame },
             ),
             analyses = images.map { it.analysis },
+            nativeAnalyses = images.mapNotNull { it.nativeAnalysis },
             latestSamplingGrid = images.lastOrNull()?.samplingGrid,
             latestSnowGrid = images.lastOrNull()?.snowGrid,
         )

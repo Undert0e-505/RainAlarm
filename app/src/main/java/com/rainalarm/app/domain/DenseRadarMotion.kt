@@ -38,6 +38,7 @@ data class RadarVelocityField(
 data class DenseVelocitySet(
     val pairFields: List<RadarVelocityField?>,
     val futureField: RadarVelocityField?,
+    val diagnostics: OpenRadarMotionDiagnostics? = null,
 )
 
 object DenseRadarMotionEstimator {

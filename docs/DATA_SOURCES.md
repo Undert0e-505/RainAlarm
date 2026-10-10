@@ -634,8 +634,11 @@ References:
   numeric value because that would conflate current quality with domain.
 - DBZH is converted through the same reflectivity/intensity calibration and
   colour treatment as other open radar. OPERA supplies observations only.
-  Neighbouring observations feed the same confidence-gated dense and broad
-  motion estimator used for map `Estimate` frames, Now and alerts. Rejected
+  The latest three regular observations feed the same confidence-gated,
+  spatially varying Lucas–Kanade motion estimator used for map `Estimate`
+  frames, Now and alerts. Separate supported rain systems can retain different
+  motion; unsupported gaps stay neutral. If native tracking is unavailable or
+  unreliable, the previous bounded block matcher is used internally. Rejected
   motion remains unavailable; the app never labels an estimate as an OPERA
   forecast.
 - EUMETNET OPERA Open Radar Data is attributed under CC BY 4.0 in Settings >
@@ -719,17 +722,30 @@ References:
 
 ## Client-side motion estimate
 
-RainViewer supplies observations only. Rain Alarm compares each adjacent pair
-of downsampled regional and detail intensity masks using bounded local block
-matching. Sparse/ambiguous blocks are rejected, vector outliers are removed,
-and accepted neighbours are median-smoothed into a cached 8×8 velocity field.
-Each interval field drives the same GLES symmetric A/B warp as the regional
-provider; rejected pairs crossfade without a jump. A median aggregate of recent
-reliable fields advects the latest fixed mosaic for up to 60 minutes. Analysis,
-smoothing and texture encoding happen once on session load, never on an
-animation tick. MapLibre remains only the basemap and interaction surface.
-This interpolation and extrapolation are entirely client-side; RainViewer
-supplies neither motion vectors nor future frames.
+OPERA and RainViewer supply observations but no provider motion vectors or
+future frames. For future estimates, Rain Alarm uses the latest three regular
+observations at their actual cadence: normally five minutes for OPERA and ten
+minutes for RainViewer. A tile-balanced Shi–Tomasi detector prevents a large,
+high-contrast rain band from consuming the feature budget of a weaker separate
+storm. Pyramidal Lucas–Kanade tracks those features across both adjacent pairs,
+then spatially local multivariate cleansing removes inconsistent tracks without
+using a whole-domain direction gate.
+
+Supported motion regimes are interpolated independently into a bounded 64×64
+velocity field. Contributor and output support are restricted to adaptive
+corridors around each system and its forward trajectory, so distinct systems
+can move differently while unsupported clear gaps remain neutral. This field
+advects the latest mosaic for up to 60 minutes. If history is irregular, local
+support or confidence is insufficient, or OpenCV cannot run, Rain Alarm falls
+back automatically to the previous bounded block matcher. The fallback is not
+user-selectable and does not make an additional network request.
+
+Observed-frame interpolation continues to use each adjacent pair's existing
+field and drives the same GLES symmetric A/B warp. Analysis, cleansing and
+texture encoding happen once during cancellable session preparation, never on
+an animation tick. MapLibre remains only the basemap and interaction surface.
+Parameters, support semantics, resource bounds and validation are documented in
+[Open-radar motion estimates](OPEN_RADAR_MOTION.md).
 
 The radar surface uses a GLES 2 shader contract validated before compilation.
 Session binding and `TextureView` surface delivery may occur in either order;

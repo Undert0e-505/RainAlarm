@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Rect as AndroidRect
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import android.text.format.DateFormat
 import androidx.compose.animation.AnimatedVisibility
@@ -553,6 +554,66 @@ private data class RadarEntryStartSignal(
     val animate: Boolean,
 )
 
+/**
+ * Keeps the production Radar composable below Android's verifier register pressure limit.
+ *
+ * This screen intentionally has a broad host contract. Passing that contract as one immutable
+ * holder to the stateful implementation avoids combining dozens of JVM parameters with the
+ * implementation's large set of Compose locals in one DEX method.
+ */
+private data class LiveRadarScreenInputs(
+    val place: SavedPlace?,
+    val liveMapPlace: SavedPlace?,
+    val places: PlaceCollection,
+    val playbackSpeed: RadarPlaybackSpeed,
+    val requestedProvider: RadarProviderKind,
+    val lightningVisualProvider: LightningVisualProviderKind,
+    val mapStyle: RadarMapStyle,
+    val coverageMaskDarkness: Float,
+    val saveAndSelect: (SavedPlace) -> Unit,
+    val locationState: LocationUiState,
+    val appForeground: Boolean,
+    val foregroundLifecycleState: RadarForegroundLifecycleState,
+    val onForegroundResumeConsumed: (Long) -> Unit,
+    val followLive: Boolean,
+    val followCapability: FollowUiCapability,
+    val liveFixElapsedRealtimeNanos: Long,
+    val travelDisplayTarget: TravelDisplayTarget?,
+    val onFollowLiveChange: (Boolean) -> Boolean,
+    val onTravelMapGesture: () -> Unit,
+    val activateTravelMode: () -> Boolean,
+    val currentRecenterTick: Int,
+    val useCurrentLocation: () -> Unit,
+    val recenterToCurrentLocation: () -> Unit,
+    val recenterToSelectedPlace: () -> Unit,
+    val cameraMemory: RadarCameraMemory,
+    val selectPlace: (String) -> Unit,
+    val enabledMapLayers: Set<RadarMapLayer>,
+    val windArrowScale: Float,
+    val setMapLayerEnabled: (RadarMapLayer, Boolean) -> Unit,
+    val lightningControlState: RadarLightningControlState,
+    val onLightningControlTap: () -> Unit,
+    val temporaryLightningNoticePending: Boolean,
+    val onTemporaryLightningNoticeConsumed: () -> Unit,
+    val currentWeather: CurrentWeather?,
+    val refreshPointWeather: () -> Long,
+    val refreshForecastForFollow: () -> Unit,
+    val pointRefreshCompletion: PointRefreshCompletion,
+    val selectedPlaceId: String,
+    val chartTimeRequest: RadarChartTimeRequest?,
+    val onChartTimeConsumed: (Int) -> Unit,
+    val showLikelySnow: Boolean,
+    val providerNoticeEvent: ProviderMapNoticeEvent?,
+    val onProviderNoticeConsumed: (Long) -> Unit,
+    val onProviderSelection: (SavedPlace, RadarProviderSelection) -> Unit,
+    val onPageSwipeBoundsChanged: (Rect) -> Unit,
+    val screenActive: Boolean,
+    val entryTransition: EntryTransitionState,
+    val onEntrySettled: (Int) -> Unit,
+    val featureTourScenario: FeatureTourScenario?,
+    val onFeatureTourTarget: (FeatureTourTargetBounds) -> Unit,
+)
+
 private fun WindGridAcquisitionState.windDiagnosticState(): String = when (this) {
     is WindGridAcquisitionState.Disabled -> "disabled"
     is WindGridAcquisitionState.AwaitingViewport -> "awaiting_viewport"
@@ -564,7 +625,7 @@ private fun WindGridAcquisitionState.windDiagnosticState(): String = when (this)
 
 @Composable
 @SuppressLint("LogNotTimber") // Local lifecycle diagnostics for device-only radar failures.
-fun LiveRadarScreen(
+internal fun LiveRadarScreen(
     place: SavedPlace?,
     liveMapPlace: SavedPlace?,
     places: PlaceCollection,
@@ -576,6 +637,8 @@ fun LiveRadarScreen(
     saveAndSelect: (SavedPlace) -> Unit,
     locationState: LocationUiState,
     appForeground: Boolean,
+    foregroundLifecycleState: RadarForegroundLifecycleState,
+    onForegroundResumeConsumed: (Long) -> Unit,
     followLive: Boolean,
     followCapability: FollowUiCapability,
     liveFixElapsedRealtimeNanos: Long,
@@ -614,6 +677,65 @@ fun LiveRadarScreen(
     featureTourScenario: FeatureTourScenario? = null,
     onFeatureTourTarget: (FeatureTourTargetBounds) -> Unit = {},
 ) {
+    LiveRadarScreenContent(
+        LiveRadarScreenInputs(
+            place = place,
+            liveMapPlace = liveMapPlace,
+            places = places,
+            playbackSpeed = playbackSpeed,
+            requestedProvider = requestedProvider,
+            lightningVisualProvider = lightningVisualProvider,
+            mapStyle = mapStyle,
+            coverageMaskDarkness = coverageMaskDarkness,
+            saveAndSelect = saveAndSelect,
+            locationState = locationState,
+            appForeground = appForeground,
+            foregroundLifecycleState = foregroundLifecycleState,
+            onForegroundResumeConsumed = onForegroundResumeConsumed,
+            followLive = followLive,
+            followCapability = followCapability,
+            liveFixElapsedRealtimeNanos = liveFixElapsedRealtimeNanos,
+            travelDisplayTarget = travelDisplayTarget,
+            onFollowLiveChange = onFollowLiveChange,
+            onTravelMapGesture = onTravelMapGesture,
+            activateTravelMode = activateTravelMode,
+            currentRecenterTick = currentRecenterTick,
+            useCurrentLocation = useCurrentLocation,
+            recenterToCurrentLocation = recenterToCurrentLocation,
+            recenterToSelectedPlace = recenterToSelectedPlace,
+            cameraMemory = cameraMemory,
+            selectPlace = selectPlace,
+            enabledMapLayers = enabledMapLayers,
+            windArrowScale = windArrowScale,
+            setMapLayerEnabled = setMapLayerEnabled,
+            lightningControlState = lightningControlState,
+            onLightningControlTap = onLightningControlTap,
+            temporaryLightningNoticePending = temporaryLightningNoticePending,
+            onTemporaryLightningNoticeConsumed = onTemporaryLightningNoticeConsumed,
+            currentWeather = currentWeather,
+            refreshPointWeather = refreshPointWeather,
+            refreshForecastForFollow = refreshForecastForFollow,
+            pointRefreshCompletion = pointRefreshCompletion,
+            selectedPlaceId = selectedPlaceId,
+            chartTimeRequest = chartTimeRequest,
+            onChartTimeConsumed = onChartTimeConsumed,
+            showLikelySnow = showLikelySnow,
+            providerNoticeEvent = providerNoticeEvent,
+            onProviderNoticeConsumed = onProviderNoticeConsumed,
+            onProviderSelection = onProviderSelection,
+            onPageSwipeBoundsChanged = onPageSwipeBoundsChanged,
+            screenActive = screenActive,
+            entryTransition = entryTransition,
+            onEntrySettled = onEntrySettled,
+            featureTourScenario = featureTourScenario,
+            onFeatureTourTarget = onFeatureTourTarget,
+        ),
+    )
+}
+
+@Composable
+@SuppressLint("LogNotTimber")
+private fun LiveRadarScreenContent(inputs: LiveRadarScreenInputs) = with(inputs) {
     val context = LocalContext.current
     val platformAnimatorScale = remember(context) {
         runCatching {
@@ -719,6 +841,8 @@ fun LiveRadarScreen(
     var installedRadarAnchor by remember { mutableStateOf<SavedPlace?>(null) }
     var radarAcquiredAtElapsedMillis by remember { mutableStateOf<Long?>(null) }
     var radarLastAttemptAtElapsedMillis by remember { mutableStateOf<Long?>(null) }
+    var radarLastAttemptIdentity by remember { mutableStateOf<RadarRainLoadIdentity?>(null) }
+    var radarLastAttemptLocationKey by remember { mutableStateOf<String?>(null) }
     var completedLightningRefresh by remember { mutableIntStateOf(0) }
     var completedCloudsRefresh by remember { mutableIntStateOf(0) }
     var completedWindRefresh by remember { mutableIntStateOf(0) }
@@ -726,10 +850,14 @@ fun LiveRadarScreen(
     var previousCloudsRefresh by remember { mutableIntStateOf(0) }
     var lightningAcquiredAtElapsedMillis by remember { mutableStateOf<Long?>(null) }
     var lightningLastAttemptAtElapsedMillis by remember { mutableStateOf<Long?>(null) }
+    var lightningLastAttemptKey by remember { mutableStateOf<String?>(null) }
     var cloudsAcquiredAtElapsedMillis by remember { mutableStateOf<Long?>(null) }
     var cloudsLastAttemptAtElapsedMillis by remember { mutableStateOf<Long?>(null) }
+    var cloudsLastAttemptKey by remember { mutableStateOf<String?>(null) }
     var windAcquiredAtElapsedMillis by remember { mutableStateOf<Long?>(null) }
+    var windAcquiredRequest by remember { mutableStateOf<WindGridRequestIdentity?>(null) }
     var windLastAttemptAtElapsedMillis by remember { mutableStateOf<Long?>(null) }
+    var windLastAttemptRequest by remember { mutableStateOf<WindGridRequestIdentity?>(null) }
     var windAcquisition by remember {
         mutableStateOf<WindGridAcquisitionState>(
             if (windEnabled) WindGridAcquisitionState.AwaitingViewport(1, force = false)
@@ -746,16 +874,6 @@ fun LiveRadarScreen(
     var cloudsVerifiedPlaceKey by remember { mutableStateOf<String?>(null) }
     var windViewport by remember { mutableStateOf<WindViewport?>(null) }
     var layerNow by remember { mutableStateOf(Instant.now().epochSecond) }
-    var foregroundResumeRefreshState by remember {
-        mutableStateOf(RadarForegroundResumeRefreshState())
-    }
-    LaunchedEffect(appForeground) {
-        foregroundResumeRefreshState = RadarForegroundResumeRefreshPolicy.observeForeground(
-            foregroundResumeRefreshState,
-            appForeground,
-            WindGridAcquisitionDeadlinePolicy.monotonicNowMillis(),
-        )
-    }
     LaunchedEffect(appForeground, screenActive, enabledMapLayers.isNotEmpty()) {
         if (appForeground && screenActive && enabledMapLayers.isNotEmpty()) {
             layerNow = Instant.now().epochSecond
@@ -949,7 +1067,9 @@ fun LiveRadarScreen(
             Log.d("RainRadarScreen", "Reusing compatible fresh radar session")
             return@LaunchedEffect
         }
-        radarLastAttemptAtElapsedMillis = WindGridAcquisitionDeadlinePolicy.monotonicNowMillis()
+        radarLastAttemptIdentity = requestedRadarIdentity
+        radarLastAttemptLocationKey = radarAcquisitionLocationKey
+        radarLastAttemptAtElapsedMillis = SystemClock.elapsedRealtime()
         refreshing = keepVisible
         error = null
         progress = 0 to 0
@@ -1004,7 +1124,7 @@ fun LiveRadarScreen(
             installedRadarIdentity = requestedRadarIdentity
             installedRadarRefresh = requestReload
             installedRadarAnchor = place
-            radarAcquiredAtElapsedMillis = WindGridAcquisitionDeadlinePolicy.monotonicNowMillis()
+            radarAcquiredAtElapsedMillis = SystemClock.elapsedRealtime()
             candidate = null
             OverlayAcquisitionDiagnostics.trace(
                 "radar", loaded.providerSelection.active.name, requestTargetHash,
@@ -1143,8 +1263,10 @@ fun LiveRadarScreen(
             }
             else -> null
         }
+        lightningLastAttemptKey = "${CloudsSwapPolicy.placeKey(resolvedPlace)}:" +
+            lightningVisualProvider.name
         lightningLastAttemptAtElapsedMillis =
-            WindGridAcquisitionDeadlinePolicy.monotonicNowMillis()
+            SystemClock.elapsedRealtime()
         val force = refreshRequested
         previousLightningRefresh = lightningRefresh
         lightningReplacementPhase = WeatherReplacementPhase.LOADING
@@ -1180,7 +1302,7 @@ fun LiveRadarScreen(
             lightningVerifiedPlaceKey = CloudsSwapPolicy.placeKey(resolvedPlace)
             lightningReplacementPhase = WeatherReplacementPhase.IDLE
             lightningAcquiredAtElapsedMillis =
-                WindGridAcquisitionDeadlinePolicy.monotonicNowMillis()
+                SystemClock.elapsedRealtime()
             OverlayAcquisitionDiagnostics.trace(
                 "lightning", if (individualFlashes) "EUMETSAT-LFL" else "EUMETSAT-AFA",
                 targetHash, requestGeneration,
@@ -1266,8 +1388,10 @@ fun LiveRadarScreen(
                 it.metadata, cloudsVerifiedPlaceKey, resolvedPlace,
             )
         }
+        cloudsLastAttemptKey = "${CloudsSwapPolicy.placeKey(resolvedPlace)}:" +
+            (preferredCloudProduct?.name ?: "unresolved")
         cloudsLastAttemptAtElapsedMillis =
-            WindGridAcquisitionDeadlinePolicy.monotonicNowMillis()
+            SystemClock.elapsedRealtime()
         val force = refreshRequested
         previousCloudsRefresh = cloudsRefresh
         cloudsReplacementPhase = WeatherReplacementPhase.LOADING
@@ -1297,7 +1421,7 @@ fun LiveRadarScreen(
             cloudsVerifiedPlaceKey = CloudsSwapPolicy.placeKey(resolvedPlace)
             cloudsReplacementPhase = WeatherReplacementPhase.IDLE
             cloudsAcquiredAtElapsedMillis =
-                WindGridAcquisitionDeadlinePolicy.monotonicNowMillis()
+                SystemClock.elapsedRealtime()
             OverlayAcquisitionDiagnostics.trace(
                 "clouds", "EUMETSAT", targetHash, requestGeneration,
                 if (force) "refresh" else "selection", OverlayAcquisitionPhase.READY,
@@ -1366,7 +1490,8 @@ fun LiveRadarScreen(
         val viewport = windViewport?.takeIf {
             it.requestKey() == loading.request.viewportKey
         } ?: return@LaunchedEffect
-        windLastAttemptAtElapsedMillis = WindGridAcquisitionDeadlinePolicy.monotonicNowMillis()
+        windLastAttemptRequest = loading.request
+        windLastAttemptAtElapsedMillis = SystemClock.elapsedRealtime()
         try {
             val loaded = WeatherLayerRepository.wind(
                 viewport, windTimelineWindow, force = loading.force,
@@ -1384,7 +1509,8 @@ fun LiveRadarScreen(
                     "data ready pending render generation=${after.generation} " +
                         "viewportKey=${after.request.viewportKey}",
                 )
-                windAcquiredAtElapsedMillis = WindGridAcquisitionDeadlinePolicy.monotonicNowMillis()
+                windAcquiredRequest = loading.request
+                windAcquiredAtElapsedMillis = SystemClock.elapsedRealtime()
             }
             windAcquisition = after
         } catch (cancelled: CancellationException) {
@@ -1456,7 +1582,7 @@ fun LiveRadarScreen(
     val staleCloudsIdentity = WeatherDataReplacementPolicy.staleSatelliteIdentity(
         (cloudsStatus as? AncillaryStatus.Satellite)?.metadata, layerNow,
     )
-    val pendingForegroundTransition = foregroundResumeRefreshState.pendingTransition
+    val pendingForegroundTransition = foregroundLifecycleState.pendingTransition
     LaunchedEffect(
         appForeground, screenActive, pendingForegroundTransition?.generation,
         windEnabled, staleWindIdentity, viewportKey,
@@ -1594,59 +1720,130 @@ fun LiveRadarScreen(
     val requestedLightningIsIndividual = lightningVisualProvider ==
         LightningVisualProviderKind.EUMETSAT_INDIVIDUAL_FLASHES
     val currentLayerPlaceKey = place?.let(CloudsSwapPolicy::placeKey)
+    val foregroundExpectedStreams = buildSet {
+        add(RadarForegroundRefreshStream.RADAR)
+        if (cloudsEnabled) add(RadarForegroundRefreshStream.CLOUDS)
+        if (lightningEnabled) add(RadarForegroundRefreshStream.LIGHTNING)
+        if (windEnabled) add(RadarForegroundRefreshStream.WIND)
+    }
     val foregroundRefreshStreams = buildMap {
         val retainedRadarCompatible = when {
             place == null -> false
-            session == null -> installedRadarIdentity == null
+            session == null -> false
             installedRadarIdentity != requestedRadarIdentity -> false
             else -> RadarLiveSessionPolicy.canReuse(
                 session!!, place, installedRadarAnchor ?: session!!.place,
             )
         }
-        if (retainedRadarCompatible && !refreshing) {
-            val observations = session?.timelineFrames?.filterNot { it.forecast }?.map { it.time }
-                .orEmpty()
-            put(RadarForegroundRefreshStream.RADAR, RadarForegroundStreamFreshness(
-                acquiredAtElapsedMillis = radarAcquiredAtElapsedMillis,
-                lastAttemptAtElapsedMillis = radarLastAttemptAtElapsedMillis,
-                cadenceSeconds = ProviderCadencePolicy.radarCadence(
-                    observations,
-                    regional = session?.let {
-                        it.providerSelection.active == RadarProviderKind.METEOGROUP_REGIONAL
-                    } ?: (requestedProvider == RadarProviderKind.METEOGROUP_REGIONAL),
+        val radarAttemptMatches = requestedRadarIdentity != null &&
+            radarLastAttemptIdentity == requestedRadarIdentity &&
+            radarLastAttemptLocationKey == radarAcquisitionLocationKey &&
+            radarLastAttemptAtElapsedMillis != null
+        val radarAcquisitionMatches = retainedRadarCompatible &&
+            radarAcquiredAtElapsedMillis != null
+        if (radarAcquisitionMatches || radarAttemptMatches) {
+            val observations = session?.takeIf { radarAcquisitionMatches }
+                ?.timelineFrames?.filterNot { it.forecast }?.map { it.time }.orEmpty()
+            val regionalCadence = if (radarAcquisitionMatches) {
+                session?.providerSelection?.active == RadarProviderKind.METEOGROUP_REGIONAL
+            } else {
+                requestedProvider == RadarProviderKind.METEOGROUP_REGIONAL
+            }
+            put(
+                RadarForegroundRefreshStream.RADAR,
+                RadarForegroundRefreshStreamState(
+                    RadarForegroundStreamReadiness.EVALUABLE,
+                    RadarForegroundStreamFreshness(
+                        acquiredAtElapsedMillis = radarAcquiredAtElapsedMillis
+                            .takeIf { radarAcquisitionMatches },
+                        lastAttemptAtElapsedMillis = radarLastAttemptAtElapsedMillis
+                            .takeIf { radarAttemptMatches },
+                        cadenceSeconds = ProviderCadencePolicy.radarCadence(
+                            observations,
+                            regional = regionalCadence,
+                        ),
+                    ),
                 ),
-            ))
+            )
+        } else {
+            put(
+                RadarForegroundRefreshStream.RADAR,
+                RadarForegroundRefreshStreamState(RadarForegroundStreamReadiness.WAITING),
+            )
         }
         val lightningMatchesRequest = when (lightningStatus) {
             is AncillaryStatus.IndividualFlashes -> requestedLightningIsIndividual
             is AncillaryStatus.Satellite -> !requestedLightningIsIndividual
             else -> false
         }
-        if (lightningEnabled && lightningMatchesRequest &&
-            lightningVerifiedPlaceKey == currentLayerPlaceKey &&
-            lightningReplacementPhase != WeatherReplacementPhase.LOADING
-        ) {
+        if (lightningEnabled) {
+            val lightningKey = currentLayerPlaceKey?.let { "$it:${lightningVisualProvider.name}" }
+            val lightningAcquisitionMatches = lightningMatchesRequest &&
+                lightningVerifiedPlaceKey == currentLayerPlaceKey && currentLayerPlaceKey != null &&
+                lightningAcquiredAtElapsedMillis != null
+            val lightningAttemptMatches = lightningKey != null &&
+                lightningLastAttemptKey == lightningKey &&
+                lightningLastAttemptAtElapsedMillis != null
             val cadence = when (val active = lightningStatus) {
                 is AncillaryStatus.Satellite -> active.metadata.cadenceSeconds
                 is AncillaryStatus.IndividualFlashes -> 10L * 60L
                 else -> EumetProduct.LIGHTNING.nominalCadenceSeconds
             }
-            put(RadarForegroundRefreshStream.LIGHTNING, RadarForegroundStreamFreshness(
-                acquiredAtElapsedMillis = lightningAcquiredAtElapsedMillis,
-                lastAttemptAtElapsedMillis = lightningLastAttemptAtElapsedMillis,
-                cadenceSeconds = cadence,
-            ))
+            val deterministicallyUnavailable = place != null && requestedLightningIsIndividual &&
+                LflRegionPolicy.regionFor(place) == null
+            put(
+                RadarForegroundRefreshStream.LIGHTNING,
+                when {
+                    deterministicallyUnavailable -> RadarForegroundRefreshStreamState(
+                        RadarForegroundStreamReadiness.UNAVAILABLE,
+                    )
+                    lightningAcquisitionMatches || lightningAttemptMatches ->
+                        RadarForegroundRefreshStreamState(
+                            RadarForegroundStreamReadiness.EVALUABLE,
+                            RadarForegroundStreamFreshness(
+                                acquiredAtElapsedMillis = lightningAcquiredAtElapsedMillis
+                                    .takeIf { lightningAcquisitionMatches },
+                                lastAttemptAtElapsedMillis = lightningLastAttemptAtElapsedMillis
+                                    .takeIf { lightningAttemptMatches },
+                                cadenceSeconds = cadence,
+                            ),
+                        )
+                    else -> RadarForegroundRefreshStreamState(
+                        RadarForegroundStreamReadiness.WAITING,
+                    )
+                },
+            )
         }
-        if (cloudsEnabled && cloudsStatus is AncillaryStatus.Satellite &&
-            cloudsVerifiedPlaceKey == currentLayerPlaceKey &&
-            cloudsReplacementPhase != WeatherReplacementPhase.LOADING
-        ) {
-            val cadence = (cloudsStatus as AncillaryStatus.Satellite).metadata.cadenceSeconds
-            put(RadarForegroundRefreshStream.CLOUDS, RadarForegroundStreamFreshness(
-                acquiredAtElapsedMillis = cloudsAcquiredAtElapsedMillis,
-                lastAttemptAtElapsedMillis = cloudsLastAttemptAtElapsedMillis,
-                cadenceSeconds = cadence,
-            ))
+        if (cloudsEnabled) {
+            val activeClouds = cloudsStatus as? AncillaryStatus.Satellite
+            val cloudsAcquisitionMatches = activeClouds != null &&
+                cloudsVerifiedPlaceKey == currentLayerPlaceKey && currentLayerPlaceKey != null &&
+                activeClouds.metadata.product == preferredCloudProduct &&
+                cloudsAcquiredAtElapsedMillis != null
+            val cloudsKey = if (currentLayerPlaceKey != null && preferredCloudProduct != null) {
+                "$currentLayerPlaceKey:${preferredCloudProduct.name}"
+            } else null
+            val cloudsAttemptMatches = cloudsKey != null && cloudsLastAttemptKey == cloudsKey &&
+                cloudsLastAttemptAtElapsedMillis != null
+            put(
+                RadarForegroundRefreshStream.CLOUDS,
+                if (cloudsAcquisitionMatches || cloudsAttemptMatches) {
+                    RadarForegroundRefreshStreamState(
+                        RadarForegroundStreamReadiness.EVALUABLE,
+                        RadarForegroundStreamFreshness(
+                            acquiredAtElapsedMillis = cloudsAcquiredAtElapsedMillis
+                                .takeIf { cloudsAcquisitionMatches },
+                            lastAttemptAtElapsedMillis = cloudsLastAttemptAtElapsedMillis
+                                .takeIf { cloudsAttemptMatches },
+                            cadenceSeconds = activeClouds?.metadata?.cadenceSeconds
+                                ?: preferredCloudProduct?.nominalCadenceSeconds
+                                ?: EumetProduct.CLOUD_TYPE.nominalCadenceSeconds,
+                        ),
+                    )
+                } else {
+                    RadarForegroundRefreshStreamState(RadarForegroundStreamReadiness.WAITING)
+                },
+            )
         }
         val resumeWindRequest = when (val active = windAcquisition) {
             is WindGridAcquisitionState.Loading -> active.request
@@ -1656,13 +1853,31 @@ fun LiveRadarScreen(
             is WindGridAcquisitionState.Disabled,
             is WindGridAcquisitionState.AwaitingViewport -> null
         }
-        if (windEnabled && resumeWindRequest?.viewportKey == viewportKey
-        ) {
-            put(RadarForegroundRefreshStream.WIND, RadarForegroundStreamFreshness(
-                acquiredAtElapsedMillis = windAcquiredAtElapsedMillis,
-                lastAttemptAtElapsedMillis = windLastAttemptAtElapsedMillis,
-                cadenceSeconds = ProviderCadencePolicy.modelCadenceSeconds,
-            ))
+        if (windEnabled) {
+            val windRequestMatches = viewportKey != null &&
+                resumeWindRequest?.viewportKey == viewportKey
+            val windAcquisitionMatches = windRequestMatches &&
+                windAcquiredRequest == resumeWindRequest && windAcquiredAtElapsedMillis != null
+            val windAttemptMatches = windRequestMatches &&
+                windLastAttemptRequest == resumeWindRequest &&
+                windLastAttemptAtElapsedMillis != null
+            put(
+                RadarForegroundRefreshStream.WIND,
+                if (windAcquisitionMatches || windAttemptMatches) {
+                    RadarForegroundRefreshStreamState(
+                        RadarForegroundStreamReadiness.EVALUABLE,
+                        RadarForegroundStreamFreshness(
+                            acquiredAtElapsedMillis = windAcquiredAtElapsedMillis
+                                .takeIf { windAcquisitionMatches },
+                            lastAttemptAtElapsedMillis = windLastAttemptAtElapsedMillis
+                                .takeIf { windAttemptMatches },
+                            cadenceSeconds = ProviderCadencePolicy.modelCadenceSeconds,
+                        ),
+                    )
+                } else {
+                    RadarForegroundRefreshStreamState(RadarForegroundStreamReadiness.WAITING)
+                },
+            )
         }
     }
     LaunchedEffect(
@@ -1672,15 +1887,24 @@ fun LiveRadarScreen(
         foregroundRefreshStreams,
         automaticRefreshActive,
     ) {
-        val nowElapsedMillis = WindGridAcquisitionDeadlinePolicy.monotonicNowMillis()
+        val nowElapsedMillis = SystemClock.elapsedRealtime()
         val decision = RadarForegroundResumeRefreshPolicy.consumeWhenRadarActive(
-            foregroundResumeRefreshState,
+            foregroundLifecycleState,
             screenActive,
             nowElapsedMillis,
+            foregroundExpectedStreams,
             foregroundRefreshStreams,
         )
-        val transition = decision.transition ?: return@LaunchedEffect
-        foregroundResumeRefreshState = decision.state
+        val transition = decision.transition ?: run {
+            if (decision.waitingStreams.isNotEmpty()) {
+                Log.d(
+                    "RainRadarRefresh",
+                    "reason=foreground_resume generation=${pendingForegroundTransition?.generation} " +
+                        "waiting=${decision.waitingStreams.joinToString()}",
+                )
+            }
+            return@LaunchedEffect
+        }
         val backgroundMillis = (nowElapsedMillis - transition.backgroundedAtElapsedMillis)
             .coerceAtLeast(0L)
         Log.i(
@@ -1731,6 +1955,7 @@ fun LiveRadarScreen(
                 }
             }
         }
+        onForegroundResumeConsumed(transition.generation)
     }
     var pendingRadarRefresh by remember { mutableStateOf<PendingFollowRefresh?>(null) }
     var pendingCloudsRefresh by remember { mutableStateOf<PendingFollowRefresh?>(null) }

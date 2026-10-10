@@ -7,3 +7,6 @@
 -keepclassmembers class org.locationtech.proj4j.proj.StereographicAzimuthalProjection { public <init>(); }
 -keepclassmembers class org.locationtech.proj4j.proj.SwissObliqueMercatorProjection { public <init>(); }
 -keepclassmembers class org.locationtech.proj4j.proj.LambertAzimuthalEqualAreaProjection { public <init>(); }
+
+# OpenCV's Java facade calls into bundled JNI by stable class/method names.
+-keep class org.opencv.** { *; }

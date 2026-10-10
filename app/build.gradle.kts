@@ -26,8 +26,8 @@ android {
         applicationId = "com.rainalarm.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 26
-        versionName = "0.9.6"
+        versionCode = 27
+        versionName = "0.9.7"
         buildConfigField(
             "boolean",
             "UPDATE_INDICATOR_DEMO",
@@ -92,6 +92,8 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.maplibre.android)
     implementation(libs.proj4j)
+    // Official OpenCV supplies the production Lucas-Kanade tracker for observation-only feeds.
+    implementation(libs.opencv)
     implementation(libs.androidx.work.runtime)
     implementation(libs.androidx.glance.appwidget)
     implementation(libs.androidx.glance.material3)
@@ -103,6 +105,8 @@ dependencies {
     implementation(libs.androidx.compose.material.icons)
     debugImplementation(libs.androidx.compose.ui.tooling)
     testImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.runner)
 }
 
 tasks.register<JavaExec>("directDebugUnitTest") {
@@ -130,6 +134,7 @@ tasks.register<JavaExec>("directDebugUnitTest") {
         "com.rainalarm.app.alerts.RainAlertDecisionTest",
         "com.rainalarm.app.data.RadarProviderTest",
         "com.rainalarm.app.domain.DenseRadarMotionTest",
+        "com.rainalarm.app.domain.OpenRadarMotionTest",
         "com.rainalarm.app.ui.RadarRendererLifecycleTest",
         "com.rainalarm.app.NavigationAndSettingsTest",
         "com.rainalarm.app.NowEntryRefreshPolicyTest",
@@ -148,6 +153,7 @@ tasks.register<JavaExec>("directDebugUnitTest") {
         "com.rainalarm.app.data.WindArrowSizePreferenceTest",
         "com.rainalarm.app.data.EumetLayersTest",
         "com.rainalarm.app.ui.WeatherUiWiringTest",
+        "com.rainalarm.app.ui.OpenRadarMotionWiringTest",
         "com.rainalarm.app.ui.NowSourceClockTest",
         "com.rainalarm.app.domain.RadarPresentationTest",
         "com.rainalarm.app.domain.EntryTransitionTest",

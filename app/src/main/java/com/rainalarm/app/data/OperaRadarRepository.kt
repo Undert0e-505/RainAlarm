@@ -5,6 +5,8 @@ import android.graphics.Bitmap
 import android.util.Log
 import com.rainalarm.app.domain.DenseRadarMotionEstimator
 import com.rainalarm.app.domain.DenseVelocitySet
+import com.rainalarm.app.domain.OpenRadarFutureFieldSelector
+import com.rainalarm.app.domain.OpenCvSparseRadarTracker
 import com.rainalarm.app.domain.IntensityGrid
 import com.rainalarm.app.domain.GeoPoint
 import com.rainalarm.app.domain.OpenRadarColorScale
@@ -304,6 +306,8 @@ private data class OperaDownloadedFrame(
     val detailBitmap: Bitmap,
     val regionalAnalysis: IntensityGrid?,
     val detailAnalysis: IntensityGrid,
+    val regionalNativeAnalysis: IntensityGrid?,
+    val detailNativeAnalysis: IntensityGrid?,
     val latestRegionalSeverity: IntensityGrid?,
     val latestRegionalCoverage: IntensityGrid?,
     val latestDetailSeverity: IntensityGrid?,
@@ -375,6 +379,10 @@ class OperaRadarSessionLoader(
         val processNanos = AtomicLong(0L)
         val maximumProcessNanos = AtomicLong(0L)
         val total = available.size * (if (regionalPlan != null) 2 else 1)
+        // The production LK forecast needs only the latest three regular observations. Avoid
+        // producing a second high-resolution analysis for older animation frames.
+        val nativeAnalysisStartIndex = (available.size - NATIVE_MOTION_HISTORY_FRAMES)
+            .coerceAtLeast(0)
         onProgress(0, total)
         val outputs = ArrayList<OperaDownloadedFrame>(available.size)
         val outputSlots = arrayOfNulls<OperaDownloadedFrame>(available.size)
@@ -415,6 +423,16 @@ class OperaRadarSessionLoader(
                                 detailBitmap = detail.bitmap,
                                 regionalAnalysis = regional?.severity?.let(::analysisGrid),
                                 detailAnalysis = analysisGrid(detail.severity),
+                                regionalNativeAnalysis = regional?.severity?.takeIf {
+                                    index >= nativeAnalysisStartIndex
+                                }?.let {
+                                    analysisGrid(it, NATIVE_MOTION_SIZE, regional.coverage)
+                                },
+                                detailNativeAnalysis = detail.severity.takeIf {
+                                    index >= nativeAnalysisStartIndex
+                                }?.let {
+                                    analysisGrid(it, NATIVE_MOTION_SIZE, detail.coverage)
+                                },
                                 latestRegionalSeverity = regional?.severity?.takeIf { latest },
                                 latestRegionalCoverage = regional?.coverage?.takeIf { latest },
                                 latestDetailSeverity = detail.severity.takeIf { latest },
@@ -463,6 +481,12 @@ class OperaRadarSessionLoader(
                 output.regionalAnalysis?.let { TimedIntensityGrid(output.frame.time, it) }
             }
             val detailAnalyses = outputs.map { TimedIntensityGrid(it.frame.time, it.detailAnalysis) }
+            val regionalNativeAnalyses = outputs.mapNotNull { output ->
+                output.regionalNativeAnalysis?.let { TimedIntensityGrid(output.frame.time, it) }
+            }
+            val detailNativeAnalyses = outputs.mapNotNull { output ->
+                output.detailNativeAnalysis?.let { TimedIntensityGrid(output.frame.time, it) }
+            }
             val regionalTier = regionalPlan?.let {
                 RadarTierFrames(
                     RadarResolutionTier.REGIONAL, it.bounds,
@@ -492,26 +516,59 @@ class OperaRadarSessionLoader(
             }
             fun dense(
                 analyses: List<TimedIntensityGrid>,
+                nativeAnalyses: List<TimedIntensityGrid>,
                 width: Int,
                 height: Int,
+                tier: RadarResolutionTier,
             ): DenseVelocitySet {
+                val denseStarted = System.nanoTime()
                 val fields: List<RadarVelocityField?> =
                     analyses.zipWithNext().map { (before, after) ->
                         preparationContext.ensureActive()
                         DenseRadarMotionEstimator.estimatePair(before, after, width, height)
                     }
-                return DenseVelocitySet(fields, DenseRadarMotionEstimator.aggregate(fields))
+                val legacyDone = System.nanoTime()
+                val velocity = OpenRadarFutureFieldSelector.select(
+                    legacyPairFields = fields,
+                    nativeFrames = nativeAnalyses,
+                    sourceWidth = width,
+                    sourceHeight = height,
+                    expectedCadenceSeconds = OPERA_CADENCE_SECONDS,
+                    trackerFactory = { OpenCvSparseRadarTracker() },
+                    beforePair = preparationContext::ensureActive,
+                )
+                val denseDone = System.nanoTime()
+                Log.i(
+                    TAG,
+                    "OPERA motion tier=$tier method=${velocity.diagnostics?.activeLabel} " +
+                        "legacyMs=${(legacyDone - denseStarted) / 1_000_000L} " +
+                        "selectedMs=${(denseDone - legacyDone) / 1_000_000L} " +
+                        "totalMs=${(denseDone - denseStarted) / 1_000_000L}",
+                )
+                return velocity
             }
             val denseVelocity = buildMap {
                 regionalPlan?.let { plan ->
                     put(
                         RadarResolutionTier.REGIONAL,
-                        dense(regionalAnalyses, plan.width, plan.height),
+                        dense(
+                            regionalAnalyses,
+                            regionalNativeAnalyses,
+                            plan.width,
+                            plan.height,
+                            RadarResolutionTier.REGIONAL,
+                        ),
                     )
                 }
                 put(
                     RadarResolutionTier.DETAIL,
-                    dense(detailAnalyses, detailPlan.width, detailPlan.height),
+                    dense(
+                        detailAnalyses,
+                        detailNativeAnalyses,
+                        detailPlan.width,
+                        detailPlan.height,
+                        RadarResolutionTier.DETAIL,
+                    ),
                 )
             }
             val regionalMotion = regionalAnalyses.takeIf { it.isNotEmpty() }?.let {
@@ -796,20 +853,31 @@ class OperaRadarSessionLoader(
         }
     }
 
-    private fun analysisGrid(source: IntensityGrid): IntensityGrid {
-        val scale = ceil(maxOf(source.width, source.height) / MOTION_SIZE.toDouble()).toInt().coerceAtLeast(1)
-        if (scale == 1) return source
+    private fun analysisGrid(
+        source: IntensityGrid,
+        maximumSize: Int = MOTION_SIZE,
+        coverage: IntensityGrid? = null,
+    ): IntensityGrid {
+        require(coverage == null ||
+            (coverage.width == source.width && coverage.height == source.height))
+        val scale = ceil(maxOf(source.width, source.height) / maximumSize.toDouble()).toInt().coerceAtLeast(1)
+        if (scale == 1 && coverage == null) return source
         val width = ceil(source.width / scale.toDouble()).toInt()
         val height = ceil(source.height / scale.toDouble()).toInt()
         val values = FloatArray(width * height)
         for (y in 0 until height) for (x in 0 until width) {
             var maximum = 0f
+            var hasCoverage = false
             for (sy in y * scale until minOf((y + 1) * scale, source.height)) {
                 for (sx in x * scale until minOf((x + 1) * scale, source.width)) {
-                    maximum = maxOf(maximum, source[sx, sy])
+                    if (coverage != null && coverage[sx, sy] < 0.5f) continue
+                    val value = source[sx, sy]
+                    if (!value.isFinite()) continue
+                    hasCoverage = true
+                    maximum = maxOf(maximum, value)
                 }
             }
-            values[y * width + x] = maximum
+            values[y * width + x] = if (hasCoverage) maximum else Float.NaN
         }
         return IntensityGrid(width, height, values)
     }
@@ -847,6 +915,13 @@ class OperaRadarSessionLoader(
         const val MAX_METADATA_CONCURRENCY = OperaSharedSourceCache.MAX_SHARED_NETWORK_CONCURRENCY
         const val MAX_FRAME_CONCURRENCY = 2
         const val MOTION_SIZE = 64
+        // The regional France raster is ~790 px wide. A 256 px ceiling reduced one-pixel local
+        // thunderstorm shifts to ~0.25 analysis px and left too few corners after min-distance
+        // suppression. 384 keeps the working raster near 264x242 (integer max pooling), enough
+        // for local subpixel tracks without retaining or processing the full regional raster.
+        const val NATIVE_MOTION_SIZE = 384
+        const val NATIVE_MOTION_HISTORY_FRAMES = 3
+        const val OPERA_CADENCE_SECONDS = 300L
     }
 }
 

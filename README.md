@@ -7,7 +7,7 @@ animated multi-provider Radar and a foreground Travel mode. It has no accounts, 
 analytics.
 
 [Download the latest release](https://github.com/Undert0e-505/RainAlarm/releases/latest) ·
-[What’s new in v0.9.6](docs/releases/v0.9.6.md) · [User guide](docs/USER_GUIDE.md)
+[What’s new in v0.9.7](docs/releases/v0.9.7.md) · [User guide](docs/USER_GUIDE.md)
 
 ## See Radar in motion
 
@@ -47,7 +47,8 @@ and widgets continue to use accumulated flash-area detection, independently of t
 - **Answer-first Now:** rain arrival, direction and intensity in a compact compass and next-hour
   chart, with optional model weather details.
 - **Multi-provider Radar:** MeteoGroup/DTN, EUMETNET OPERA and RainViewer with honest coverage,
-  loading and availability states; Wind, Lightning and Clouds are independent optional layers.
+  loading and availability states. OPERA and RainViewer estimates retain locally different storm
+  movements; Wind, Lightning and Clouds are independent optional layers.
 - **Places and alerts:** search, map selection, saved places, a startup pin and optional rain alerts.
 - **Personal appearance:** Light, Dark and Slate surfaces, automatic day/night profiles, adjustable
   coverage masks and wind arrows.
@@ -95,11 +96,12 @@ opening Rain Alarm, subject to Android's inexact background scheduling and devic
 - [Data sources, coverage and constraints](docs/DATA_SOURCES.md)
 - [Privacy](docs/PRIVACY.md)
 - [Development and build](docs/DEVELOPMENT.md)
+- [Open-radar motion estimates](docs/OPEN_RADAR_MOTION.md)
 - [Self-hosting the individual-lightning feed](docs/INDIVIDUAL_LIGHTNING_BACKEND.md)
 - [Widget behavior](docs/WIDGET_REQUIREMENTS.md)
 - [Lightning alert behavior](docs/LIGHTNING_ALERT_REQUIREMENTS.md)
 - [Feature tour](docs/FEATURE_TOUR.md) and [localization](docs/LOCALIZATION.md)
-- [v0.9.6 release notes](docs/releases/v0.9.6.md) and [road to 1.0](docs/NEXT_PHASE.md)
+- [v0.9.7 release notes](docs/releases/v0.9.7.md) and [road to 1.0](docs/NEXT_PHASE.md)
 
 ## Privacy and safety
 
@@ -114,7 +116,7 @@ only to the update, map, weather, radar, satellite, relay and search services de
 
 ## Build from source
 
-Rain Alarm 0.9.6 (version code 26) supports Android 8.0 and later. With JDK 21, Android SDK Platform
+Rain Alarm 0.9.7 (version code 27) supports Android 8.0 and later. With JDK 21, Android SDK Platform
 37 and Build Tools 36.0.0 installed, run on Windows:
 
 ```powershell

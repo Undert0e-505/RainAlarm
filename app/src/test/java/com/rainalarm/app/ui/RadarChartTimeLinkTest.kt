@@ -77,6 +77,43 @@ class RadarChartTimeLinkTest {
         ))
     }
 
+    @Test fun `graph navigation clears an alert target before creating sticky selected-place intent`() {
+        val activity = listOf(
+            File("src/main/java/com/rainalarm/app/MainActivity.kt"),
+            File("app/src/main/java/com/rainalarm/app/MainActivity.kt"),
+        ).first(File::isFile).readText()
+        val callback = activity.substringAfter("onChartTimeSelected = { epochSeconds ->")
+            .substringBefore("screenActive = destination == Destination.NOW")
+        val clear = callback.indexOf("viewModel.prepareSelectedPlaceRadarNavigation()")
+        val request = callback.indexOf("pendingChartTime = RadarChartTimeRequest")
+        val navigation = callback.indexOf("navigateTo(Destination.RADAR)")
+        assertTrue(clear >= 0)
+        assertTrue(request > clear)
+        assertTrue(navigation > request)
+
+        val requestState = RadarChartTimeRequest(14, "saved-london", 2_500.0)
+        // A retained Edinburgh alert session cannot consume the London graph intent. Once the
+        // transient target is cleared, its replacement session applies the same absolute epoch.
+        assertEquals(
+            RadarChartTimeDecision.Waiting,
+            RadarChartTimeLink.decide(
+                requestState, "saved-london", "alert-edinburgh", 1_000, 4_000.0,
+            ),
+        )
+        assertEquals(
+            RadarChartTimeDecision.Apply(1_300f, 2_500.0, true),
+            RadarChartTimeLink.decide(
+                requestState, "saved-london", "saved-london", 1_200, 4_200.0,
+            ),
+        )
+        assertEquals(
+            RadarChartTimeDecision.Apply(1_000f, 2_500.0, true),
+            RadarChartTimeLink.decide(
+                requestState, "saved-london", "saved-london", 1_500, 4_500.0,
+            ),
+        )
+    }
+
     @Test fun `graph intent outranks retained follow until explicit Travel takeover`() {
         assertTrue(!RadarTimelineActivationPolicy.automaticOnActivation(
             following = true,

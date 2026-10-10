@@ -1,6 +1,6 @@
 # Rain Alarm user guide
 
-Rain Alarm answers a place-specific question: when will rain reach me? **Now** summarises the next hour, while **Radar** lets you inspect the available observations, forecasts or local motion estimates. This guide describes version 0.9.5 (version code 25).
+Rain Alarm answers a place-specific question: when will rain reach me? **Now** summarises the next hour, while **Radar** lets you inspect the available observations, forecasts or local motion estimates. This guide describes version 0.9.7 (version code 27).
 
 ## First launch and installation
 
@@ -262,7 +262,10 @@ MeteoGroup is initially preferred where one of its five regional feeds covers th
 
 OPERA is a credential-free EUMETNET composite over a fixed 3,800×4,400 km CIRRUS/LAEA domain, independent of MeteoGroup's rectangles. Rain Alarm reads only required Cloud Optimized GeoTIFF blocks from the public 24-hour cache, preserves the source's ellipsoidal LAEA geometry and native 1 km data, and derives regional map and selected-place detail from the same observations.
 
-OPERA has observations but no provider forecast. Future `Estimate` frames, Now and alerts use confidence-gated local motion and stay unavailable if evidence is insufficient.
+OPERA has observations but no provider forecast. Future `Estimate` frames, Now and alerts use a
+confidence-gated, locally varying motion field so separate systems can retain different movement.
+If native tracking is unavailable or unreliable, Rain Alarm falls back internally to its bounded
+legacy estimate; it never presents an estimate as an OPERA forecast.
 
 ### RainViewer
 
@@ -272,7 +275,10 @@ RainViewer's published coverage mask is requested once per session using the sam
 
 When RainViewer is explicitly preferred, **Show likely snow** requests model-assisted snow colours and uses an icy lavender-to-indigo palette across Radar, Now, the graph and alert wording. It remains off when RainViewer is only a fallback and is never claimed for OPERA.
 
-RainViewer's future path prefers a confidence-gated local motion field and may use a separately confidence-gated broad translation when local motion is unavailable. Both are estimates. They stop at the downloaded coverage edge rather than treating unseen space as dry.
+RainViewer's future path uses the same confidence-gated, locally varying motion field as OPERA and
+may fall back internally to the bounded legacy estimate when native tracking is unavailable or
+unreliable. Both are estimates. They stop at the downloaded coverage edge rather than treating
+unseen space as dry.
 
 Providers are independent composites and can disagree materially about footprint, intensity and timing. Rain Alarm calibrates presentation but never expands, shrinks or moves one provider's echoes to imitate another. See [Data sources and constraints](DATA_SOURCES.md) for the canonical provider, coverage, attribution and processing details.
 

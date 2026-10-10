@@ -184,6 +184,8 @@ import com.rainalarm.app.ui.RadarChartTimeRequest
 import com.rainalarm.app.ui.RadarChartTimeLink
 import com.rainalarm.app.ui.RadarPageSwipeEvent
 import com.rainalarm.app.ui.RadarPageSwipeOverlay
+import com.rainalarm.app.ui.RadarForegroundLifecycleState
+import com.rainalarm.app.ui.RadarForegroundResumeRefreshPolicy
 import com.rainalarm.app.ui.SatelliteAmbientCache
 import com.rainalarm.app.ui.CurrentLocationPresentationPolicy
 import com.rainalarm.app.ui.PlacesScreen
@@ -532,6 +534,9 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     private var recenterAfterNextFix = false
     private val _foreground = MutableStateFlow(false)
     val foreground: StateFlow<Boolean> = _foreground.asStateFlow()
+    private val _radarForegroundLifecycle = MutableStateFlow(RadarForegroundLifecycleState())
+    internal val radarForegroundLifecycle: StateFlow<RadarForegroundLifecycleState> =
+        _radarForegroundLifecycle.asStateFlow()
     private val _followRequested = MutableStateFlow(false)
     val followRequested: StateFlow<Boolean> = _followRequested.asStateFlow()
     private var travelActivationPending = false
@@ -894,6 +899,11 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun setForeground(value: Boolean) {
+        _radarForegroundLifecycle.value = RadarForegroundResumeRefreshPolicy.observeLifecycle(
+            _radarForegroundLifecycle.value,
+            value,
+            SystemClock.elapsedRealtime(),
+        )
         _foreground.value = value
         AppVisibilityState.update(value)
         ForegroundLocationSnapshot.setForeground(value)
@@ -902,6 +912,13 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
             placeNameJob?.cancel()
             clearLiveLocation(preserveWorkerSnapshot = true)
         }
+    }
+
+    internal fun consumeRadarForegroundResumeTransition(generation: Long) {
+        _radarForegroundLifecycle.value = RadarForegroundResumeRefreshPolicy.markConsumed(
+            _radarForegroundLifecycle.value,
+            generation,
+        )
     }
 
     fun refresh() {
@@ -1312,6 +1329,11 @@ class RainAlarmViewModel(application: Application) : AndroidViewModel(applicatio
         if (com.rainalarm.app.domain.RadarSelectedCenterPolicy.canCenter(placesState.value.selectedId, place)) {
             _currentRecenterTick.value++
         }
+    }
+
+    /** A Now-chart intent always targets the persistent selection, not an alert deep-link lease. */
+    fun prepareSelectedPlaceRadarNavigation() {
+        clearTransientRadarTarget()
     }
 
     private fun requestCurrentLocation(recenterMap: Boolean) {
@@ -1901,6 +1923,8 @@ private fun RainAlarmApp(
     val liveMapPlace by viewModel.liveMapPlace.collectAsStateWithLifecycle()
     val liveFixElapsedRealtimeNanos by viewModel.liveFixElapsedRealtimeNanos.collectAsStateWithLifecycle()
     val appForeground by viewModel.foreground.collectAsStateWithLifecycle()
+    val radarForegroundLifecycle by
+        viewModel.radarForegroundLifecycle.collectAsStateWithLifecycle()
     val followRequested by viewModel.followRequested.collectAsStateWithLifecycle()
     val followCapability by viewModel.followCapability.collectAsStateWithLifecycle()
     val placesState by viewModel.placesState.collectAsStateWithLifecycle()
@@ -2250,6 +2274,7 @@ private fun RainAlarmApp(
                             selectedLocationKey = selectedPlace?.let(::forecastSelectionKey),
                             onChartTimeSelected = { epochSeconds ->
                                 if (selectedPlace != null) {
+                                    viewModel.prepareSelectedPlaceRadarNavigation()
                                     chartRequestSerial++
                                     pendingChartTime = RadarChartTimeRequest(chartRequestSerial,
                                         placesState.selectedId, epochSeconds)
@@ -2279,6 +2304,9 @@ private fun RainAlarmApp(
                             saveAndSelect = viewModel::saveAndSelect,
                             locationState = locationState,
                             appForeground = appForeground,
+                            foregroundLifecycleState = radarForegroundLifecycle,
+                            onForegroundResumeConsumed =
+                                viewModel::consumeRadarForegroundResumeTransition,
                             followLive = followRequested,
                             followCapability = followCapability,
                             liveFixElapsedRealtimeNanos = liveFixElapsedRealtimeNanos,

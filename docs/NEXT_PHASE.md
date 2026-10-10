@@ -1,6 +1,6 @@
 # Road to 1.0
 
-Rain Alarm 0.9.5 is feature-complete for its intended scope: Now, multi-provider Radar, saved
+Rain Alarm 0.9.7 is feature-complete for its intended scope: Now, multi-provider Radar, saved
 places, independent home-screen widgets, foreground Travel, rain/Lightning alerts, appearance
 profiles, localization and contextual onboarding. Work toward 1.0 now prioritizes reliability and
 validation rather than additional features.
@@ -43,6 +43,7 @@ validation rather than additional features.
 - [Widget behavior](WIDGET_REQUIREMENTS.md)
 - [Lightning activity alerts and Radar hand-off](LIGHTNING_ALERT_REQUIREMENTS.md)
 - [Data sources and constraints](DATA_SOURCES.md)
+- [Open-radar motion estimates](OPEN_RADAR_MOTION.md)
 - [Development and build](DEVELOPMENT.md)
 
 ## Explicitly out of scope
