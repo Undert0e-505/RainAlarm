@@ -31,6 +31,73 @@ import kotlin.math.hypot
 /** Opt-in network smoke: -Pandroid.testInstrumentationRunnerArguments.liveOpera=true */
 @RunWith(AndroidJUnit4::class)
 class OpenRadarLiveProviderInstrumentedTest {
+    /** Opt-in end-to-end coverage/fallback check: ...liveCoverage=true */
+    @Test fun neverAcceptsAnOPinoSessionWhosePinWouldBeShadowed() {
+        runBlocking {
+            // Android's unified test platform serializes JUnit assumptions as failures in its XML
+            // even though Gradle correctly treats them as skips. A no-op keeps the ordinary
+            // connected report clean while retaining this explicit network diagnostic.
+            if (InstrumentationRegistry.getArguments().getString("liveCoverage") != "true") {
+                return@runBlocking
+            }
+            val place = SavedPlace("O Pino coverage diagnostic", 42.904, -8.363)
+            val point = GeoPoint(place.latitude, place.longitude)
+            val directOpera = withTimeout(180_000L) {
+                OperaRadarSessionLoader().load(
+                    place = place,
+                    maxFrames = 2,
+                    mode = RadarLoadMode.SCREEN_TWO_TIER,
+                )
+            }
+            val operaCovered = try {
+                RadarSessionCoverage.coverageAt(directOpera, point) == true
+            } finally {
+                directOpera.release("instrumentation-live-coverage-probe")
+            }
+            val context = InstrumentationRegistry.getInstrumentation().targetContext
+            val settings = RadarSettingsRepository(context)
+            settings.setProvider(RadarProviderKind.EUMETNET_OPERA)
+            val accepted = runCatching {
+                withTimeout(180_000L) {
+                    RadarProviderCoordinator(settings).load(
+                        place = place,
+                        maxFrames = 2,
+                        mode = RadarLoadMode.SCREEN_TWO_TIER,
+                    )
+                }
+            }
+            accepted.getOrNull()?.let { session ->
+                try {
+                    assertTrue(RadarSessionCoverage.coverageAt(session, point) == true)
+                    assertEquals(
+                        RadarProviderCoverageState.COVERED,
+                        session.providerSelection.coverageState,
+                    )
+                    if (!operaCovered) {
+                        assertFalse(session.providerSelection.active == RadarProviderKind.EUMETNET_OPERA)
+                    }
+                    android.util.Log.i(
+                        "RainRadarCoverageTest",
+                        "O Pino operaCovered=$operaCovered accepted=" +
+                            "${session.providerSelection.active} covered=true",
+                    )
+                } finally {
+                    session.release("instrumentation-live-coverage-accepted")
+                }
+            } ?: run {
+                assertFalse("A covered OPERA candidate must be accepted", operaCovered)
+                assertTrue(
+                    accepted.exceptionOrNull()?.message.orEmpty()
+                        .contains("unavailable", ignoreCase = true),
+                )
+                android.util.Log.i(
+                    "RainRadarCoverageTest",
+                    "O Pino operaCovered=false accepted=unavailable",
+                )
+            }
+        }
+    }
+
     @Test fun loadsRealRecentOperaFramesThroughNativeMotionPath() {
         runBlocking {
             assumeTrue(

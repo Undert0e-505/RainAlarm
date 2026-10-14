@@ -26,8 +26,8 @@ android {
         applicationId = "com.rainalarm.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 28
-        versionName = "0.9.8"
+        versionCode = 29
+        versionName = "0.9.9"
         buildConfigField(
             "boolean",
             "UPDATE_INDICATOR_DEMO",
@@ -179,6 +179,7 @@ tasks.register<JavaExec>("directDebugUnitTest") {
         "com.rainalarm.app.ui.RadarCoverageMaskPolicyTest",
         "com.rainalarm.app.data.CoverageMaskDarknessPreferenceTest",
         "com.rainalarm.app.data.RadarProviderCapabilityTest",
+        "com.rainalarm.app.data.RadarEffectiveCoverageTest",
         "com.rainalarm.app.ui.RadarMapNoticePolicyTest",
         "com.rainalarm.app.data.AutomaticAppearanceTest",
         "com.rainalarm.app.ui.NowVisualPolishTest",

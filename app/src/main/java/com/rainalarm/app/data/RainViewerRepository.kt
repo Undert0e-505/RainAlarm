@@ -415,23 +415,15 @@ data class LegacyCompressedFrame(
 
 /** Provider-published/current unknown-area raster. Transparent pixels are known coverage. */
 data class RadarCoverageRaster(
-    val bounds: GeoQuad,
+    val coverage: RadarEffectiveCoverage,
     val bitmap: Bitmap,
-    val semantics: RadarCoverageSemantics,
-)
+) {
+    init {
+        require(bitmap.width == coverage.width && bitmap.height == coverage.height)
+    }
 
-fun RadarCoverageRaster.coverageAt(point: GeoPoint): Boolean? {
-    if (bitmap.isRecycled) return null
-    val (left, top) = WebMercator.worldFraction(bounds.topLeft)
-    val (right, bottom) = WebMercator.worldFraction(bounds.bottomRight)
-    val (x, y) = WebMercator.worldFraction(point)
-    if (x !in left..right || y !in top..bottom) return false
-    val pixelX = (((x - left) / (right - left)) * bitmap.width).toInt()
-        .coerceIn(0, bitmap.width - 1)
-    val pixelY = (((y - top) / (bottom - top)) * bitmap.height).toInt()
-        .coerceIn(0, bitmap.height - 1)
-    val alpha = (bitmap.getPixel(pixelX, pixelY) ushr 24) and 0xff
-    return alpha < 128
+    val bounds: GeoQuad get() = coverage.bounds
+    val semantics: RadarCoverageSemantics get() = coverage.semantics
 }
 
 enum class RadarCoverageSemantics {
@@ -492,6 +484,21 @@ data class RadarSession(
     val denseVelocity: Map<RadarResolutionTier, DenseVelocitySet> = emptyMap(),
     val legacyArchive: LegacyRadarArchive? = null,
     val mapCoverage: RadarCoverageRaster? = null,
+    /** Exact lit-vs-shadow coverage used for accepting and reusing this session. */
+    val effectiveCoverage: RadarEffectiveCoverage? = mapCoverage?.coverage
+        ?: latestDetailCoverage?.let { coverage ->
+            detail?.let { tier ->
+                RadarEffectiveCoverage.fromCoveredWeights(
+                    tier.bounds,
+                    coverage,
+                    when (providerSelection.active) {
+                        RadarProviderKind.OPEN_RAINVIEWER ->
+                            RadarCoverageSemantics.PROVIDER_PUBLISHED
+                        else -> RadarCoverageSemantics.CURRENT_COMPOSITE
+                    },
+                )
+            }
+        },
     /**
      * Bitmap ownership is shared by the retained screen state and any native renderer slots.
      * Data-class copies deliberately carry the same lease because they only decorate one logical
@@ -926,11 +933,16 @@ class RadarSessionLoader(
     private suspend fun downloadCoverageRaster(
         host: String,
         plan: RainViewerRasterPlan,
-    ): RadarCoverageRaster = RadarCoverageRaster(
-        bounds = plan.targetBounds,
-        bitmap = downloadCoverageBitmap(host, plan),
-        semantics = RadarCoverageSemantics.PROVIDER_PUBLISHED,
-    )
+    ): RadarCoverageRaster {
+        val bitmap = downloadCoverageBitmap(host, plan)
+        return RadarCoverageRaster(
+            coverage = bitmap.toEffectiveCoverage(
+                plan.targetBounds,
+                RadarCoverageSemantics.PROVIDER_PUBLISHED,
+            ),
+            bitmap = bitmap,
+        )
+    }
 
     private suspend fun downloadCoverageBitmap(
         host: String,
@@ -1042,6 +1054,22 @@ private fun Bitmap.toCoverageGrid(): IntensityGrid {
         }
     }
     return IntensityGrid(width, height, values)
+}
+
+/** Preserve the exact alpha bytes later supplied to MapLibre's nearest-neighbour mask layer. */
+private fun Bitmap.toEffectiveCoverage(
+    bounds: GeoQuad,
+    semantics: RadarCoverageSemantics,
+): RadarEffectiveCoverage {
+    val alpha = ByteArray(width * height)
+    val row = IntArray(width)
+    for (y in 0 until height) {
+        getPixels(row, 0, width, 0, y, width, 1)
+        for (x in 0 until width) {
+            alpha[y * width + x] = ((row[x] ushr 24) and 0xff).toByte()
+        }
+    }
+    return RadarEffectiveCoverage(bounds, width, height, alpha, semantics)
 }
 
 /**

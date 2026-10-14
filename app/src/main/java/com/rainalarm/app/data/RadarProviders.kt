@@ -829,16 +829,8 @@ class RadarProviderCoordinator(
         val totalBudget = RadarLoadDeadline.total(mode)
         val point = GeoPoint(place.latitude, place.longitude)
         fun coverageState(session: RadarSession, active: RadarProviderKind): RadarProviderCoverageState {
-            val capability = RadarProviderCapabilityResolver.capability(active, point)
-            if (!capability.geographicallyUsable) return capability.state
-            // OPERA no-data is a current-composite observation gap, not proof that the point is
-            // outside its fixed European product domain. It informs only the visual mask.
-            if (active != RadarProviderKind.OPEN_RAINVIEWER) return capability.state
-            val published = session.mapCoverage?.coverageAt(point)
-                ?: session.latestDetailCoverage?.let { coverage ->
-                    coverage[coverage.width / 2, coverage.height / 2] >= 0.5f
-                }
-            return RadarProviderCapabilityResolver.refine(capability, published).state
+            check(session.providerSelection.active == active)
+            return RadarSessionCoverage.state(session, point)
         }
         fun select(
             loaded: RadarSession,
@@ -860,7 +852,6 @@ class RadarProviderCoordinator(
         val candidates = RadarProviderCapabilityResolver.providersFor(requested, point)
         var lastFailure: Throwable? = null
         var timedOut = false
-        var uncoveredRainViewer: RadarSession? = null
         candidates.forEachIndexed { index, candidate ->
             val remaining = RadarLoadDeadline.remaining(totalBudget, startedNanos, System.nanoTime())
             if (remaining == 0L) {
@@ -917,19 +908,21 @@ class RadarProviderCoordinator(
             when (attempt) {
                 is PrimaryRadarAttempt.Ready -> {
                     val selected = select(attempt.value, requested, candidate)
-                    // A provider-published RainViewer mask can prove that this point is outside
-                    // coverage. Try another hard-eligible provider, but retain this fail-open map
-                    // session so an all-provider miss still leaves the base map usable.
-                    if (candidate == RadarProviderKind.OPEN_RAINVIEWER &&
-                        selected.providerSelection.coverageState == RadarProviderCoverageState.UNCOVERED &&
-                        !isLast
-                    ) {
-                        uncoveredRainViewer?.release()
-                        uncoveredRainViewer = selected
-                    } else {
-                        uncoveredRainViewer?.release()
+                    if (RadarCandidateCoveragePolicy.accepts(
+                            selected.providerSelection.coverageState,
+                        )) {
                         return selected
                     }
+                    // The same alpha/polygon semantics which would shadow the pin also reject the
+                    // candidate. It must never become authoritative merely because its crop or
+                    // broad product domain contains the selected coordinate.
+                    Log.w(
+                        "RainRadarProvider",
+                        "phase=candidate_uncovered provider=$candidate state=" +
+                            "${selected.providerSelection.coverageState}; trying next provider",
+                    )
+                    selected.release("coverage-rejected")
+                    lastFailure = IOException("Radar is unavailable at this location")
                 }
                 PrimaryRadarAttempt.TimedOut -> {
                     timedOut = true
@@ -951,7 +944,6 @@ class RadarProviderCoordinator(
                 }
             }
         }
-        uncoveredRainViewer?.let { return it }
         if (timedOut) throw RadarLoadTimedOutException(
             "Radar download timed out. Tap refresh to try again.",
         )

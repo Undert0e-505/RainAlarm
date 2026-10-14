@@ -43,7 +43,6 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.ceil
 import kotlin.math.floor
-import kotlin.math.roundToInt
 
 data class OperaRangeResult(val bytes: ByteArray, val fileLength: Long)
 
@@ -668,10 +667,14 @@ class OperaRadarSessionLoader(
             denseVelocity = postProcessing.denseVelocity,
             mapCoverage = regionalPlan?.let { plan ->
                 outputs.last().latestRegionalCoverage?.let { coverage ->
+                    val effective = RadarEffectiveCoverage.fromCoveredWeights(
+                        plan.bounds,
+                        coverage,
+                        RadarCoverageSemantics.CURRENT_COMPOSITE,
+                    )
                     RadarCoverageRaster(
-                        bounds = plan.bounds,
-                        bitmap = coverage.toUnknownMaskBitmap(),
-                        semantics = RadarCoverageSemantics.CURRENT_COMPOSITE,
+                        coverage = effective,
+                        bitmap = effective.toUnknownMaskBitmap(),
                     )
                 }
             },
@@ -926,10 +929,9 @@ class OperaRadarSessionLoader(
 }
 
 /** Transparent means covered; opacity is proportional to provider no-data/unknown weight. */
-private fun IntensityGrid.toUnknownMaskBitmap(): Bitmap {
-    val pixels = IntArray(values.size) { index ->
-        val alpha = ((1f - values[index].coerceIn(0f, 1f)) * 255f).roundToInt()
-        alpha shl 24
+private fun RadarEffectiveCoverage.toUnknownMaskBitmap(): Bitmap {
+    val pixels = IntArray(unknownAlpha.size) { index ->
+        (unknownAlpha[index].toInt() and 0xff) shl 24
     }
     return Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also {
         it.setPixels(pixels, 0, width, 0, 0, width, height)

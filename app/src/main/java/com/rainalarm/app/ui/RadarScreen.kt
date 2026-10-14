@@ -1003,7 +1003,11 @@ private fun LiveRadarScreenContent(inputs: LiveRadarScreenInputs) = with(inputs)
     // Coordinates re-evaluate retained-footprint compatibility, but are deliberately not part of
     // the acquisition identity. Saved <-> Current and rapid Follow fixes inside that footprint
     // therefore reuse the installed frames without network work.
-    val radarAcquisitionLocationKey = RadarLiveSessionPolicy.acquisitionLocationKey(place)
+    val radarAcquisitionLocationKey = RadarLiveSessionPolicy.acquisitionLocationKey(
+        place,
+        session,
+        installedRadarAnchor ?: session?.place,
+    )
     LaunchedEffect(
         appForeground, screenActive, requestedRadarIdentity, radarAcquisitionLocationKey, reload,
     ) {

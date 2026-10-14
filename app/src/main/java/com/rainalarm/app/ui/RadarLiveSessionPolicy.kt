@@ -1,12 +1,15 @@
 package com.rainalarm.app.ui
 
 import com.rainalarm.app.data.RadarProviderKind
+import com.rainalarm.app.data.RadarProviderCapabilityResolver
 import com.rainalarm.app.data.RadarSession
+import com.rainalarm.app.data.RadarSessionCoverage
 import com.rainalarm.app.data.PlaceCoordinatePolicy
 import com.rainalarm.app.data.RegionalRadarAreas
 import com.rainalarm.app.data.SavedPlace
 import com.rainalarm.app.data.forecastSelectionKey
 import com.rainalarm.app.domain.GeoQuad
+import com.rainalarm.app.domain.GeoPoint
 import kotlin.math.asin
 import kotlin.math.cos
 import kotlin.math.min
@@ -27,6 +30,13 @@ internal object RadarLiveSessionPolicy {
         acquisitionAnchor: SavedPlace = session.place,
     ): Boolean {
         if (session.isReleased) return false
+        // This is deliberately the same quantised alpha/polygon predicate as the map's shadow.
+        // A broad domain, crop rectangle, or partially transparent edge is not reusable coverage.
+        if (RadarSessionCoverage.coverageAt(
+                session,
+                GeoPoint(selected.latitude, selected.longitude),
+            ) != true
+        ) return false
         // A regional or retained raster is location-independent inside its published footprint.
         // Saved -> Travel and subsequent live fixes must not discard it merely because the point
         // moved more than the duplicate-place tolerance.
@@ -37,15 +47,49 @@ internal object RadarLiveSessionPolicy {
             loaded = acquisitionAnchor,
             selected = selected,
             regionId = session.region?.id,
-            retainedBounds = session.regional?.bounds ?: session.detail?.bounds,
+            // Open-provider screen sessions contain a place-centred detail crop as well as a
+            // broader presentation raster. A new saved place may share the same coarse Meteo
+            // region while lying outside the installed detail data. Prefer that exact crop for
+            // saved selections; Current/Travel deliberately keeps using broad retained coverage.
+            retainedBounds = if (selected.isCurrentLocation) {
+                session.regional?.bounds ?: session.detail?.bounds
+            } else {
+                session.detail?.bounds ?: session.regional?.bounds
+            },
         )
     }
 
-    /** Stable effect key: ordinary Travel fixes inside one feed region never restart acquisition. */
-    fun acquisitionLocationKey(selected: SavedPlace?): String? = selected?.let { place ->
-        RegionalRadarAreas.forPoint(place.latitude, place.longitude)?.id?.let { "region:$it" }
-            ?: if (place.isCurrentLocation) "current:unbounded" else forecastSelectionKey(place)
+    /**
+     * Saved selections must re-evaluate the installed crop even when they share a coarse region.
+     * Current keeps a region-stable key so high-cadence Travel fixes cannot cancel an acquisition.
+     */
+    fun acquisitionLocationKey(
+        selected: SavedPlace?,
+        session: RadarSession? = null,
+        acquisitionAnchor: SavedPlace? = session?.place,
+    ): String? = selected?.let selectedPlace@ { place ->
+        if (!place.isCurrentLocation) return@selectedPlace forecastSelectionKey(place)
+        // Outside the fixed provider regions, open providers install a place-centred regional
+        // crop. Keep the effect key stable for every high-rate fix inside that exact crop, then
+        // change it once at the real raster edge. Falling back to current:unbounded while the old
+        // session is removed also prevents the replacement request from cancelling itself.
+        if (session != null && acquisitionAnchor != null &&
+            canReuse(session, place, acquisitionAnchor)
+        ) {
+            (session.regional?.bounds ?: session.detail?.bounds)?.let { retained ->
+                return@selectedPlace "current:retained:${retained.stableKey()}"
+            }
+            session.region?.id?.let { return@selectedPlace "current:region:$it" }
+        }
+        RegionalRadarAreas.forPoint(place.latitude, place.longitude)?.id?.let { "current:region:$it" }
+            ?: "current:unbounded"
     }
+
+    fun providerCanServe(provider: RadarProviderKind, selected: SavedPlace): Boolean =
+        RadarProviderCapabilityResolver.capability(
+            provider,
+            GeoPoint(selected.latitude, selected.longitude),
+        ).geographicallyUsable
 
     /**
      * Mode/identity changes are free only when they represent the same effective coordinate.
@@ -63,14 +107,14 @@ internal object RadarLiveSessionPolicy {
         regionId: String?,
         retainedBounds: GeoQuad? = null,
     ): Boolean {
-        // Saved <-> virtual Current is a presentation/marker change, not an acquisition change.
-        // Fixed regional composites remain reusable while both points resolve to the same feed.
+        // Open-provider crops are more specific than the logical regional label they carry.
+        // Reuse them only while the selected point remains inside the installed raster.
+        if (retainedBounds != null) return retainedBounds.contains(selected)
+        // Fixed Meteo composites have no decoded tier bounds; their published region is the
+        // actual reusable raster.
         if (regionId != null) {
             return RegionalRadarAreas.forPoint(selected.latitude, selected.longitude)?.id == regionId
         }
-        // Open-provider screen sessions retain a regional raster. Reuse it for any point it
-        // already covers, regardless of whether that point arrived as Saved or virtual Current.
-        if (retainedBounds != null) return retainedBounds.contains(selected)
         if (loaded.latitude == selected.latitude && loaded.longitude == selected.longitude) return true
         if (!selected.isCurrentLocation && !loaded.isCurrentLocation) return false
         val a = Math.toRadians(selected.latitude - loaded.latitude)
@@ -90,10 +134,18 @@ internal object RadarLiveSessionPolicy {
         return if (west <= east) place.longitude in west..east
         else place.longitude >= west || place.longitude <= east
     }
+
+    private fun GeoQuad.stableKey(): String = listOf(
+        topLeft.latitude, topLeft.longitude,
+        topRight.latitude, topRight.longitude,
+        bottomRight.latitude, bottomRight.longitude,
+        bottomLeft.latitude, bottomLeft.longitude,
+    ).joinToString(":") { it.toBits().toString(16) }
 }
 
 internal data class RadarRainLoadIdentity(
     val requestedProvider: RadarProviderKind,
+    val firstEligibleProvider: RadarProviderKind?,
     val showLikelySnow: Boolean,
 )
 
@@ -107,8 +159,15 @@ internal object RadarRainSessionLoadPolicy {
         requestedProvider: RadarProviderKind,
         showLikelySnow: Boolean,
     ): RadarRainLoadIdentity? = place?.let {
+        val point = GeoPoint(it.latitude, it.longitude)
         RadarRainLoadIdentity(
             requestedProvider = requestedProvider,
+            // The preferred setting alone is not an acquisition identity: a point can remain in
+            // one broad regional rectangle while crossing from Meteo coverage into OPERA.
+            firstEligibleProvider = RadarProviderCapabilityResolver.firstEligible(
+                requestedProvider,
+                point,
+            ),
             // Preserve the existing explicit config invalidation. This also covers a preferred
             // provider falling back to RainViewer without relying on the old session's outcome.
             showLikelySnow = showLikelySnow,
